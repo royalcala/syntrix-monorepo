@@ -2,7 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
-import { Shield, Rocket } from "lucide-react";
+import { Rocket } from "lucide-react";
 
 export function CreateOrg({ nodeId, onCreated }: { nodeId: string; onCreated: () => void }) {
   const [name, setName] = useState("");
@@ -26,8 +26,8 @@ export function CreateOrg({ nodeId, onCreated }: { nodeId: string; onCreated: ()
     <div className="min-h-screen bg-gradient-to-br from-muted to-primary/5 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-4">
-            <Shield size={32} className="text-primary" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4">
+            <img src="/favicon.svg" alt="Syntrix" className="w-10 h-10" />
           </div>
           <h1 className="text-2xl font-bold tracking-tight">Syntrix</h1>
           <p className="text-muted-foreground mt-2">Admin Console</p>

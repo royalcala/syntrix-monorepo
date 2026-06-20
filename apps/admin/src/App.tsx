@@ -53,7 +53,7 @@ export default function App() {
         orgs={orgs.map((o) => ({ id: o.name, name: o.name }))}
         activeOrg={activeOrg}
         onSelectOrg={setActiveOrg}
-        navItems={[{ href: "/devices", label: "Dispositivos", icon: Users }, ...navItems.slice(1)]}
+        navItems={navItems}
         headerActions={
           <>
             <ShareDialog org={activeOrg} />
