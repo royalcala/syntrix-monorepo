@@ -62,7 +62,7 @@ export default function App() {
             </Button>
           </>
         }>
-        <main className="h-[calc(100vh-3.5rem)]">
+        <div className="h-[calc(100vh-3.5rem)] overflow-auto">
           <Routes>
             <Route index element={<DevicesGridPage org={activeOrg} />} />
             <Route path="/devices" element={<DevicesGridPage org={activeOrg} />} />
@@ -70,7 +70,7 @@ export default function App() {
             <Route path="/orgs" element={<OrgsGridPage />} />
             <Route path="/logs" element={<Logs />} />
           </Routes>
-        </main>
+        </div>
       </AppShell>
 
       {newOrgOpen && (
