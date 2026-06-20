@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
-import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
+import { invoke } from "@tauri-apps/api/core";
+import { EntityGrid } from "../components/EntityGrid";
 import { devicesEntity } from "../entities/devices";
 import { createDevicesCollection } from "../collections/devices";
 
@@ -13,11 +14,14 @@ export function DevicesGridPage({ org }: { org: string }) {
       key={tick}
       entity={entity}
       role="admin"
-      onSaveCreate={() => {
-        // Collection handles the insert via adapter's onInsert → invoke("add_device")
-        // After create, remount to reload
+      onSaveCreate={async (row) => {
+        await invoke("add_device", {
+          org, nodeId: row.node_id as string, role: row.role as string,
+          name: (row.name as string) || (row.node_id as string).slice(0, 12),
+          person: (row.person as string) || "user",
+        });
         setTick((t) => t + 1);
-        return Promise.resolve({ id: "" });
+        return row;
       }}
     />
   );
