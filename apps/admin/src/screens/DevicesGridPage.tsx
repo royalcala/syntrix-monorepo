@@ -23,6 +23,16 @@ export function DevicesGridPage({ org }: { org: string }) {
         setTick((t) => t + 1);
         return row;
       }}
+      onSaveUpdate={async (recordId, changes) => {
+        await invoke("update_device", {
+          org, nodeId: recordId,
+          name: changes.name as string,
+          role: changes.role as string,
+          person: changes.person as string,
+          active: changes.active as boolean,
+        });
+        setTick((t) => t + 1);
+      }}
     />
   );
 }

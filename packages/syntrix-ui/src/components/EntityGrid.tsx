@@ -23,11 +23,12 @@ interface EntityGridProps {
   role?: string;
   orgId?: string;
   onSaveCreate?: (row: Row) => Promise<Row>;
+  onSaveUpdate?: (recordId: string, changes: Record<string, unknown>) => Promise<void>;
 }
 
 interface Row { id: string; [key: string]: unknown; }
 
-export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: EntityGridProps) {
+export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSaveUpdate }: EntityGridProps) {
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<"edit" | "create">("edit");
@@ -247,6 +248,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                   role={role}
                   isCreate={detailMode === "create"}
                   onSaveCreate={onSaveCreate}
+                  onSaveUpdate={onSaveUpdate}
                   onClose={() => { setDetailOpen(false); }}
                   onNavigate={detailMode === "create" ? undefined : (dir) => {
                 const idx = rows.findIndex((r) => r.original.id === selectedRow.id);

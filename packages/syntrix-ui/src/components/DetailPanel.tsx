@@ -17,9 +17,10 @@ interface DetailPanelProps {
   onNavigate?: (dir: number) => void;
   isCreate?: boolean;
   onSaveCreate?: (row: Record<string, unknown>) => Promise<void>;
+  onSaveUpdate?: (recordId: string, changes: Record<string, unknown>) => Promise<void>;
 }
 
-export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, onSaveCreate }: DetailPanelProps) {
+export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, onSaveCreate, onSaveUpdate }: DetailPanelProps) {
   const [activeTab, setActiveTab] = useState(isCreate ? "data" : entity.detail.tabs[0]?.key ?? "data");
   const [editMode, setEditMode] = useState(!!isCreate);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -30,6 +31,8 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
       try {
         if (isCreate && onSaveCreate) {
           await onSaveCreate(value);
+        } else if (!isCreate && onSaveUpdate) {
+          await onSaveUpdate(value.id as string, value);
         } else {
           const eventType = isCreate ? `${entity.id}.created` : `${entity.id}.updated`;
           await invoke("commit_event", { eventType, payload: JSON.stringify(value) });
