@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { EntityGrid } from "../components/EntityGrid";
+import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
 import { devicesEntity } from "../entities/devices";
 import { createDevicesCollection } from "../collections/devices";
 
