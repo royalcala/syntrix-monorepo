@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Menu, X, RefreshCw, ChevronLeft } from "lucide-react";
 import { Button } from "./ui/button";
@@ -34,6 +34,7 @@ interface AppShellProps {
   extraNavItems?: NavItem[];
   headerActions?: React.ReactNode;
   children: React.ReactNode;
+  onOpenCommand?: () => void;
 }
 
 export function AppShell({
@@ -44,6 +45,18 @@ export function AppShell({
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+
+  // Ctrl+K → Command Palette
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        if (onOpenCommand) onOpenCommand();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onOpenCommand]);
 
   const activeOrgName = orgs.find((o) => o.id === activeOrg)?.name ?? activeOrg;
   const role = orgs.find((o) => o.id === activeOrg)?.role;
