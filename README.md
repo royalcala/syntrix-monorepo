@@ -10,6 +10,8 @@ apps/
 └── admin/           ← App admin (React + Tauri)
 packages/
 └── syntrix-ui/      ← Componentes compartidos (@syntrix/ui)
+crates/
+└── iroh-syntrix-docs/ ← Auth wrapper para iroh-docs (Rust)
 syntrix-docs/        ← Documentación de diseño
 ```
 
