@@ -94,6 +94,10 @@ export function AppShell({
   const deviceItems = navItems.filter((i) => i.section === "device");
   const orgItems = navItems.filter((i) => i.section !== "device");
 
+  // If no items have section markers, treat all as org items
+  const hasDeviceSection = deviceItems.length > 0;
+  const allOrgItems = hasDeviceSection ? orgItems : [...deviceItems, ...orgItems];
+
   const sidebarContent = (
     <div className={cn("flex flex-col h-full transition-all", collapsed ? "items-center" : "")}>
       {/* Header */}
@@ -115,7 +119,7 @@ export function AppShell({
 
       {/* Navigation */}
       <div className={cn("flex-1 overflow-y-auto py-3", collapsed ? "px-2" : "px-3")}>
-        {deviceItems.length > 0 && (
+        {hasDeviceSection && deviceItems.length > 0 && (
           <div className="mb-3">
             {!collapsed && (
               <p className="text-[11px] text-muted-foreground/70 font-medium uppercase tracking-wider px-3 mb-1.5">
@@ -145,14 +149,14 @@ export function AppShell({
           </div>
         )}
 
-        {activeOrg && orgItems.length > 0 && (
+        {activeOrg && allOrgItems.length > 0 && (
           <div>
-            {!collapsed && (
+            {!collapsed && hasDeviceSection && (
               <p className="text-[11px] text-muted-foreground/70 font-medium uppercase tracking-wider px-3 mb-1.5">
                 {activeOrgName}
               </p>
             )}
-            <nav className="flex flex-col gap-0.5">{renderNav(orgItems)}</nav>
+            <nav className="flex flex-col gap-0.5">{renderNav(allOrgItems)}</nav>
           </div>
         )}
 
@@ -189,18 +193,18 @@ export function AppShell({
       {/* Mobile overlay */}
       <Sheet open={sidebarOpen} onClose={() => setSidebarOpen(false)}>
         <div className="flex flex-col h-full w-72 bg-sidebar text-sidebar-foreground">
-          {sidebarContent}
-        </div>
-      </Sheet>
-
-      {/* Desktop sidebar: fixed, collapsible */}
-      <aside
-        className={cn(
-          "hidden lg:flex flex-col fixed inset-y-0 left-0 z-30 bg-sidebar text-sidebar-foreground border-r border-border transition-all duration-200",
-          collapsed ? "w-16" : "w-60",
-        )}>
         {sidebarContent}
-      </aside>
+      </div>
+    </Sheet>
+
+    {/* Desktop sidebar: fixed, collapsible */}
+    <aside
+      className={cn(
+        "hidden lg:flex flex-col fixed inset-y-0 left-0 z-30 bg-card border-r transition-all duration-200",
+        collapsed ? "w-16" : "w-60",
+      )}>
+      {sidebarContent}
+    </aside>
 
       {/* Main area */}
       <div className={cn("lg:transition-all lg:duration-200", collapsed ? "lg:pl-16" : "lg:pl-60")}>
