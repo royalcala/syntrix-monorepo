@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Button } from "../components/ui/button";
+import { Button } from "@syntrix/ui/components/ui/button";
 import { Share2, Copy, Check } from "lucide-react";
 
 export function ShareDialog({ org }: { org: string }) {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Input } from "../components/ui/input";
-import { Button } from "../components/ui/button";
+import { Input } from "@syntrix/ui/components/ui/input";
+import { Button } from "@syntrix/ui/components/ui/button";
 import { Rocket } from "lucide-react";
 
 export function CreateOrg({ nodeId, onCreated }: { nodeId: string; onCreated: () => void }) {

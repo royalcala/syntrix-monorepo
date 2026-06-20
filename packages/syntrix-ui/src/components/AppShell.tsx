@@ -1,233 +1,239 @@
-import { useState, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { Menu, X, RefreshCw, ChevronLeft } from "lucide-react";
-import { Button } from "./ui/button";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
-import { Badge } from "./ui/badge";
-import { Sheet } from "./ui/sheet";
-import { ThemeToggle } from "./ThemeToggle";
-import { cn } from "../lib/utils";
+import * as React from "react"
+import { useNavigate, useLocation } from "react-router-dom"
+import { RefreshCw } from "lucide-react"
+
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarRail,
+  SidebarTrigger,
+} from "./ui/sidebar"
+import { TooltipProvider } from "./ui/tooltip"
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select"
+import { Button } from "./ui/button"
+import { ThemeToggle } from "./ThemeToggle"
+import { cn } from "../lib/utils"
 
 export interface NavItem {
-  href: string;
-  label: string;
-  icon: React.ComponentType<{ size?: number }>;
-  badge?: number;
-  section?: "device" | "org";
+  href: string
+  label: string
+  icon: React.ComponentType<{ size?: number; className?: string }>
+  badge?: number
+  section?: "device" | "org"
 }
 
 export interface OrgInfo {
-  id: string;
-  name: string;
-  role?: string;
+  id: string
+  name: string
+  role?: string
 }
 
 interface AppShellProps {
-  appName: string;
-  appSubtitle: string;
-  nodeId: string;
-  orgs: OrgInfo[];
-  activeOrg: string;
-  onSelectOrg: (id: string) => void;
-  onRefresh?: () => void;
-  navItems: NavItem[];
-  extraNavItems?: NavItem[];
-  headerActions?: React.ReactNode;
-  children: React.ReactNode;
-  onOpenCommand?: () => void;
+  appName: string
+  appSubtitle: string
+  nodeId: string
+  orgs: OrgInfo[]
+  activeOrg: string
+  onSelectOrg: (id: string) => void
+  onRefresh?: () => void
+  navItems: NavItem[]
+  extraNavItems?: NavItem[]
+  headerActions?: React.ReactNode
+  children: React.ReactNode
+  onOpenCommand?: () => void
 }
 
 export function AppShell({
-  appName, appSubtitle, nodeId, orgs, activeOrg, onSelectOrg,
-  onRefresh, onOpenCommand, navItems, extraNavItems, headerActions, children,
+  appName,
+  appSubtitle,
+  nodeId,
+  orgs,
+  activeOrg,
+  onSelectOrg,
+  onRefresh,
+  onOpenCommand,
+  navItems,
+  extraNavItems,
+  headerActions,
+  children,
 }: AppShellProps) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const navigate = useNavigate()
+  const location = useLocation()
 
   // Ctrl+K → Command Palette
-  useEffect(() => {
+  React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        if (onOpenCommand) onOpenCommand();
+        e.preventDefault()
+        if (onOpenCommand) onOpenCommand()
       }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onOpenCommand]);
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [onOpenCommand])
 
-  const activeOrgName = orgs.find((o) => o.id === activeOrg)?.name ?? activeOrg;
-  const role = orgs.find((o) => o.id === activeOrg)?.role;
+  const activeOrgName = orgs.find((o) => o.id === activeOrg)?.name ?? activeOrg
+  const role = orgs.find((o) => o.id === activeOrg)?.role
 
   const isActive = (href: string) =>
-    location.pathname === href || location.pathname.startsWith(href + "/");
+    location.pathname === href || location.pathname.startsWith(href + "/")
 
-  const activeItem = [...navItems, ...(extraNavItems ?? [])].find((i) => isActive(i.href));
-  const currentLabel = activeItem?.label
-    ?? (location.pathname === "/inbox" ? "Inbox" : location.pathname === "/orgs" ? "Mis Orgs" : appName);
+  const allItems = extraNavItems ? [...navItems, ...extraNavItems] : navItems
+  const activeItem = allItems.find((i) => isActive(i.href))
+  const currentLabel =
+    activeItem?.label ??
+    (location.pathname === "/inbox"
+      ? "Inbox"
+      : location.pathname === "/orgs"
+        ? "Mis Orgs"
+        : appName)
 
-  const deviceItems = navItems.filter((i) => i.section === "device");
-  const orgItems = navItems.filter((i) => i.section !== "device");
-
-  // If no items have section markers, treat all as org items
-  const hasDeviceSection = deviceItems.length > 0;
-  const allOrgItems = hasDeviceSection ? orgItems : [...deviceItems, ...orgItems];
-
-  const renderNav = (items: NavItem[], isCollapsed: boolean) =>
-    items.map((item) => (
-      <button
-        key={item.href}
-        onClick={() => { navigate(item.href); setSidebarOpen(false); }}
-        className={cn(
-          "flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-colors w-full text-left",
-          "hover:bg-accent hover:text-accent-foreground",
-          isActive(item.href)
-            ? "bg-accent text-accent-foreground font-medium"
-            : "text-muted-foreground",
-        )}>
-        <item.icon size={18} className="shrink-0" />
-        {!isCollapsed && (
-          <>
-            <span className="truncate">{item.label}</span>
-            {item.badge ? <Badge variant="destructive" className="ml-auto">{item.badge}</Badge> : null}
-          </>
-        )}
-        {isCollapsed && item.badge ? <Badge variant="destructive" className="ml-auto text-[10px] px-1">{item.badge}</Badge> : null}
-      </button>
-    ));
-
-  const renderSidebarContent = (isCollapsed: boolean, isMobile: boolean) => (
-    <div className={cn("flex flex-col h-full transition-all", isCollapsed ? "items-center" : "")}>
-      {/* Header */}
-      <div className={cn("border-b border-border flex items-center justify-between shrink-0",
-        isCollapsed ? "px-3 py-4" : "px-5 py-4")}>
-        {!isCollapsed && (
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-0.5">
-              <img src="/favicon.svg" alt="" className="w-5 h-5" />
-              <h1 className="text-base font-bold tracking-tight truncate">{appName}</h1>
+  return (
+    <TooltipProvider>
+      <SidebarProvider>
+        <Sidebar collapsible="icon">
+          {/* Header: branding + org selector */}
+          <SidebarHeader>
+            <div className="flex items-center gap-2 px-1 py-1">
+              <img src="/favicon.svg" alt="" className="size-5 shrink-0" />
+              <div className="flex flex-col min-w-0 group-data-[collapsible=icon]:hidden">
+                <span className="text-sm font-semibold leading-tight truncate">{appName}</span>
+                <span className="text-[11px] text-sidebar-foreground/60 truncate">{appSubtitle}</span>
+              </div>
             </div>
-            <p className="text-[11px] text-muted-foreground mt-0.5">{appSubtitle}</p>
-          </div>
-        )}
-        {isMobile && (
-          <button onClick={() => setSidebarOpen(false)} className="p-1 rounded-md hover:bg-accent ml-auto">
-            <X size={16} />
-          </button>
-        )}
-      </div>
 
-      {/* Navigation */}
-      <div className={cn("flex-1 overflow-y-auto py-3", isCollapsed ? "px-2" : "px-3")}>
-        {hasDeviceSection && deviceItems.length > 0 && (
-          <div className="mb-3">
-            {!isCollapsed && (
-              <p className="text-[11px] text-muted-foreground/70 font-medium uppercase tracking-wider px-3 mb-1.5">
-                Device
-              </p>
+            {orgs.length > 0 && (
+              <div className="group-data-[collapsible=icon]:hidden px-1">
+                <Select
+                  value={activeOrg}
+                  onValueChange={onSelectOrg}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Select org" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {orgs.map((o) => (
+                      <SelectItem key={o.id} value={o.id}>
+                        {o.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
-            <nav className="flex flex-col gap-0.5">{renderNav(deviceItems, isCollapsed)}</nav>
-          </div>
-        )}
 
-        {orgs.length > 0 && (
-          <div className={cn("mb-3 pt-3 border-t border-border/50", isCollapsed ? "px-0" : "px-1")}>
-            {isCollapsed ? (
-              <div className="flex justify-center mb-1">
-                <span className="text-[11px] font-semibold text-muted-foreground uppercase">
+            {/* Collapsed mode: show 2-letter org abbreviation */}
+            {orgs.length > 0 && activeOrgName && (
+              <div className="hidden group-data-[collapsible=icon]:flex justify-center px-1">
+                <span className="text-[11px] font-semibold text-sidebar-foreground/60 uppercase">
                   {activeOrgName.slice(0, 2)}
                 </span>
               </div>
-            ) : (
-              <Select value={activeOrg} onValueChange={(v) => { onSelectOrg(v); setSidebarOpen(false); }}>
-                <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select org" /></SelectTrigger>
-                <SelectContent>
-                  {orgs.map((o) => (<SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>))}
-                </SelectContent>
-              </Select>
             )}
-          </div>
-        )}
+          </SidebarHeader>
 
-        {activeOrg && allOrgItems.length > 0 && (
-          <div>
-            {!isCollapsed && hasDeviceSection && (
-              <p className="text-[11px] text-muted-foreground/70 font-medium uppercase tracking-wider px-3 mb-1.5">
-                {activeOrgName}
-              </p>
+          {/* Navigation */}
+          <SidebarContent>
+            <SidebarGroup>
+              <SidebarMenu>
+                {navItems.map((item) => (
+                  <SidebarMenuItem key={item.href}>
+                    <SidebarMenuButton
+                      onClick={() => navigate(item.href)}
+                      isActive={isActive(item.href)}
+                      tooltip={item.label}
+                    >
+                      <item.icon size={16} />
+                      <span>{item.label}</span>
+                    </SidebarMenuButton>
+                    {item.badge ? (
+                      <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>
+                    ) : null}
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+
+            {extraNavItems && extraNavItems.length > 0 && (
+              <SidebarGroup>
+                <SidebarMenu>
+                  {extraNavItems.map((item) => (
+                    <SidebarMenuItem key={item.href}>
+                      <SidebarMenuButton
+                        onClick={() => navigate(item.href)}
+                        isActive={isActive(item.href)}
+                        tooltip={item.label}
+                      >
+                        <item.icon size={16} />
+                        <span>{item.label}</span>
+                      </SidebarMenuButton>
+                      {item.badge ? (
+                        <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>
+                      ) : null}
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroup>
             )}
-            <nav className="flex flex-col gap-0.5">{renderNav(allOrgItems, isCollapsed)}</nav>
-          </div>
-        )}
+          </SidebarContent>
 
-        {extraNavItems && extraNavItems.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-border/50">
-            <nav className="flex flex-col gap-0.5">{renderNav(extraNavItems, isCollapsed)}</nav>
-          </div>
-        )}
-      </div>
+          {/* Footer: node status + theme toggle */}
+          <SidebarFooter>
+            <div className="flex items-center justify-between px-1 group-data-[collapsible=icon]:justify-center">
+              <ThemeToggle />
+              <div className="flex items-center gap-1.5 min-w-0 group-data-[collapsible=icon]:hidden">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0 animate-pulse" />
+                <span className="text-[10px] text-sidebar-foreground/50 truncate font-mono">
+                  {nodeId ? nodeId.slice(0, 14) + "…" : "—"}
+                </span>
+              </div>
+            </div>
+          </SidebarFooter>
 
-      {/* Footer: node status + collapse toggle + theme */}
-      <div className="shrink-0 border-t border-border py-3">
-        {!isCollapsed && (
-          <div className="flex items-center gap-2 px-4 mb-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-            <span className="text-[11px] text-muted-foreground truncate">{nodeId.slice(0, 18)}...</span>
-          </div>
-        )}
-        <div className={cn("flex items-center", isCollapsed ? "flex-col gap-2 px-1" : "justify-between px-4")}>
-          <ThemeToggle />
-          {!isMobile && (
-            <button
-              onClick={() => setCollapsed(!collapsed)}
-              className="p-1.5 rounded-md hover:bg-accent text-muted-foreground transition-colors hidden lg:flex"
-              title={collapsed ? "Expandir" : "Colapsar"}>
-              <ChevronLeft size={16} className={cn("transition-transform", collapsed && "rotate-180")} />
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+          <SidebarRail />
+        </Sidebar>
 
-  return (
-    <div className="min-h-screen bg-background">
-      {/* Mobile overlay */}
-      <Sheet open={sidebarOpen} onClose={() => setSidebarOpen(false)}>
-        {renderSidebarContent(false, true)}
-      </Sheet>
-
-    {/* Desktop sidebar: fixed, collapsible */}
-    <aside
-      className={cn(
-        "flex flex-col fixed inset-y-0 left-0 z-30 bg-sidebar text-sidebar-foreground border-r border-sidebar-border transition-all duration-200",
-        collapsed ? "w-16" : "w-60",
-        "max-lg:hidden",
-      )}>
-      {renderSidebarContent(collapsed, false)}
-    </aside>
-
-      {/* Main area */}
-      <div className={cn("lg:transition-all lg:duration-200", collapsed ? "lg:pl-16" : "lg:pl-60")}>
-        <header className="h-14 border-b border-border bg-background flex items-center px-4 gap-3 sticky top-0 z-20">
-          <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-1.5 -ml-1 rounded-md hover:bg-accent">
-            <Menu size={18} />
-          </button>
-          <h2 className="text-sm font-semibold truncate">{currentLabel}</h2>
-          <div className="ml-auto flex gap-2 items-center">
-            {role && <span className="hidden sm:inline text-xs text-muted-foreground">{activeOrgName} · {role}</span>}
-            {onRefresh && (
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onRefresh}><RefreshCw size={14} /></Button>
+        {/* Main content area — SidebarInset handles the left offset automatically */}
+        <SidebarInset>
+          <header
+            className={cn(
+              "flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4 sticky top-0 z-20",
+              "transition-[width,height] ease-linear"
             )}
-            {headerActions}
+          >
+            <SidebarTrigger className="-ml-1" />
+            <h2 className="text-sm font-semibold truncate">{currentLabel}</h2>
+            <div className="ml-auto flex gap-2 items-center">
+              {role && (
+                <span className="hidden sm:inline text-xs text-muted-foreground">
+                  {activeOrgName} · {role}
+                </span>
+              )}
+              {onRefresh && (
+                <Button variant="ghost" size="icon" onClick={onRefresh}>
+                  <RefreshCw size={14} />
+                </Button>
+              )}
+              {headerActions}
+            </div>
+          </header>
+
+          <div className="flex-1 overflow-auto">
+            {children}
           </div>
-        </header>
-        <main>{children}</main>
-      </div>
-    </div>
-  );
+        </SidebarInset>
+      </SidebarProvider>
+    </TooltipProvider>
+  )
 }
 
-export { type NavItem, type OrgInfo };
+export { type NavItem as NavItemType, type OrgInfo as OrgInfoType }

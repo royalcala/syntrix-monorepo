@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { EntityGrid } from "../components/EntityGrid";
+import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
 import { rolesEntity } from "../entities/roles";
 import { createRolesCollection } from "../collections/roles";
 

@@ -8,6 +8,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), reactClickToComponent()],
   resolve: {
     alias: {
+      "@": path.resolve(__dirname, "./src"),
       "@syntrix/ui": path.resolve(__dirname, "../../packages/syntrix-ui/src"),
     },
   },

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Card, CardContent } from "../components/ui/card";
-import { Button } from "../components/ui/button";
+import { Card, CardContent } from "@syntrix/ui/components/ui/card";
+import { Button } from "@syntrix/ui/components/ui/button";
 import { RefreshCw } from "lucide-react";
 
 export function Logs() {
