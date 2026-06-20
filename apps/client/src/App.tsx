@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
+import { CommandPalette, type SearchResult, type QuickAction } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
 import { Inbox } from "./screens/Inbox";
@@ -39,6 +40,8 @@ export default function App() {
   const [orgs, setOrgs] = useState<OrgInfo[]>([]);
   const [activeOrg, setActiveOrg] = useState<string>("");
   const [invites, setInvites] = useState<InvitePayload[]>([]);
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [cmdQuery, setCmdQuery] = useState("");
 
   useEffect(() => {
     invoke<string>("get_node_id").then(setNodeId);
@@ -78,6 +81,7 @@ export default function App() {
       activeOrg={activeOrg}
       onSelectOrg={(id) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }}
       onRefresh={loadOrgs}
+      onOpenCommand={() => setCmdOpen(true)}
       navItems={deviceItems}
       extraNavItems={navItems}
     >
@@ -96,6 +100,22 @@ export default function App() {
           <Route path="/orders" element={<EntityGrid entity={ordersEntity} orgId={activeOrg} role={role} />} />
         </Routes>
       </main>
+      <CommandPalette
+        open={cmdOpen}
+        onClose={() => { setCmdOpen(false); setCmdQuery(""); }}
+        results={cmdQuery ? navItems.filter((i) => i.label.toLowerCase().includes(cmdQuery.toLowerCase())).map((i) => ({
+          id: i.href, label: i.label, entity: "nav", entityLabel: "Navegar",
+        })) : []}
+        actions={[
+          { id: "new-customer", label: "Nuevo cliente", shortcut: "⌘N", action: () => navigate("/customers") },
+          { id: "new-invoice", label: "Nueva factura", action: () => navigate("/invoices") },
+          { id: "orgs", label: "Ir a Mis Orgs", action: () => navigate("/orgs") },
+          { id: "inbox", label: "Ir a Inbox", action: () => navigate("/inbox") },
+        ]}
+        onSelectResult={(r) => navigate(r.id)}
+        searchQuery={cmdQuery}
+        onSearchChange={setCmdQuery}
+      />
     </AppShell>
   );
 }
