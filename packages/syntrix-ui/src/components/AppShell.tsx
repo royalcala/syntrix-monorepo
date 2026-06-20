@@ -1,239 +1,179 @@
-import * as React from "react"
-import { useNavigate, useLocation } from "react-router-dom"
-import { RefreshCw } from "lucide-react"
-
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarHeader,
-  SidebarInset,
-  SidebarMenu,
-  SidebarMenuBadge,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarRail,
-  SidebarTrigger,
-} from "./ui/sidebar"
-import { TooltipProvider } from "./ui/tooltip"
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select"
-import { Button } from "./ui/button"
-import { ThemeToggle } from "./ThemeToggle"
-import { cn } from "../lib/utils"
+import { useState, useEffect } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { Menu, X, RefreshCw, Building2, Mail } from "lucide-react";
+import { Button } from "./ui/button";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
+import { Badge } from "./ui/badge";
+import { Sheet } from "./ui/sheet";
+import { ThemeToggle } from "./ThemeToggle";
+import { cn } from "../lib/utils";
 
 export interface NavItem {
-  href: string
-  label: string
-  icon: React.ComponentType<{ size?: number; className?: string }>
-  badge?: number
-  section?: "device" | "org"
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ size?: number }>;
+  badge?: number;
+  section?: "device" | "org";
 }
 
 export interface OrgInfo {
-  id: string
-  name: string
-  role?: string
+  id: string;
+  name: string;
+  role?: string;
 }
 
 interface AppShellProps {
-  appName: string
-  appSubtitle: string
-  nodeId: string
-  orgs: OrgInfo[]
-  activeOrg: string
-  onSelectOrg: (id: string) => void
-  onRefresh?: () => void
-  navItems: NavItem[]
-  extraNavItems?: NavItem[]
-  headerActions?: React.ReactNode
-  children: React.ReactNode
-  onOpenCommand?: () => void
+  appName: string;
+  appSubtitle: string;
+  nodeId: string;
+  orgs: OrgInfo[];
+  activeOrg: string;
+  onSelectOrg: (id: string) => void;
+  onRefresh?: () => void;
+  navItems: NavItem[];
+  extraNavItems?: NavItem[];
+  headerActions?: React.ReactNode;
+  children: React.ReactNode;
+  onOpenCommand?: () => void;
 }
 
 export function AppShell({
-  appName,
-  appSubtitle,
-  nodeId,
-  orgs,
-  activeOrg,
-  onSelectOrg,
-  onRefresh,
-  onOpenCommand,
-  navItems,
-  extraNavItems,
-  headerActions,
-  children,
+  appName, appSubtitle, nodeId, orgs, activeOrg, onSelectOrg,
+  onRefresh, onOpenCommand, navItems, extraNavItems, headerActions, children,
 }: AppShellProps) {
-  const navigate = useNavigate()
-  const location = useLocation()
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const activeOrgName = orgs.find((o) => o.id === activeOrg)?.name ?? activeOrg;
+  const role = orgs.find((o) => o.id === activeOrg)?.role;
+
+  const isActive = (item: NavItem) =>
+    location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+
+  const activeItem = [...navItems, ...(extraNavItems ?? [])].find(isActive);
+  const currentLabel = activeItem?.label
+    ?? (location.pathname === "/inbox" ? "Inbox" : location.pathname === "/orgs" ? "Mis Orgs" : appName);
 
   // Ctrl+K → Command Palette
-  React.useEffect(() => {
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault()
-        if (onOpenCommand) onOpenCommand()
-      }
-    }
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
-  }, [onOpenCommand])
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); if (onOpenCommand) onOpenCommand(); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onOpenCommand]);
 
-  const activeOrgName = orgs.find((o) => o.id === activeOrg)?.name ?? activeOrg
-  const role = orgs.find((o) => o.id === activeOrg)?.role
+  const renderNav = (items: NavItem[]) =>
+    items.map((item) => (
+      <button
+        key={item.href}
+        onClick={() => { navigate(item.href); setSidebarOpen(false); }}
+        className={cn(
+          "flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors w-full text-left",
+          isActive(item)
+            ? "bg-primary/10 text-primary font-medium"
+            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+        )}>
+        <item.icon size={18} />
+        {item.label}
+        {item.badge ? <Badge variant="destructive" className="ml-auto">{item.badge}</Badge> : null}
+      </button>
+    ));
 
-  const isActive = (href: string) =>
-    location.pathname === href || location.pathname.startsWith(href + "/")
+  const deviceItems = navItems.filter((i) => i.section === "device");
+  const orgItems = navItems.filter((i) => i.section !== "device");
 
-  const allItems = extraNavItems ? [...navItems, ...extraNavItems] : navItems
-  const activeItem = allItems.find((i) => isActive(i.href))
-  const currentLabel =
-    activeItem?.label ??
-    (location.pathname === "/inbox"
-      ? "Inbox"
-      : location.pathname === "/orgs"
-        ? "Mis Orgs"
-        : appName)
+  const sidebarContent = (
+    <>
+      <div className="px-6 py-5 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <img src="/favicon.svg" alt="" className="w-5 h-5" />
+          <div>
+            <h1 className="text-lg font-bold tracking-tight">{appName}</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">{appSubtitle}</p>
+          </div>
+        </div>
+        <button onClick={() => setSidebarOpen(false)} className="lg:hidden p-1 rounded-md hover:bg-accent">
+          <X size={18} />
+        </button>
+      </div>
+
+      <div className="px-3 py-4 flex flex-col flex-1 overflow-y-auto">
+        {deviceItems.length > 0 && (
+          <div className="mb-4">
+            <p className="text-xs text-muted-foreground uppercase tracking-wider px-3 mb-2">Device</p>
+            <nav className="flex flex-col gap-1">{renderNav(deviceItems)}</nav>
+          </div>
+        )}
+
+        {orgs.length > 0 && (
+          <div className="px-3 mb-4 pt-2 border-t border-border">
+            <Select value={activeOrg} onValueChange={(v) => { onSelectOrg(v); setSidebarOpen(false); }}>
+              <SelectTrigger><SelectValue placeholder="Select org" /></SelectTrigger>
+              <SelectContent>
+                {orgs.map((o) => (<SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {activeOrg && orgItems.length > 0 && (
+          <div>
+            <p className="text-xs text-muted-foreground uppercase tracking-wider px-3 mb-2">{activeOrgName}</p>
+            <nav className="flex flex-col gap-1">{renderNav(orgItems)}</nav>
+          </div>
+        )}
+
+        {extraNavItems && extraNavItems.length > 0 && (
+          <div className="mt-4 pt-2 border-t border-border">
+            <nav className="flex flex-col gap-1">{renderNav(extraNavItems)}</nav>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-auto px-3 py-4 border-t border-border">
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          {nodeId.slice(0, 16)}...
+        </div>
+        <div className="flex items-center px-3 py-1">
+          <ThemeToggle />
+          <span className="text-xs text-muted-foreground ml-2">Toggle theme</span>
+        </div>
+      </div>
+    </>
+  );
 
   return (
-    <TooltipProvider>
-      <SidebarProvider>
-        <Sidebar collapsible="icon">
-          {/* Header: branding + org selector */}
-          <SidebarHeader>
-            <div className="flex items-center gap-2 px-1 py-1">
-              <img src="/favicon.svg" alt="" className="size-5 shrink-0" />
-              <div className="flex flex-col min-w-0 group-data-[collapsible=icon]:hidden">
-                <span className="text-sm font-semibold leading-tight truncate">{appName}</span>
-                <span className="text-[11px] text-sidebar-foreground/60 truncate">{appSubtitle}</span>
-              </div>
-            </div>
+    <div className="min-h-screen bg-background">
+      <Sheet open={sidebarOpen} onClose={() => setSidebarOpen(false)}>
+        {sidebarContent}
+      </Sheet>
 
-            {orgs.length > 0 && (
-              <div className="group-data-[collapsible=icon]:hidden px-1">
-                <Select
-                  value={activeOrg}
-                  onValueChange={onSelectOrg}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Select org" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {orgs.map((o) => (
-                      <SelectItem key={o.id} value={o.id}>
-                        {o.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+      <aside className="max-lg:hidden w-64 bg-card border-r border-border flex-col fixed inset-y-0 left-0 z-30 flex">
+        {sidebarContent}
+      </aside>
+
+      <div className="lg:pl-64">
+        <header className="h-16 border-b border-border bg-background flex items-center px-4 md:px-6 gap-3 sticky top-0 z-20">
+          <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-2 rounded-md hover:bg-accent">
+            <Menu size={20} />
+          </button>
+          <h2 className="text-lg font-semibold truncate">{currentLabel}</h2>
+          <div className="ml-auto flex gap-2 items-center">
+            {role && <span className="hidden sm:inline text-xs text-muted-foreground mr-2">{activeOrgName} · {role}</span>}
+            {onRefresh && (
+              <Button variant="ghost" size="icon" onClick={onRefresh}><RefreshCw size={16} /></Button>
             )}
-
-            {/* Collapsed mode: show 2-letter org abbreviation */}
-            {orgs.length > 0 && activeOrgName && (
-              <div className="hidden group-data-[collapsible=icon]:flex justify-center px-1">
-                <span className="text-[11px] font-semibold text-sidebar-foreground/60 uppercase">
-                  {activeOrgName.slice(0, 2)}
-                </span>
-              </div>
-            )}
-          </SidebarHeader>
-
-          {/* Navigation */}
-          <SidebarContent>
-            <SidebarGroup>
-              <SidebarMenu>
-                {navItems.map((item) => (
-                  <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton
-                      onClick={() => navigate(item.href)}
-                      isActive={isActive(item.href)}
-                      tooltip={item.label}
-                    >
-                      <item.icon size={16} />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                    {item.badge ? (
-                      <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>
-                    ) : null}
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroup>
-
-            {extraNavItems && extraNavItems.length > 0 && (
-              <SidebarGroup>
-                <SidebarMenu>
-                  {extraNavItems.map((item) => (
-                    <SidebarMenuItem key={item.href}>
-                      <SidebarMenuButton
-                        onClick={() => navigate(item.href)}
-                        isActive={isActive(item.href)}
-                        tooltip={item.label}
-                      >
-                        <item.icon size={16} />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                      {item.badge ? (
-                        <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>
-                      ) : null}
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
-              </SidebarGroup>
-            )}
-          </SidebarContent>
-
-          {/* Footer: node status + theme toggle */}
-          <SidebarFooter>
-            <div className="flex items-center justify-between px-1 group-data-[collapsible=icon]:justify-center">
-              <ThemeToggle />
-              <div className="flex items-center gap-1.5 min-w-0 group-data-[collapsible=icon]:hidden">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0 animate-pulse" />
-                <span className="text-[10px] text-sidebar-foreground/50 truncate font-mono">
-                  {nodeId ? nodeId.slice(0, 14) + "…" : "—"}
-                </span>
-              </div>
-            </div>
-          </SidebarFooter>
-
-          <SidebarRail />
-        </Sidebar>
-
-        {/* Main content area — SidebarInset handles the left offset automatically */}
-        <SidebarInset>
-          <header
-            className={cn(
-              "flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4 sticky top-0 z-20",
-              "transition-[width,height] ease-linear"
-            )}
-          >
-            <SidebarTrigger className="-ml-1" />
-            <h2 className="text-sm font-semibold truncate">{currentLabel}</h2>
-            <div className="ml-auto flex gap-2 items-center">
-              {role && (
-                <span className="hidden sm:inline text-xs text-muted-foreground">
-                  {activeOrgName} · {role}
-                </span>
-              )}
-              {onRefresh && (
-                <Button variant="ghost" size="icon" onClick={onRefresh}>
-                  <RefreshCw size={14} />
-                </Button>
-              )}
-              {headerActions}
-            </div>
-          </header>
-
-          <div className="flex-1 overflow-auto">
-            {children}
+            {headerActions}
           </div>
-        </SidebarInset>
-      </SidebarProvider>
-    </TooltipProvider>
-  )
+        </header>
+
+        <main>{children}</main>
+      </div>
+    </div>
+  );
 }
 
-export { type NavItem as NavItemType, type OrgInfo as OrgInfoType }
+export { type NavItem, type OrgInfo };
