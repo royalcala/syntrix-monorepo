@@ -200,8 +200,9 @@ export function AppShell({
     {/* Desktop sidebar: fixed, collapsible */}
     <aside
       className={cn(
-        "hidden lg:flex flex-col fixed inset-y-0 left-0 z-30 bg-card border-r transition-all duration-200",
+        "flex-col fixed inset-y-0 left-0 z-30 bg-card border-r transition-all duration-200",
         collapsed ? "w-16" : "w-60",
+        "max-lg:hidden",
       )}>
       {sidebarContent}
     </aside>
