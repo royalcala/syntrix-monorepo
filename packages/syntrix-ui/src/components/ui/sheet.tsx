@@ -21,7 +21,7 @@ export function Sheet({ open, onClose, children }: SheetProps) {
   return (
     <div className="fixed inset-0 z-50 lg:hidden">
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
-      <div className="fixed left-0 top-0 bottom-0 w-72 bg-background border-r border-border shadow-xl">
+      <div className="fixed left-0 inset-y-0 w-72 h-screen bg-sidebar text-sidebar-foreground border-r border-sidebar-border shadow-xl flex flex-col">
         {children}
       </div>
     </div>
