@@ -3,11 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./src/index.ts",
   "exports": {
-    "./components/*": "./src/components/*",
-    "./fields/*": "./src/fields/*",
-    "./lib/*": "./src/lib/*",
-    "./collections/*": "./src/collections/*"
+    ".": "./src/index.ts",
+    "./*": "./src/*"
   },
   "peerDependencies": {
     "react": "^19.1.0",

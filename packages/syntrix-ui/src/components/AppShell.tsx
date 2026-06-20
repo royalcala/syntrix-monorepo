@@ -101,7 +101,10 @@ export function AppShell({
         collapsed ? "px-3 py-4" : "px-5 py-4")}>
         {!collapsed && (
           <div className="min-w-0">
-            <h1 className="text-base font-bold tracking-tight truncate">{appName}</h1>
+            <div className="flex items-center gap-2 mb-0.5">
+              <img src="/favicon.svg" alt="" className="w-5 h-5" />
+              <h1 className="text-base font-bold tracking-tight truncate">{appName}</h1>
+            </div>
             <p className="text-[11px] text-muted-foreground mt-0.5">{appSubtitle}</p>
           </div>
         )}
