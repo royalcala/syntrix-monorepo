@@ -83,7 +83,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
           if (field?.type === "date") {
             const d = value instanceof Date ? value : new Date(String(value));
             if (isNaN(d.getTime())) return <span className="text-muted-foreground/40">—</span>;
-            return <span>{d.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</span>;
+            const now = new Date();
+            const diffMs = now.getTime() - d.getTime();
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const display = diffDays === 0 ? "Hoy"
+              : diffDays === 1 ? "Ayer"
+              : diffDays < 7 ? `Hace ${diffDays} días`
+              : d.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" });
+            return <span>{display}</span>;
           }
 
           return <span className="truncate">{String(value)}</span>;
