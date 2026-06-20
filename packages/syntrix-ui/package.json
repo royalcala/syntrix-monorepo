@@ -13,7 +13,6 @@
     "react-dom": "^19.1.0"
   },
   "dependencies": {
-    "@base-ui/react": "^1.6.0",
     "class-variance-authority": "^0.7.1",
     "@radix-ui/react-select": "^2.3.1",
     "@tanstack/db": "^0.6.9",
