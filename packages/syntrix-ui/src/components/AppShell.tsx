@@ -39,7 +39,7 @@ interface AppShellProps {
 
 export function AppShell({
   appName, appSubtitle, nodeId, orgs, activeOrg, onSelectOrg,
-  onRefresh, navItems, extraNavItems, headerActions, children,
+  onRefresh, onOpenCommand, navItems, extraNavItems, headerActions, children,
 }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
