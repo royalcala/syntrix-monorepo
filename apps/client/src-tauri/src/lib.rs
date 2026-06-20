@@ -1,0 +1,221 @@
+use std::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use tauri::{Manager, Emitter};
+use tracing_subscriber::{Layer, prelude::*};
+
+mod identity;
+mod events;
+mod sync;
+mod invite;
+mod seed;
+
+pub use identity::AppState;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OrgInfo { pub id: String, pub name: String, pub role: String }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Invoice { pub id: String, pub customer_id: String, pub total: f64, pub date: String }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Product { pub id: String, pub name: String, pub price: f64 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Customer { pub id: String, pub name: String }
+
+#[tauri::command]
+fn get_node_id(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(hex::encode(s.node_id()))
+}
+
+#[tauri::command]
+fn list_orgs(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<OrgInfo>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.list_orgs())
+}
+
+#[tauri::command]
+fn set_active_org(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> Result<(), String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    s.set_active_org(&org_id)
+}
+
+#[tauri::command]
+fn commit_event(state: tauri::State<'_, Mutex<AppState>>, event_type: String, payload: String) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    events::commit_event(&s, &event_type, &payload).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    let name = org_name.unwrap_or_else(|| "org-unknown".into());
+
+    // Try parsing as new format (with tickets array), then old format (control_ticket + data_ticket)
+    let invite: invite::InvitePayload = serde_json::from_str(&invite_json)
+        .map_err(|e| format!("invalid invite json: {}", e))?;
+
+    let mut final_org_id = String::new();
+    let role = invite.role.clone();
+
+    for ti in &invite.tickets {
+        let ticket: iroh_docs::DocTicket = ti.ticket
+            .parse()
+            .map_err(|e| format!("invalid ticket for {}: {}", ti.ns, e))?;
+
+        if final_org_id.is_empty() {
+            final_org_id = hex::encode(&ticket.capability.id().as_bytes()[..4]);
+        }
+
+        let doc = tauri::async_runtime::block_on(s.api().import(ticket))
+            .map_err(|e| format!("import ticket for {}: {}", ti.ns, e))?;
+
+        s.add_org_docs(&ti.ns, &final_org_id, &name, &role, doc);
+    }
+
+    Ok(OrgInfo { id: final_org_id, name, role })
+}
+
+#[tauri::command]
+fn sync_push(state: tauri::State<'_, Mutex<AppState>>, org_id: String, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    sync::sync_push(&mut s, &org_id, batch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sync_pull(state: tauri::State<'_, Mutex<AppState>>, org_id: String, cursor: Option<sync::HlcCursor>) -> Result<sync::SyncPullResult, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(sync::sync_pull(&s, &org_id, cursor))
+}
+
+#[tauri::command]
+fn sync_ping(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> Result<sync::ConnectionState, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    sync::sync_ping(&s, &org_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(sync::sync_status(&s))
+}
+
+#[tauri::command]
+fn get_invites(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<invite::InvitePayload>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.invite_handler.get_pending())
+}
+
+#[tauri::command]
+fn debug_invite_handler(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let pending = s.invite_handler.get_pending().len();
+    Ok(format!("invite handler active, {} pending, node {}", pending, hex::encode(s.node_id())[..8].to_string()))
+}
+
+#[tauri::command]
+fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let addr = s.endpoint().addr();
+    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
+    Ok(serde_json::json!({
+        "node_id": hex::encode(s.node_id()),
+        "addrs": addrs,
+    }).to_string())
+}
+
+#[tauri::command]
+fn query_invoices(state: tauri::State<'_, Mutex<AppState>>, _filter: String) -> Result<Vec<Invoice>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.list_invoices())
+}
+
+#[tauri::command]
+fn query_products(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<Product>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.list_products())
+}
+
+#[tauri::command]
+fn get_logs() -> Result<String, String> {
+    let log_dir = dirs_next::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("syntrix")
+        .join("logs");
+    let log_file = log_dir.join("syntrix-client.log");
+    if log_file.exists() {
+        std::fs::read_to_string(log_file).map_err(|e| e.to_string())
+    } else {
+        Ok("No logs yet.".into())
+    }
+}
+
+#[tauri::command]
+fn query_customers(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<Customer>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.list_customers())
+}
+
+#[tauri::command]
+fn seed_dev_data(state: tauri::State<'_, Mutex<AppState>>) -> Result<usize, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    seed::seed_dev_data(&s).map_err(|e| e.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // File logging (rotating daily)
+    let log_dir = dirs_next::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("syntrix")
+        .join("logs");
+    std::fs::create_dir_all(&log_dir).ok();
+    
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "syntrix-client.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    
+    let console_layer = tracing_subscriber::fmt::layer()
+        .with_filter(tracing_subscriber::EnvFilter::new("iroh=debug,syntrix=info"));
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(tracing_subscriber::EnvFilter::new("iroh=debug,syntrix=debug"));
+    
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(file_layer)
+        .init();
+    std::mem::forget(_guard);
+
+    let app_state = tauri::async_runtime::block_on(async {
+        AppState::new().await.expect("failed to initialize iroh")
+    });
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let state = app.state::<Mutex<AppState>>();
+            let s = state.lock().unwrap();
+            if let Some(rx) = s.invite_rx.lock().unwrap().take() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::sync::mpsc::UnboundedReceiver;
+                    let mut rx: UnboundedReceiver<crate::invite::InvitePayload> = rx;
+                    while let Some(invite) = rx.recv().await {
+                        let _ = handle.emit("invite-received", invite);
+                    }
+                });
+            }
+            drop(s);
+            Ok(())
+        })
+        .manage(Mutex::new(app_state))
+        .invoke_handler(tauri::generate_handler![
+            get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
+            commit_event, sync_status, sync_push, sync_pull, sync_ping,
+            query_invoices, query_products, query_customers, seed_dev_data, get_logs,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running syntrix-client");
+}

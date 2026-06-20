@@ -1,0 +1,8 @@
+{
+  "name": "syntrix",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @syntrix/client dev",
+    "build": "pnpm --filter @syntrix/client build && pnpm --filter @syntrix/admin build"
+  }
+}

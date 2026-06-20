@@ -1,0 +1,1 @@
+fn main() { syntrix_client_lib::run() }
