@@ -139,6 +139,23 @@ impl AppState {
     pub fn list_org_roles(&self, org: &str) -> Vec<RoleInfo> {
         self.roles.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
+
+    pub fn set_role(&mut self, org: &str, name: &str, can_open: Vec<String>, can_write: Vec<String>) {
+        if let Some(roles) = self.roles.get_mut(org) {
+            roles.insert(name.into(), RoleInfo {
+                name: name.into(),
+                can_open: can_open.clone(),
+                can_write: can_write.clone(),
+            });
+        }
+        // Update registry too
+        if let Ok(mut reg) = self.registry.write() {
+            reg.upsert_role(org.into(), name.into(), iroh_syntrix_docs::registry::RoleGrants {
+                can_open,
+                can_write,
+            });
+        }
+    }
 }
 
 struct RoleGrants { can_open: Vec<String>, can_write: Vec<String> }

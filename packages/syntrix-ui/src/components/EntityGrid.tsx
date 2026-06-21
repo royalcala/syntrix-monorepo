@@ -72,6 +72,24 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
             return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[String(value)] ?? "bg-muted text-muted-foreground"}`}>{value as string}</span>;
           }
 
+          if (field?.type === "multi-select") {
+            const arr = Array.isArray(value) ? value : [];
+            if (arr.length === 0) return <span className="text-muted-foreground/30">—</span>;
+            return (
+              <div className="flex gap-1 flex-wrap">
+                {arr.map((item, idx) => {
+                  const safeItem = typeof item === "object" && item !== null ? ((item as any).value || (item as any).id || JSON.stringify(item)) : String(item);
+                  const label = field.options?.find((o) => o.value === safeItem)?.label ?? safeItem;
+                  return (
+                    <span key={idx} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-secondary text-secondary-foreground">
+                      {label}
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          }
+
           if (field?.type === "boolean") return value ? <span className="text-green-600 font-medium">✓</span> : <span className="text-muted-foreground/30">—</span>;
 
           if (field?.type === "currency") {

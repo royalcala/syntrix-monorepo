@@ -138,7 +138,7 @@ pub async fn send_invite(
     role: &str,
 ) -> anyhow::Result<()> {
     // Try parsing as JSON (full address), fall back to raw hex node_id
-    let (peer, addrs, addr) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
+    let (peer, addrs, _addr) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"].as_str()
             .ok_or_else(|| anyhow::anyhow!("invalid addr json: missing node_id"))?;
         let node_id_bytes = hex::decode(node_id_hex)?;
@@ -213,7 +213,7 @@ pub async fn send_invite(
         Ok(c) => c,
         Err(_) => {
             let addr = iroh::EndpointAddr::from_parts(peer, addrs);
-            endpoint.connect(addr, b"/syntrix/invite/1").await.map_err(|e| {
+            endpoint.connect(addr, b"/syntrix/invite/1").await.map_err(|_e| {
                 anyhow::anyhow!("Could not reach this device. It may be offline, restarted (new ID), or already a member.")
             })?
         }
@@ -224,5 +224,60 @@ pub async fn send_invite(
     // Wait for client to read before closing connection (race condition fix)
     let _ = conn.closed().await;
 
+    Ok(())
+}
+
+pub async fn create_role(
+    state: &mut AppState, org: &str, name: &str, can_open: Vec<String>, can_write: Vec<String>,
+) -> anyhow::Result<()> {
+    let org_state = state.get_org(org).ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
+    let doc = &org_state.control_doc;
+    let author = state.author();
+
+    let role_key = format!("roles/{}", name);
+    let existing = doc.get_exact(author, role_key.as_bytes(), false).await?;
+    if existing.is_some() {
+        return Err(anyhow::anyhow!("El rol {} ya existe", name));
+    }
+
+    let grants = serde_json::json!({
+        "can_open": can_open,
+        "can_write": can_write,
+    });
+    doc.set_bytes(author, role_key.into_bytes(), serde_json::to_vec(&grants)?).await?;
+
+    // Update in-memory
+    state.set_role(org, name, can_open, can_write);
+    Ok(())
+}
+
+pub async fn update_role(
+    state: &mut AppState, org: &str, key: &str, changes: std::collections::HashMap<String, serde_json::Value>,
+) -> anyhow::Result<()> {
+    let org_state = state.get_org(org).ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
+    let doc = &org_state.control_doc;
+    let author = state.author();
+
+    let role_key = format!("roles/{}", key);
+    let entry = doc.get_exact(author, role_key.as_bytes(), false).await?
+        .ok_or_else(|| anyhow::anyhow!("Role {} not found", key))?;
+    
+    let bytes = doc.read_to_bytes(&entry).await?;
+    let mut role_json: serde_json::Value = serde_json::from_slice(&bytes)?;
+
+    // Apply partial changes
+    if let Some(obj) = role_json.as_object_mut() {
+        for (k, v) in changes {
+            obj.insert(k, v);
+        }
+    }
+
+    doc.set_bytes(author, role_key.into_bytes(), serde_json::to_vec(&role_json)?).await?;
+
+    // Update in-memory state
+    let can_open = role_json["can_open"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    let can_write = role_json["can_write"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    state.set_role(org, key, can_open, can_write);
+    
     Ok(())
 }

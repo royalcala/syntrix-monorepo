@@ -85,6 +85,26 @@ fn list_roles(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<V
 }
 
 #[tauri::command]
+fn create_role(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org: String, name: String, can_open: Vec<String>, can_write: Vec<String>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(admin::create_role(&mut state, &org, &name, can_open, can_write))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_role(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org: String, key: String, changes: std::collections::HashMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(admin::update_role(&mut state, &org, &key, changes))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn network_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     Ok(admin::network_status(&state))
@@ -163,6 +183,7 @@ pub fn run() {
             get_node_id, list_orgs, create_org,
             add_device, update_device, list_devices, list_roles, network_status,
             share_org, send_invite, get_logs,
+            create_role, update_role,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-admin");

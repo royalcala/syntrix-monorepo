@@ -7,8 +7,34 @@ export const rolesEntity: EntityDefinition = {
   collection: null as never,
   fields: [
     { key: "name", label: "Nombre", type: "text", width: 180, editable: false, sortable: true },
-    { key: "can_open", label: "Lectura", type: "text", width: 300, editable: true, sortable: false },
-    { key: "can_write", label: "Escritura", type: "text", width: 300, editable: true, sortable: false },
+    { 
+      key: "can_open", 
+      label: "Lectura", 
+      type: "multi-select", 
+      width: 300, 
+      editable: true, 
+      sortable: false,
+      options: [
+        { label: "Dispositivos", value: "devices" },
+        { label: "Organizaciones", value: "orgs" },
+        { label: "Roles", value: "roles" },
+        { label: "Logs", value: "logs" }
+      ]
+    },
+    { 
+      key: "can_write", 
+      label: "Escritura", 
+      type: "multi-select", 
+      width: 300, 
+      editable: true, 
+      sortable: false,
+      options: [
+        { label: "Dispositivos", value: "devices" },
+        { label: "Organizaciones", value: "orgs" },
+        { label: "Roles", value: "roles" },
+        { label: "Logs", value: "logs" }
+      ]
+    },
   ],
   views: [
     {

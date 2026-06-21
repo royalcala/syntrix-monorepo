@@ -110,6 +110,28 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
                       )).map((opt) => (<SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>))}
                     </SelectContent>
                   </Select>
+                ) : field.type === "multi-select" ? (
+                  <div className="flex flex-wrap gap-2">
+                    {(field.options ?? []).map((opt) => {
+                      const arr = Array.isArray(value) ? value : [];
+                      const isSelected = arr.includes(opt.value);
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleFieldChange(field.key, isSelected ? arr.filter((v) => v !== opt.value) : [...arr, opt.value]);
+                          }}
+                          className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                            isSelected ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-input hover:bg-accent hover:text-accent-foreground"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 ) : field.type === "boolean" ? (
                   <Switch checked={!!value} onCheckedChange={(v) => handleFieldChange(field.key, v)} />
                 ) : field.type === "date" ? (
@@ -131,6 +153,15 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
                 {field.type === "status" ? <StatusBadge status={String(value ?? "")} />
                 : field.type === "boolean" ? (value ? <Check className="w-4 h-4 text-green-600" /> : <X className="w-4 h-4 text-muted-foreground/30" />)
                 : field.type === "currency" ? `$${Number(value ?? 0).toFixed(2)}`
+                : field.type === "multi-select" ? (
+                  <div className="flex gap-1 flex-wrap">
+                    {Array.isArray(value) && value.length > 0 ? value.map((item, idx) => {
+                      const safeItem = typeof item === "object" && item !== null ? ((item as any).value || JSON.stringify(item)) : String(item);
+                      const label = field.options?.find((o) => o.value === safeItem)?.label ?? safeItem;
+                      return <span key={idx} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-secondary text-secondary-foreground">{label}</span>;
+                    }) : <span className="text-muted-foreground/50">—</span>}
+                  </div>
+                )
                 : String(value ?? "—")}
               </div>
             )}
