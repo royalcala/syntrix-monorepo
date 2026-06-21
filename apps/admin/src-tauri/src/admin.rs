@@ -261,8 +261,7 @@ pub async fn update_role(
     let role_key = format!("roles/{}", key);
     let entry = doc.get_exact(author, role_key.as_bytes(), false).await?
         .ok_or_else(|| anyhow::anyhow!("Role {} not found", key))?;
-    
-    let bytes = doc.read_to_bytes(&entry).await?;
+    let bytes = state.store().blobs().get_bytes(entry.content_hash()).await?;
     let mut role_json: serde_json::Value = serde_json::from_slice(&bytes)?;
 
     // Apply partial changes

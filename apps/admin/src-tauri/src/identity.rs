@@ -76,6 +76,7 @@ impl AppState {
     pub fn api(&self) -> &iroh_docs::api::DocsApi { &self.docs_api }
     pub fn author(&self) -> iroh_docs::AuthorId { self.author }
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
+    pub fn store(&self) -> &iroh_blobs::store::mem::MemStore { &self._store }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn list_orgs(&self) -> Vec<String> { self.orgs.keys().cloned().collect() }
 
