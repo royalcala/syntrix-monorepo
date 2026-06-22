@@ -25,6 +25,11 @@
     "lucide-react": "^0.536.0",
     "sonner": "^2",
     "tailwind-merge": "^2.6.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "react-router-dom": "^7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6"
   }
 }

@@ -17,7 +17,8 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@syntrix/ui/*": ["../../packages/syntrix-ui/src/*"]
     }
   },
   "include": ["src"],

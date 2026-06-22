@@ -76,7 +76,7 @@ fn default_role_grants(role: &str) -> serde_json::Value {
 }
 
 pub async fn update_device(
-    state: &mut AppState, org: &str, node_id: &str, active: bool, role: Option<String>,
+    state: &mut AppState, org: &str, node_id: &str, active: bool, role: Option<String>, name: Option<String>, person: Option<String>,
 ) -> anyhow::Result<()> {
     let org_state = state.get_org(org)
         .ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
@@ -84,11 +84,22 @@ pub async fn update_device(
     let author = state.author();
 
     let key = format!("members/{}", node_id);
-    let mut value = serde_json::json!({"active": active});
-    if let Some(r) = role { value["role"] = serde_json::Value::String(r); }
+    let entry = doc.get_exact(author, key.as_bytes(), false).await?;
+    let mut value = if let Some(e) = entry {
+        let bytes = state.store().blobs().get_bytes(e.content_hash()).await?;
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    value["active"] = serde_json::Value::Bool(active);
+    if let Some(r) = role.clone() { value["role"] = serde_json::Value::String(r); }
+    if let Some(n) = name.clone() { value["name"] = serde_json::Value::String(n); }
+    if let Some(p) = person.clone() { value["person"] = serde_json::Value::String(p); }
+
     doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&value)?).await?;
 
-    state.set_device_active(org, node_id, active);
+    state.update_device(org, node_id, active, role, name, person);
     Ok(())
 }
 

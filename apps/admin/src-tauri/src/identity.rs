@@ -116,9 +116,22 @@ impl AppState {
         });
     }
 
-    pub fn set_device_active(&mut self, org: &str, node_id: &str, active: bool) {
+    pub fn update_device(
+        &mut self,
+        org: &str,
+        node_id: &str,
+        active: bool,
+        role: Option<String>,
+        name: Option<String>,
+        person: Option<String>,
+    ) {
         if let Some(devs) = self.devices.get_mut(org) {
-            if let Some(d) = devs.get_mut(node_id) { d.active = active; }
+            if let Some(d) = devs.get_mut(node_id) {
+                d.active = active;
+                if let Some(r) = &role { d.role = r.clone(); }
+                if let Some(n) = &name { d.name = n.clone(); }
+                if let Some(p) = &person { d.person = p.clone(); }
+            }
         }
         // Update registry too
         if let Ok(mut reg) = self.registry.write() {
@@ -126,9 +139,25 @@ impl AppState {
             let mut id = [0u8; 32];
             let len = node_id_bytes.len().min(32);
             id[..len].copy_from_slice(&node_id_bytes[..len]);
+
+            // Retain existing values if not provided
+            let mut current_role = String::new();
+            let mut current_person = String::new();
+            let mut current_name = String::new();
+
+            if let Some(devs) = self.devices.get(org) {
+                if let Some(d) = devs.get(node_id) {
+                    current_role = d.role.clone();
+                    current_person = d.person.clone();
+                    current_name = d.name.clone();
+                }
+            }
+
             reg.upsert_device(org.into(), id, iroh_syntrix_docs::registry::Device {
                 node_id: id, active,
-                role: String::new(), person: String::new(), name: String::new(),
+                role: role.unwrap_or(current_role),
+                person: person.unwrap_or(current_person),
+                name: name.unwrap_or(current_name),
             });
         }
     }

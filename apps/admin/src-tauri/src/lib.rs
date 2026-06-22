@@ -64,11 +64,11 @@ fn add_device(
 #[tauri::command]
 fn update_device(
     state: tauri::State<'_, Mutex<AppState>>,
-    org: String, node_id: String, active: bool, role: Option<String>,
+    org: String, node_id: String, active: bool, role: Option<String>, name: Option<String>, person: Option<String>,
 ) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
     tauri::async_runtime::block_on(
-        admin::update_device(&mut state, &org, &node_id, active, role)
+        admin::update_device(&mut state, &org, &node_id, active, role, name, person)
     ).map_err(|e| e.to_string())
 }
 

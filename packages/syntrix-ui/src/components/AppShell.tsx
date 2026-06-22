@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Menu, X, RefreshCw, Building2, Mail } from "lucide-react";
+import { Menu, X, RefreshCw } from "lucide-react";
 import { Button } from "./ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
 import { Badge } from "./ui/badge";
@@ -175,5 +175,3 @@ export function AppShell({
     </div>
   );
 }
-
-export { type NavItem, type OrgInfo };

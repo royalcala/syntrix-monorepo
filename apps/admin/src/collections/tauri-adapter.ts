@@ -1,15 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  CollectionConfig,
   InsertMutationFnParams,
   UpdateMutationFnParams,
   DeleteMutationFnParams,
   SyncConfig,
 } from "@tanstack/db";
 
-interface TauriCollectionConfig<TItem extends { id: string | number }> {
+interface TauriCollectionConfig<
+  TItem extends { id: string | number },
+  TSchema = any,
+> {
   id: string;
-  schema: CollectionConfig<TItem>["schema"];
+  schema: TSchema;
   getKey: (item: TItem) => string | number;
   listCommand: string;
   listArgs?: Record<string, unknown>;
@@ -19,14 +21,16 @@ interface TauriCollectionConfig<TItem extends { id: string | number }> {
   mapRow?: (item: unknown) => TItem;
 }
 
-export function tauriCollectionOptions<TItem extends { id: string | number }>(
-  config: TauriCollectionConfig<TItem>,
-): CollectionConfig<TItem> {
+export function tauriCollectionOptions<
+  TItem extends { id: string | number },
+>(
+  config: TauriCollectionConfig<TItem, any>,
+): any {
   const mapItem = config.mapRow ?? ((item: unknown) => item as TItem);
 
   // Captured sync callbacks for confirming mutations locally
   let syncBegin: (() => void) | null = null;
-  let syncWrite: ((msg: { type: string; value?: unknown; key?: unknown }) => void) | null = null;
+  let syncWrite: ((msg: any) => void) | null = null;
   let syncCommit: (() => void) | null = null;
 
   return {
@@ -65,7 +69,21 @@ export function tauriCollectionOptions<TItem extends { id: string | number }>(
       ? async (params: InsertMutationFnParams<TItem>) => {
           for (const m of params.transaction.mutations) {
             if (m.type === "insert") {
-              await invoke(config.insertCommand!, { ...config.listArgs, ...m.modified as Record<string, unknown> });
+              let payload: Record<string, unknown> = {};
+              if (config.id === "devices") {
+                const item = m.modified as any;
+                payload = {
+                  org: config.listArgs?.org,
+                  nodeId: item.node_id,
+                  name: item.name || (item.node_id as string).slice(0, 12),
+                  person: item.person || "user",
+                  role: item.role,
+                  deviceAddr: item.device_addr || "",
+                };
+              } else {
+                payload = { ...config.listArgs, ...m.modified as Record<string, unknown> };
+              }
+              await invoke(config.insertCommand!, payload);
               // Confirm locally to move from optimistic → synced
               if (syncBegin && syncWrite && syncCommit) {
                 syncBegin();
@@ -81,7 +99,20 @@ export function tauriCollectionOptions<TItem extends { id: string | number }>(
       ? async (params: UpdateMutationFnParams<TItem>) => {
           for (const m of params.transaction.mutations) {
             if (m.type === "update") {
-              await invoke(config.updateCommand!, { ...config.listArgs, key: m.key, changes: m.changes });
+              let payload: Record<string, unknown> = {};
+              if (config.id === "devices") {
+                payload = {
+                  org: config.listArgs?.org,
+                  nodeId: m.key,
+                  active: (m.modified as any).active,
+                  role: (m.modified as any).role,
+                  name: (m.modified as any).name,
+                  person: (m.modified as any).person,
+                };
+              } else {
+                payload = { ...config.listArgs, key: m.key, changes: m.changes };
+              }
+              await invoke(config.updateCommand!, payload);
               if (syncBegin && syncWrite && syncCommit) {
                 syncBegin();
                 syncWrite({ type: "update", key: m.key, value: m.modified as unknown });
