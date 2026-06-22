@@ -28,10 +28,10 @@ host-admin:
 host-client:
     cd apps/client && pnpm dev --host
 
-# [En laptop-rao] Compila y ejecuta la ventana local de admin conectándose a server-1 (ej. just remote-admin 192.168.1.10)
-remote-admin server_ip="192.168.1.10":
+# [En laptop-rao] Compila y ejecuta la ventana local de admin conectándose a server-1 (ej. just remote-admin 100.64.0.2:1421)
+remote-admin server_ip="100.64.0.2:1421":
     cd apps/admin && cd src-tauri && cargo tauri dev --config '{"build": {"devUrl": "http://{{server_ip}}:1421", "beforeDevCommand": ""}}'
 
-# [En laptop-rao] Compila y ejecuta la ventana local de client conectándose a server-1 (ej. just remote-client 192.168.1.10)
-remote-client server_ip="192.168.1.10":
+# [En laptop-rao] Compila y ejecuta la ventana local de client conectándose a server-1 (ej. just remote-client 100.64.0.2:1421)
+remote-client server_ip="100.64.0.2:1421":
     cd apps/client && cd src-tauri && cargo tauri dev --config '{"build": {"devUrl": "http://{{server_ip}}:1420", "beforeDevCommand": ""}}'
