@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Users, Shield, Building2, Terminal, Plus } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
@@ -63,7 +63,7 @@ export default function App() {
           </>
         }>
           <Routes>
-            <Route index element={<DevicesGridPage org={activeOrg} />} />
+            <Route index element={<Navigate to="/devices" replace />} />
             <Route path="/devices" element={<DevicesGridPage org={activeOrg} />} />
             <Route path="/roles" element={<RolesGridPage org={activeOrg} />} />
             <Route path="/orgs" element={<OrgsGridPage />} />

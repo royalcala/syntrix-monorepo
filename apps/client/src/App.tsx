@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
@@ -93,7 +93,7 @@ export default function App() {
             loadOrgs();
           }} />} />
           <Route path="/orgs" element={<OrgsScreen nodeId={nodeId} orgs={orgs} setActiveOrg={(id) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }} />} />
-          <Route index element={<EntityGrid entity={customersEntity} orgId={activeOrg} role={role} />} />
+          <Route index element={<Navigate to="/customers" replace />} />
           <Route path="/customers" element={<EntityGrid entity={customersEntity} orgId={activeOrg} role={role} />} />
           <Route path="/invoices" element={<EntityGrid entity={invoicesEntity} orgId={activeOrg} role={role} />} />
           <Route path="/products" element={<EntityGrid entity={productsEntity} orgId={activeOrg} role={role} />} />
@@ -121,6 +121,7 @@ export default function App() {
 }
 
 function OrgsScreen({ nodeId, orgs, setActiveOrg }: { nodeId: string; orgs: OrgInfo[]; setActiveOrg: (id: string) => void }) {
+  const navigate = useNavigate();
   const [addr, setAddr] = useState<string>("");
   const [copied, setCopied] = useState(false);
   useEffect(() => { invoke<string>("get_endpoint_addr").then(setAddr); }, []);
@@ -146,7 +147,7 @@ function OrgsScreen({ nodeId, orgs, setActiveOrg }: { nodeId: string; orgs: OrgI
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {orgs.map((o) => (
             <div key={o.id} className="bg-card rounded-xl border border-border p-5 hover:shadow-md transition-shadow cursor-pointer"
-                 onClick={() => { setActiveOrg(o.id); window.location.hash = "/"; }}>
+                 onClick={() => { setActiveOrg(o.id); navigate("/"); }}>
               <h3 className="font-semibold text-lg">{o.name}</h3>
               <Badge variant="outline" className="mt-2">{o.role}</Badge>
             </div>
