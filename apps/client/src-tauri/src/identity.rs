@@ -15,7 +15,7 @@ pub struct AppState {
     secret: SecretKey,
     _endpoint: Endpoint,
     _gossip: iroh_gossip::net::Gossip,
-    _store: iroh_blobs::store::mem::MemStore,
+    _store: iroh_blobs::store::fs::Store,
     _router: iroh::protocol::Router,
     _invite_router: iroh::protocol::Router,
     docs_api: iroh_docs::api::DocsApi,
@@ -44,7 +44,31 @@ pub struct OrgState {
 
 impl AppState {
     pub async fn new() -> anyhow::Result<Self> {
-        let secret = SecretKey::generate();
+        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+            std::path::PathBuf::from(custom_path)
+        } else {
+            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix")
+        };
+        std::fs::create_dir_all(&data_dir).ok();
+
+        let key_path = data_dir.join("keypair.bytes");
+        let secret = if key_path.exists() {
+            let bytes = std::fs::read(&key_path)?;
+            if bytes.len() == 32 {
+                let mut b = [0u8; 32];
+                b.copy_from_slice(&bytes);
+                SecretKey::from_bytes(&b)
+            } else {
+                let sk = SecretKey::generate();
+                std::fs::write(&key_path, sk.to_bytes())?;
+                sk
+            }
+        } else {
+            let sk = SecretKey::generate();
+            std::fs::write(&key_path, sk.to_bytes())?;
+            sk
+        };
+
         let ep = Endpoint::builder(N0)
             .secret_key(secret.clone())
             .ca_roots_config(CaRootsConfig::insecure_skip_verify())
@@ -53,15 +77,20 @@ impl AppState {
             .await?;
         ep.online().await;
 
-        let store = iroh_blobs::store::mem::MemStore::new();
+        let blobs_dir = data_dir.join("blobs");
+        std::fs::create_dir_all(&blobs_dir).ok();
+        let store = iroh_blobs::store::fs::Store::load(&blobs_dir).await?;
+
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
 
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
         let accept_cb = iroh_syntrix_docs::accept::make_accept_cb(registry.clone());
 
-        let docs = iroh_docs::protocol::Docs::memory()
+        let docs_dir = data_dir.join("docs");
+        std::fs::create_dir_all(&docs_dir).ok();
+        let docs = iroh_docs::protocol::Docs::persistent(docs_dir)
             .accept_callback(accept_cb)
-            .spawn(ep.clone(), (*store).clone(), gossip.clone())
+            .spawn(ep.clone(), store.clone(), gossip.clone())
             .await?;
         let api = docs.api().clone();
 
@@ -80,11 +109,6 @@ impl AppState {
 
         let author = api.author_create().await?;
         
-        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-            std::path::PathBuf::from(custom_path)
-        } else {
-            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix")
-        };
         let indexer = crate::indexes::RelationalEngine::new(data_dir)?;
 
         Ok(Self {
@@ -104,7 +128,7 @@ impl AppState {
     pub fn counter(&self) -> &AtomicU64 { &self.hlc_counter }
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
-    pub fn store(&self) -> &iroh_blobs::store::mem::MemStore { &self._store }
+    pub fn store(&self) -> &iroh_blobs::store::fs::Store { &self._store }
 
     pub fn list_orgs(&self) -> Vec<OrgInfo> {
         self.orgs.iter().map(|(id, o)| OrgInfo {

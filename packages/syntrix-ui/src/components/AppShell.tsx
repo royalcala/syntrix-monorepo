@@ -35,11 +35,13 @@ interface AppShellProps {
   headerActions?: React.ReactNode;
   children: React.ReactNode;
   onOpenCommand?: () => void;
+  syncIndicator?: React.ReactNode;
 }
 
 export function AppShell({
   appName, appSubtitle, nodeId, orgs, activeOrg, onSelectOrg,
   onRefresh, onOpenCommand, navItems, extraNavItems, headerActions, children,
+  syncIndicator,
 }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -132,8 +134,9 @@ export function AppShell({
         )}
       </div>
 
-      <div className="mt-auto px-3 py-4 border-t border-border">
-        <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+      <div className="mt-auto px-3 py-4 border-t border-border space-y-3">
+        {syncIndicator && <div className="px-1">{syncIndicator}</div>}
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground bg-accent/50 rounded-md">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           {nodeId.slice(0, 16)}...
         </div>

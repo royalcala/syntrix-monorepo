@@ -82,6 +82,10 @@ fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_n
         s.add_org_docs(&ti.ns, &final_org_id, &name, &role, doc);
     }
 
+    if let Some(org_state) = s.get_org_docs(&final_org_id) {
+        sync::start_heartbeat(org_state.control_doc.clone(), s.author(), hex::encode(s.node_id()));
+    }
+
     Ok(OrgInfo { id: final_org_id, name, role })
 }
 
@@ -112,6 +116,12 @@ fn sync_ping(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> Result
 fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(sync::sync_status(&s))
+}
+
+#[tauri::command]
+fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<sync::SyncInfo, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(sync::get_sync_info(&s, &org)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -276,7 +286,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
             commit_event, sync_status, sync_push, sync_pull, sync_ping,
-            query_entity, search_entity, seed_dev_data, get_logs,
+            query_entity, search_entity, seed_dev_data, get_logs, get_sync_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

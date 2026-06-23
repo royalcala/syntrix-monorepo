@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Users, Shield, Building2, Terminal, Plus } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
+import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { CreateOrg } from "./screens/CreateOrg";
 import { Logs } from "./screens/Logs";
@@ -54,6 +55,7 @@ export default function App() {
         activeOrg={activeOrg}
         onSelectOrg={setActiveOrg}
         navItems={navItems}
+        syncIndicator={activeOrg ? <SyncStatusIndicator org={activeOrg} /> : null}
         headerActions={
           <>
             <ShareDialog org={activeOrg} />

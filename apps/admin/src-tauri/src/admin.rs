@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use iroh_docs::api::protocol::{ShareMode, AddrInfoOptions};
 
 use crate::identity::AppState;
@@ -37,7 +38,10 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     }
 
     state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, "");
-    state.add_org(name, control_doc, catalogs_doc, operational_doc, payroll_doc);
+    state.add_org(name, control_doc.clone(), catalogs_doc, operational_doc, payroll_doc);
+    
+    start_heartbeat(control_doc, author, node_id_hex);
+
     Ok(())
 }
 
@@ -298,4 +302,65 @@ pub async fn update_role(
     state.set_role(org, key, can_open, can_write);
     
     Ok(())
+}
+
+pub fn start_heartbeat(doc: iroh_docs::api::Doc, author: iroh_docs::AuthorId, node_id: String) {
+    tokio::spawn(async move {
+        loop {
+            let ts = chrono::Utc::now().timestamp_millis();
+            let key = format!("heartbeat/{}", node_id);
+            let val = serde_json::json!({"ts": ts, "status": "online"});
+            let _ = doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&val).unwrap()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+}
+
+#[derive(serde::Serialize)]
+pub struct PeerStatus {
+    pub node_id: String,
+    pub status: String,
+    pub last_seen: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct SyncInfo {
+    pub node_id: String,
+    pub is_online: bool,
+    pub peers: Vec<PeerStatus>,
+}
+
+pub async fn get_sync_info(state: &AppState, org: &str) -> anyhow::Result<SyncInfo> {
+    let org_state = state.get_org(org).ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
+    let doc = &org_state.control_doc;
+    
+    let mut entries = doc.get_many(iroh_docs::api::Query::key_prefix("heartbeat/")).await?;
+    let mut peers = Vec::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    
+    while let Some(entry) = entries.try_next().await? {
+        let key_bytes = entry.key();
+        if let Ok(key) = std::str::from_utf8(key_bytes) {
+            if let Some(peer_id) = key.strip_prefix("heartbeat/") {
+                if let Ok(bytes) = state.store().blobs().get_bytes(entry.content_hash()).await {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        if let Some(ts) = val["ts"].as_i64() {
+                            let status = if now - ts < 60000 { "online" } else { "offline" };
+                            peers.push(PeerStatus {
+                                node_id: peer_id.to_string(),
+                                status: status.to_string(),
+                                last_seen: ts,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(SyncInfo {
+        node_id: hex::encode(state.node_id()),
+        is_online: true,
+        peers,
+    })
 }

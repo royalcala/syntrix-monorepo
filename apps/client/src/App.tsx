@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
+import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
@@ -175,6 +176,7 @@ export default function App() {
       onOpenCommand={() => setCmdOpen(true)}
       navItems={deviceItems}
       extraNavItems={filteredNavItems}
+      syncIndicator={activeOrg ? <SyncStatusIndicator org={activeOrg} /> : null}
     >
       <main className={isEntityRoute ? "h-[calc(100vh-4rem)]" : "p-4 md:p-6"}>
         <Routes>

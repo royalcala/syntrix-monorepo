@@ -111,6 +111,12 @@ fn network_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, St
 }
 
 #[tauri::command]
+fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<admin::SyncInfo, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(admin::get_sync_info(&state, &org)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn send_invite(
     state: tauri::State<'_, Mutex<AppState>>,
     org: String,
@@ -193,7 +199,7 @@ pub fn run() {
             get_node_id, list_orgs, create_org,
             add_device, update_device, list_devices, list_roles, network_status,
             share_org, send_invite, get_logs,
-            create_role, update_role,
+            create_role, update_role, get_sync_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-admin");
