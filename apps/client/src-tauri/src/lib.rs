@@ -154,7 +154,7 @@ fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>
     tauri::async_runtime::block_on(async move {
         let mut results = vec![];
         let mut stream = doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await.map_err(|e| e.to_string())?;
-        use futures_lite::stream::StreamExt;
+        use futures_util::stream::StreamExt;
         while let Some(entry_res) = stream.next().await {
             if let Ok(entry) = entry_res {
                 let hash = entry.content_hash();
