@@ -21,6 +21,15 @@ export function DevicesGridPage({ org }: { org: string }) {
       });
       queryClient.invalidateQueries({ queryKey: ["entity", "devices", org] });
     }}
-    onSaveCreate={async () => { throw new Error("Add devices via invitations, not here."); }}
+    onSaveCreate={async (data) => {
+      if (!data.node_id) throw new Error("Debes pegar el Device Address (JSON) en el campo Node ID");
+      await invoke("send_invite", {
+        org, 
+        endpointAddrJson: String(data.node_id), 
+        role: String(data.role || "sales")
+      });
+      queryClient.invalidateQueries({ queryKey: ["entity", "devices", org] });
+      return data as any;
+    }}
   />;
 }
