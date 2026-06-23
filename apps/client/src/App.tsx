@@ -74,8 +74,14 @@ export default function App() {
   const { data: roleData } = useQuery({
     queryKey: ["entity", "roles", activeOrg, role],
     queryFn: async () => {
-      const list: any[] = await invoke("query_entity", { orgId: activeOrg, entity: "roles" });
-      return list.find((r) => r.name === role);
+      try {
+        const list: any[] = await invoke("query_entity", { orgId: activeOrg, entity: "roles" });
+        console.log("Roles found in control doc:", list);
+        return list.find((r) => r.name === role) || { can_open: [], can_write: [] };
+      } catch (e) {
+        console.error("Error fetching roles:", e);
+        return { can_open: [], can_write: [] };
+      }
     },
     enabled: !!activeOrg && !!role,
   });
