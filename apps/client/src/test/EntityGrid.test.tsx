@@ -43,16 +43,17 @@ describe("EntityGrid Editing Reactivity", () => {
     // 4. Click the row (event will bubble to the row)
     fireEvent.click(row!);
     
-    // Debug output to see if the panel opened
-    console.log("Detail Panel Open?", screen.queryByText("Guardar") !== null);
+    // 5. Wait for panel to open and click the "Editar" button to enter editMode
+    const editButton = await screen.findByText("Editar");
+    fireEvent.click(editButton);
 
-    // 5. Wait for panel to open and find the name input
+    // 6. Find the name input
     const nameInput = await screen.findByDisplayValue("Acme Corp");
     
-    // 6. Edit the name
+    // 7. Edit the name
     fireEvent.change(nameInput, { target: { value: "Acme Corporation Inc." } });
 
-    // 7. Change the mock data to simulate the backend having the new data
+    // 8. Change the mock data to simulate the backend having the new data
     const updatedData = [
       { id: "c1", name: "Acme Corporation Inc.", email: "contact@acme.com", tax_id: "ACM123" }
     ];
@@ -62,11 +63,11 @@ describe("EntityGrid Editing Reactivity", () => {
       return Promise.resolve();
     });
 
-    // 8. Click Save
+    // 9. Click Save
     const saveButton = screen.getByText("Guardar");
     fireEvent.click(saveButton);
 
-    // 9. Verify commit_event was called correctly WITH the id
+    // 10. Verify commit_event was called correctly WITH the id
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("commit_event", expect.objectContaining({
         eventType: "customers.updated",
