@@ -68,6 +68,12 @@ Cada field type debe renderizarse correctamente en **grid** y en **detail panel*
 - **Grid:** ícono ✓ / ✗ o toggle
 - **Detail:** `<Switch>` o `<Checkbox>` de shadcn
 
+### 1.9 Indicador de Estado de Red (Sync)
+
+- **Prioridad Crítica:** Mover de Fase 10 a Fase 1.
+- **UI:** Pulso verde (conectado), gris (desconectado), o indicando "N eventos pendientes" en el sidebar/toolbar.
+- **Feedback:** Asegura al usuario que sus datos están seguros localmente.
+
 ---
 
 ## Fase 2: Grid Avanzado
@@ -78,11 +84,9 @@ Cada field type debe renderizarse correctamente en **grid** y en **detail panel*
 - Segundo click → descendente
 - Tercer click → sin orden
 - Indicador visual (flecha) en header activo
-- Multi-orden: Shift+click agrega segunda columna de orden
 
 ### 2.2 Filtros
 
-- Click derecho en header → menú contextual con opciones de filtro
 - Por field type: texto→contiene, número→rango, fecha→entre, status→igual
 - Filtros activos visibles como chips en toolbar
 - Botón "Limpiar filtros"
@@ -91,7 +95,6 @@ Cada field type debe renderizarse correctamente en **grid** y en **detail panel*
 
 - Resize arrastrando borde del header
 - Reordenar arrastrando header
-- Click derecho → "Ocultar columna"
 - Menú "Columnas" en toolbar para mostrar/ocultar
 
 ### 2.4 Selección
@@ -138,7 +141,7 @@ status: {
 
 - "Datos": siempre presente, formulario del registro
 - Tabs de relaciones: definidos en `entity.detail.tabs`. Ej: cliente → "Facturas" (sub-grid)
-- "Historial": log de eventos de iroh-docs para este registro
+- "Historial": log de eventos de iroh-docs para este registro (exclusivo de `syntrix-client`, no implementado en `syntrix-admin`)
 
 ### 3.3 Formulario (Tab Datos)
 
@@ -171,26 +174,18 @@ status: {
 
 ## Fase 4: Crear / Editar Registros
 
-### 4.1 Estrategia dual
+### 4.1 Estrategia Unificada (Detail Panel)
 
-| Tipo de entidad | Método de creación |
-|----------------|-------------------|
-| Simple (clientes, productos) | Inline en el grid: "+" agrega fila vacía, se editan celdas |
-| Complejo (facturas, órdenes) | Detail panel en modo "create": formulario completo con items |
+Para el MVP, se elimina la creación *inline* (fila vacía en el grid) para reducir complejidad por validaciones cruzadas y relaciones obligatorias. **Toda** creación de registros se hará desde el Detail Panel.
 
-### 4.2 Inline create
-
-- Fila vacía al inicio del grid (como Airtable)
-- Foco automático en primera celda editable
-- Tab para siguiente campo, Enter para confirmar
-- Escape para cancelar (fila desaparece)
-
-### 4.3 Detail panel create
+### 4.2 Detail panel create
 
 - Mismo componente que edit, modo `isCreate=true`
+- Foco automático en el primer campo
 - Sin historial (no existe aún)
 - Sin tabs de relaciones (no existe aún)
 - Botón "Crear" primario, "Cancelar" secundario
+- Tab para siguiente campo, Enter para confirmar (dentro del formulario)
 
 ### 4.4 Validación
 
@@ -371,7 +366,6 @@ Desktop:                            Mobile:
 
 - Contador de registros: animación al cambiar
 - Badge de inbox: pulso cuando hay nuevos
-- Indicador de sync: pulso verde → conectado, gris → desconectado
 - Check de guardado: ícono que hace check animado
 
 ### 10.3 Consistencia tipográfica

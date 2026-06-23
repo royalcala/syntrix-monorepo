@@ -1,10 +1,11 @@
 import type { EntityDefinition } from "../fields/registry";
+import { fetchEntityData } from "../collections/adapter";
 
 export const devicesEntity: EntityDefinition = {
   id: "devices",
   label: "Dispositivos",
   icon: "users",
-  collection: null as never,
+  loadData: () => fetchEntityData("devices"),
   fields: [
     { key: "node_id", label: "Node ID", type: "text", width: 180, editable: false, sortable: true },
     { key: "name", label: "Nombre", type: "text", width: 180, editable: true, sortable: true },
@@ -33,7 +34,6 @@ export const devicesEntity: EntityDefinition = {
   detail: {
     tabs: [
       { key: "data", label: "Datos" },
-      { key: "history", label: "Historial" },
     ],
   },
   searchFields: ["name", "person", "node_id"],

@@ -66,15 +66,26 @@ pub fn commit_event(
     let hlc = Hlc::next(&node_id_hex, state.counter());
     let key = hlc.to_key_prefix();
 
+    let payload_val = serde_json::from_str::<serde_json::Value>(payload)?;
+
     let value = serde_json::json!({
         "type": event_type,
         "hlc": hlc,
-        "payload": serde_json::from_str::<serde_json::Value>(payload)?,
+        "payload": &payload_val,
     });
 
     tauri::async_runtime::block_on(
         doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value)?)
     )?;
+
+    // Index the new document
+    let entity = event_type.split('.').next().unwrap_or(event_type);
+    let doc_id = payload_val.get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| payload_val.get("node_id").and_then(|v| v.as_str()))
+        .unwrap_or(&key);
+        
+    let _ = state.indexer.upsert_document(&org_id, entity, doc_id, &payload_val);
 
     Ok(key)
 }

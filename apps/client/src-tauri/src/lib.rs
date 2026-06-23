@@ -8,6 +8,7 @@ mod events;
 mod sync;
 mod invite;
 mod seed;
+pub mod indexes;
 
 pub use identity::AppState;
 
@@ -126,15 +127,11 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
 }
 
 #[tauri::command]
-fn query_invoices(state: tauri::State<'_, Mutex<AppState>>, _filter: String) -> Result<Vec<Invoice>, String> {
+fn query_entity(state: tauri::State<'_, Mutex<AppState>>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(s.list_invoices())
-}
-
-#[tauri::command]
-fn query_products(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<Product>, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(s.list_products())
+    let org_id = s.active_org().unwrap_or("");
+    if org_id.is_empty() { return Ok(vec![]); }
+    s.indexer.query(org_id, &entity, filter_field.as_deref(), filter_value.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -149,12 +146,6 @@ fn get_logs() -> Result<String, String> {
     } else {
         Ok("No logs yet.".into())
     }
-}
-
-#[tauri::command]
-fn query_customers(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<Customer>, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(s.list_customers())
 }
 
 #[tauri::command]
@@ -214,7 +205,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
             commit_event, sync_status, sync_push, sync_pull, sync_ping,
-            query_invoices, query_products, query_customers, seed_dev_data, get_logs,
+            query_entity, seed_dev_data, get_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

@@ -1,11 +1,11 @@
 import type { EntityDefinition } from "../fields/registry";
-import { ordersCollection } from "../collections/orders";
+import { fetchEntityData } from "../collections/adapter";
 
 export const ordersEntity: EntityDefinition = {
   id: "orders",
   label: "Órdenes",
   icon: "shopping-cart",
-  collection: ordersCollection as never,
+  loadData: () => fetchEntityData("orders"),
   fields: [
     { key: "id", label: "ID", type: "text", width: 100, editable: false, sortable: true },
     { key: "customer_id", label: "Cliente", type: "relation", width: 200, editable: true, sortable: true },

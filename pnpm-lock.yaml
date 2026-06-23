@@ -31,15 +31,15 @@ importers:
       '@tanstack/db':
         specifier: ^0.6.9
         version: 0.6.9(typescript@5.8.3)
-      '@tanstack/react-db':
-        specifier: ^0.1.87
-        version: 0.1.87(react@19.2.7)(typescript@5.8.3)
       '@tanstack/react-form':
         specifier: ^1.0.7
         version: 1.33.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@tanstack/react-hotkeys':
         specifier: ^0.10.0
         version: 0.10.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@tanstack/react-query':
+        specifier: ^5.64.0
+        version: 5.101.0(react@19.2.7)
       '@tanstack/react-table':
         specifier: ^8.21.2
         version: 8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -116,18 +116,15 @@ importers:
       '@syntrix/ui':
         specifier: workspace:^
         version: link:../../packages/syntrix-ui
-      '@tanstack/db':
-        specifier: ^0.6.9
-        version: 0.6.9(typescript@5.8.3)
-      '@tanstack/react-db':
-        specifier: ^0.1.87
-        version: 0.1.87(react@19.2.7)(typescript@5.8.3)
       '@tanstack/react-form':
         specifier: ^1.0.7
         version: 1.33.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@tanstack/react-hotkeys':
         specifier: ^0.10.0
         version: 0.10.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@tanstack/react-query':
+        specifier: ^5.64.0
+        version: 5.101.0(react@19.2.7)
       '@tanstack/react-table':
         specifier: ^8.21.2
         version: 8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -1198,6 +1195,9 @@ packages:
     resolution: {integrity: sha512-eQ1MyLKCHyXiH7NbdmB80W77OhiMgGBUb+qDx/8WMGbwg5Lf/NlfD0TfNYAqY77i8V3AxoDoYdICrQE5ADw4Yw==}
     engines: {node: '>=18'}
 
+  '@tanstack/query-core@5.101.0':
+    resolution: {integrity: sha512-cQetA74EB+seWySv1TTKr828TnP0u39m6LykwDXIo84SNortpDkp30TMEjkqtYCNP9c40uT/iwl6MLiufEt0Ow==}
+
   '@tanstack/react-db@0.1.87':
     resolution: {integrity: sha512-YhRsI4+outLRkJbmW0oqVsldpe5rMWhhSeXooghaP5LE9++dkIB2wMxCICdW6YTvCh6avP7KFczJ0knam94Ndw==}
     peerDependencies:
@@ -1218,6 +1218,11 @@ packages:
     peerDependencies:
       react: '>=16.8'
       react-dom: '>=16.8'
+
+  '@tanstack/react-query@5.101.0':
+    resolution: {integrity: sha512-rLlJXSpkqfizLWgkR5+eLeIk0MvTx/meEIR7LRjxic+qxiQP8zVjq7BqQkiCMNLQBlLfuOLqqr6KO5GtrDlmSg==}
+    peerDependencies:
+      react: ^18 || ^19
 
   '@tanstack/react-store@0.11.0':
     resolution: {integrity: sha512-tX4YXh3PDkmpvGQWkWqKpzs/MSqbtuwY9dWdWhtV9Q50PmO+jOkUKIWIX4G85dwt7lxdHLXsiaEKPdKmC8F41w==}
@@ -3570,6 +3575,8 @@ snapshots:
 
   '@tanstack/pacer-lite@0.2.2': {}
 
+  '@tanstack/query-core@5.101.0': {}
+
   '@tanstack/react-db@0.1.87(react@19.2.7)(typescript@5.8.3)':
     dependencies:
       '@tanstack/db': 0.6.9(typescript@5.8.3)
@@ -3592,6 +3599,11 @@ snapshots:
       '@tanstack/react-store': 0.11.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
+
+  '@tanstack/react-query@5.101.0(react@19.2.7)':
+    dependencies:
+      '@tanstack/query-core': 5.101.0
+      react: 19.2.7
 
   '@tanstack/react-store@0.11.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:

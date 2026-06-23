@@ -24,9 +24,7 @@ pub struct AppState {
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
     active_org: Option<String>,
-    invoices: HashMap<String, Vec<Invoice>>,
-    products: HashMap<String, Vec<Product>>,
-    customers: HashMap<String, Vec<Customer>>,
+    pub indexer: crate::indexes::RelationalEngine,
     /// In-memory event buffer: org_id → (seqNum → entry), for pull.
     events: HashMap<String, Vec<SyncEntry>>,
     /// Invite protocol handler (receives org invitations from admin).
@@ -81,12 +79,15 @@ impl AppState {
             .spawn();
 
         let author = api.author_create().await?;
+        
+        let data_dir = dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix");
+        let indexer = crate::indexes::RelationalEngine::new(data_dir)?;
 
         Ok(Self {
             secret, _endpoint: ep, _gossip: gossip, _store: store, _router: router, _invite_router,
             docs_api: api, author, hlc_counter: AtomicU64::new(0), registry,
             orgs: HashMap::new(), active_org: None,
-            invoices: HashMap::new(), products: HashMap::new(), customers: HashMap::new(),
+            indexer,
             events: HashMap::new(),
             invite_handler,
             invite_rx: std::sync::Mutex::new(Some(invite_rx)),
@@ -134,32 +135,10 @@ impl AppState {
             "payroll" => entry.payroll_doc = doc,
             _ => {}
         }
-        self.invoices.entry(org_id.into()).or_default();
-        self.products.entry(org_id.into()).or_default();
-        self.customers.entry(org_id.into()).or_default();
     }
 
     pub fn get_org_docs(&self, org_id: &str) -> Option<&OrgState> {
         self.orgs.get(org_id)
-    }
-
-    pub fn add_invoice(&mut self, org_id: &str, invoice: Invoice) {
-        self.invoices.entry(org_id.into()).or_default().push(invoice);
-    }
-
-    pub fn list_invoices(&self) -> Vec<Invoice> {
-        let org_id = self.active_org.as_deref().unwrap_or("");
-        self.invoices.get(org_id).cloned().unwrap_or_default()
-    }
-
-    pub fn list_products(&self) -> Vec<Product> {
-        let org_id = self.active_org.as_deref().unwrap_or("");
-        self.products.get(org_id).cloned().unwrap_or_default()
-    }
-
-    pub fn list_customers(&self) -> Vec<Customer> {
-        let org_id = self.active_org.as_deref().unwrap_or("");
-        self.customers.get(org_id).cloned().unwrap_or_default()
     }
 
     pub fn record_event(&mut self, org_id: &str, _seq_num: u64, entry: serde_json::Value) {

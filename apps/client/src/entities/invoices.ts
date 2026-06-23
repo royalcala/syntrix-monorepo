@@ -1,11 +1,11 @@
 import type { EntityDefinition } from "../fields/registry";
-import { invoicesCollection } from "../collections/invoices";
+import { fetchEntityData } from "../collections/adapter";
 
 export const invoicesEntity: EntityDefinition = {
   id: "invoices",
   label: "Facturas",
   icon: "receipt",
-  collection: invoicesCollection as never,
+  loadData: () => fetchEntityData("invoices"),
   fields: [
     { key: "id", label: "Folio", type: "text", width: 110, editable: false, sortable: true },
     { key: "customer_id", label: "Cliente", type: "relation", width: 200, editable: true, sortable: true },

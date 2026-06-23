@@ -8,6 +8,7 @@
 | [`04-workspace.md`](./04-workspace.md) | UI: entity-based grid + detail panel, TanStack Table + shadcn, FieldRegistry. |
 | [`05-vision.md`](./05-vision.md) | La matriz completa: 100+ espacios operativos, plugins, workflows, inteligencia, multi-idioma. |
 | [`06-correcciones.md`](./06-correcciones.md) | Índices en TanStack DB (no redb), correcciones unánimes de 6 IAs. |
+| [`09-arquitectura-final.md`](./09-arquitectura-final.md) | **NUEVO:** Reemplazo de TanStack DB por Iroh KV Relational Engine (Cero migraciones, RAM optimizada). |
 
 ---
 
@@ -71,11 +72,12 @@
 |---------|-----------|-------|
 | Workflow de factura | Alta | draft → open → paid → cancelled. Transiciones con validaciones. |
 | Dashboard básico | Alta | KPIs: ventas del mes, facturas pendientes, top clientes. |
+| Importar datos (CSV/Excel) | Alta | Crítico para onboarding de clientes (clientes, productos). |
 | Exportar CSV/Excel | Media | Desde el grid, con las columnas visibles. |
 | Búsqueda global (Ctrl+K) | Media | Índice FlexSearch en memoria. Clientes, facturas, acciones. |
 | Adjuntar archivos | Media | PDFs a facturas, imágenes a productos. StreamFS en Fase 4? |
 | Números de factura | Alta | Formato `A-0042-XA1`. Ya decidido. |
-| Notificaciones in-app | Baja | Toast cuando otro peer modifica un registro que estás viendo. |
+| Notificaciones in-app (Sync UI) | Alta | Toast cuando otro peer modifica tu registro o si hay un conflicto LWW. |
 
 ---
 
@@ -117,7 +119,9 @@
 | 🟡 Alta | `schemaVersion` en cada entry + migraciones en adapter | El primer cambio de schema rompe peers offline sin esto |
 | 🟡 Alta | Snapshots periódicos en iroh-docs | Sin snapshots, 6 meses de eventos = startup lento |
 | 🟡 Alta | Adapter con buffer/batch para reconexión offline | 5,000+ entries de golpe saturan TanStack DB |
+| 🟡 Alta | Manejo de memoria en TanStack DB (Límites/Query params) | Evitar OOM (Out Of Memory) en el navegador al cargar 100k registros |
 | 🟡 Alta | `display_id` ≠ `document_key` (HLC en key, no en folio) | El folio es human-readable, la key usa HLC para orden causal |
+| 🟢 Media | `commit_batch_events` en el adapter | Evitar cuellos de botella en el bridge de Tauri al editar registros en lote |
 | 🟢 Media | Tests E2E multi-peer (3 nodos iroh) | Confianza en sync P2P |
 
 ---
@@ -126,7 +130,8 @@
 
 - [x] Admin crea org con 4 namespaces, agrega dispositivos, comparte tickets
 - [ ] Client muestra grid de clientes, facturas, productos con datos reales de iroh-docs
-- [ ] Click en fila abre detail panel con tabs funcionales (datos, historial)
+- [ ] Click en fila del client abre detail panel con tabs funcionales (datos, historial cargado bajo demanda de iroh-docs)
+- [ ] Admin detail panel no muestra la pestaña de historial (deshabilitado por diseño para el MVP)
 - [ ] Editar celda → commit_event → sync a otros peers
 - [ ] Sales NO recibe payroll (privacidad entre namespaces)
 - [ ] Ctrl+K busca clientes y facturas en <100ms

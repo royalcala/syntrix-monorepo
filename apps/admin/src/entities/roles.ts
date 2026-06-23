@@ -1,10 +1,11 @@
 import type { EntityDefinition } from "../fields/registry";
+import { fetchEntityData } from "../collections/adapter";
 
 export const rolesEntity: EntityDefinition = {
   id: "roles",
   label: "Roles",
   icon: "shield",
-  collection: null as never,
+  loadData: () => fetchEntityData("roles"),
   fields: [
     { key: "name", label: "Nombre", type: "text", width: 180, editable: false, sortable: true },
     { 

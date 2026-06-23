@@ -1,10 +1,11 @@
 import type { EntityDefinition } from "../fields/registry";
+import { fetchEntityData } from "../collections/adapter";
 
 export const orgsEntity: EntityDefinition = {
   id: "orgs",
   label: "Organizaciones",
-  icon: "building",
-  collection: null as never,
+  icon: "building-2",
+  loadData: () => fetchEntityData("orgs"),
   fields: [
     { key: "name", label: "Nombre", type: "text", width: 200, editable: false, sortable: true },
     { key: "node_count", label: "Dispositivos", type: "number", width: 120, editable: false, sortable: true },

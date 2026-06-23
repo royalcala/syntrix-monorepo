@@ -41,10 +41,17 @@ pub fn sync_push(state: &mut AppState, org_id: &str, batch: Vec<SyncEventEncoded
         let key = format!("evt:{:020}:{:08}:{}", ts, count, &node_hex[..16]);
         let value = serde_json::json!({
             "type": event.name, "hlc": {"ts":ts,"count":count,"node":&node_hex[..16]},
-            "payload": event.args, "seqNum": event.seq_num, "parentSeqNum": event.parent_seq_num,
+            "payload": &event.args, "seqNum": event.seq_num, "parentSeqNum": event.parent_seq_num,
             "clientId": event.client_id, "sessionId": event.session_id,
         });
-        tauri::async_runtime::block_on(doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&value)?))?;
+        tauri::async_runtime::block_on(doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value)?))?;
+        
+        let entity = event.name.split('.').next().unwrap_or(&event.name);
+        let doc_id = event.args.get("id")
+            .and_then(|v| v.as_str())
+            .or_else(|| event.args.get("node_id").and_then(|v| v.as_str()))
+            .unwrap_or(&key);
+        let _ = state.indexer.upsert_document(org_id, entity, doc_id, &event.args);
     }
     // Record after loop to avoid borrow conflict
     for event in batch {

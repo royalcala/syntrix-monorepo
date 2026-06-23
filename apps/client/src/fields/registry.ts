@@ -43,7 +43,7 @@ export interface EntityDefinition {
   id: string;
   label: string;
   icon: string;
-  collection: unknown;
+  loadData?: () => Promise<Array<Record<string, unknown>>>;
   fields: EntityFieldConfig[];
   views: ViewDefinition[];
   detail: { tabs: DetailTab[] };

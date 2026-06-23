@@ -11,7 +11,7 @@ import {
   type VisibilityState,
 } from "@tanstack/react-table";
 import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
-import { useLiveQuery } from "@tanstack/react-db";
+import { useQuery } from "@tanstack/react-query";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
 import type { EntityDefinition } from "../fields/registry";
@@ -41,9 +41,13 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
   const view = entity.views.find((v) => v.id === viewId) ?? entity.views[0];
   const visibleCols = view?.visibleColumns ?? entity.fields.map((f) => f.key);
 
-  // Reactive data from TanStack DB collection
-  const { data: liveData, isLoading } = useLiveQuery((q) => {
-    return q.from({ row: entity.collection as never });
+  // Reactive data from Tauri backend via Relational Engine
+  const { data: liveData, isLoading } = useQuery({
+    queryKey: ["entity", entity.id, orgId, viewId, columnFilters],
+    queryFn: async () => {
+      if (entity.loadData) return await entity.loadData();
+      return [];
+    },
   });
 
   const allRows = useMemo(() => {
