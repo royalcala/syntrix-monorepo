@@ -8,7 +8,7 @@ use iroh::tls::CaRootsConfig;
 use iroh_syntrix_docs::NodeId;
 use iroh_syntrix_docs::registry::NamespaceRegistry;
 use iroh_docs::api::Doc;
-use crate::{DeviceInfo, OrgInfo, RoleInfo};
+use crate::OrgInfo;
 use crate::sync::SyncEntry;
 
 pub struct AppState {
