@@ -2,7 +2,7 @@
 
 ## Diagnóstico
 
-Lo que tenemos funciona, pero no es Airtable. El grid carga datos, el detail panel se abre, pero faltan los detalles que hacen que un producto se sienta **terminado**.
+> **Estado actual:** Fases 1 y 4 completadas. Fases 2, 3, 6 parciales. Fases 5, 9, 10, 11 pendientes.
 
 | Componente | Estado actual | Estado deseado |
 |-----------|--------------|----------------|
@@ -261,9 +261,11 @@ Vistas guardadas en IndexedDB local (no sync P2P). Las predefinidas viven en `en
 
 ### 6.3 Implementación
 
-- Índice en memoria con FlexSearch
-- Actualizado en cada `loadData()`
-- Búsqueda en `entity.searchFields`
+- Motor de búsqueda **Tantivy** (Rust, embebido en el proceso Tauri)
+- Se alimenta automáticamente desde el indexador (`upsert_document` en `indexes.rs`)
+- Soporta: **fuzzy search** ("Akme" → "Acme"), **ranking BM25**, **snippets con highlights**
+- Comando Tauri: `invoke("search_entity", { query, entities?, limit? })`
+- Debounce de 150ms en el input del frontend
 - Resultados agrupados por entidad + acciones
 - Navegación con flechas, Enter para abrir
 
@@ -386,14 +388,14 @@ Desktop:                            Mobile:
 
 ## Plan de trabajo reordenado
 
-| Semana | Fase | Entregable |
-|--------|------|-----------|
-| 1 | Fase 1 | 8 field types completos en grid + detail |
-| 2 | Fase 2 + 3 | Grid avanzado (sort, filter, columns, selection) + Detail panel con formularios reales |
-| 3 | Fase 4 + 5 | Crear/editar registros + vistas guardadas |
-| 4 | Fase 6 + 7 | Command palette + atajos de teclado |
-| 5 | Fase 8 + 9 | Estados visuales + responsive |
-| 6 | Fase 10 | Pulido visual, transiciones, micro-interacciones |
+| Semana | Fase | Entregable | Estado |
+|--------|------|-----------|--------|
+| 1 | Fase 1 | 8 field types completos en grid + detail | ✅ |
+| 2 | Fase 2 + 3 | Grid avanzado (sort, filter, columns, selection) + Detail panel | ⚠️ Parcial |
+| 3 | Fase 4 + 5 | Crear/editar registros + vistas guardadas | ✅ / ⚠️ |
+| 4 | Fase 6 + 7 | Command palette + atajos de teclado | ⚠️ Parcial |
+| 5 | Fase 8 + 9 | Estados visuales + responsive | ⚠️ / ❌ |
+| 6 | Fase 10 | Pulido visual, transiciones, micro-interacciones | ⚠️ |
 
 **Total: 6 semanas para UI nivel Airtable.**
 
