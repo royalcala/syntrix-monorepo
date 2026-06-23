@@ -78,6 +78,7 @@ impl RelationalEngine {
                     }
                 }
             }
+        }
         write_txn.commit()?;
 
         // 4. Index in Tantivy full-text search
