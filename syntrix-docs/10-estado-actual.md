@@ -70,6 +70,10 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 4. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
 5. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
 
+### 🛠️ Pendiente (Herramientas de Consola Admin)
+- **Data Explorer (Visor JSON Crudo):** Vista especializada para diagnosticar la base de datos P2P. Muestra metadatos puros de `iroh-docs` (Doc Hash, HLC, Autor) y el JSON crudo. Permite identificar datos corruptos, visualizar estado local de índices y emitir eventos correctivos a la red.
+- **Audit Trail (Log de Eventos):** Feed cronológico inmutable de todas las mutaciones P2P (INSERT, UPDATE, DELETE, SYNC). Permite auditar qué nodo/dispositivo modificó qué documento y en qué milisegundo exacto (HLC), crucial para compliance, seguridad y diagnóstico de sincronización P2P.
+
 ### ❌ Pendiente (Features de Negocio)
 - Workflow de facturas (draft → open → paid).
 - Importación/Exportación de CSV.
