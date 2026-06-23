@@ -11,7 +11,8 @@ import {
   type VisibilityState,
 } from "@tanstack/react-table";
 import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
 import type { EntityDefinition } from "../fields/registry";
@@ -28,6 +29,7 @@ interface EntityGridProps {
 interface Row { id: string; [key: string]: unknown; }
 
 export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: EntityGridProps) {
+  const queryClient = useQueryClient();
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<"edit" | "create">("edit");
@@ -243,7 +245,23 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                   row={selectedRow}
                   role={role}
                   isCreate={detailMode === "create"}
-                  onSaveCreate={onSaveCreate}
+                  onSaveCreate={onSaveCreate || (async (val) => {
+                    await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
+                    await new Promise(r => setTimeout(r, 250)); // Margen seguro
+                    await queryClient.refetchQueries({ queryKey: ["entity"] });
+                    return val as Row;
+                  })}
+                  onSaveUpdate={async (id, val) => {
+                    await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
+                    setSelectedRow((prev) => prev && prev.id === id ? { ...prev, ...val } as Row : prev);
+                    // Actualización instantánea en memoria (Pessimistic Update)
+                    queryClient.setQueryData(
+                      ["entity", entity.id, orgId, viewId, columnFilters],
+                      (old: any[]) => old ? old.map((r) => (r.id === id ? { ...r, ...val } : r)) : old
+                    );
+                    await new Promise(r => setTimeout(r, 250));
+                    await queryClient.refetchQueries({ queryKey: ["entity"] });
+                  }}
                   onClose={() => { setDetailOpen(false); }}
                   onNavigate={detailMode === "create" ? undefined : (dir) => {
                 const idx = rows.findIndex((r) => r.original.id === selectedRow.id);
@@ -263,8 +281,24 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                 entity={entity}
                 row={selectedRow}
                 role={role}
-          isCreate={detailMode === "create"}
-          onClose={() => { setDetailOpen(false); }}
+                isCreate={detailMode === "create"}
+                onSaveCreate={onSaveCreate || (async (val) => {
+                  await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
+                  await new Promise(r => setTimeout(r, 250));
+                  await queryClient.refetchQueries({ queryKey: ["entity"] });
+                  return val as Row;
+                })}
+                onSaveUpdate={async (id, val) => {
+                  await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
+                  setSelectedRow((prev) => prev && prev.id === id ? { ...prev, ...val } as Row : prev);
+                  queryClient.setQueryData(
+                    ["entity", entity.id, orgId, viewId, columnFilters],
+                    (old: any[]) => old ? old.map((r) => (r.id === id ? { ...r, ...val } : r)) : old
+                  );
+                  await new Promise(r => setTimeout(r, 250));
+                  await queryClient.refetchQueries({ queryKey: ["entity"] });
+                }}
+                onClose={() => { setDetailOpen(false); }}
               />
             </div>
           </div>

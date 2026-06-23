@@ -30,16 +30,18 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
     defaultValues: row as Record<string, unknown>,
     onSubmit: async ({ value }) => {
       try {
+        // Asegurar que los campos no editables (como el ID) se incluyan en el payload final
+        const finalValue = { ...row, ...value };
         if (isCreate && onSaveCreate) {
-          await onSaveCreate(value);
+          await onSaveCreate(finalValue);
           toast.success(`${entity.label} creado`);
         } else if (!isCreate && onSaveUpdate) {
-          const recordId = value.id || (value as any).node_id || (value as any).name;
-          await onSaveUpdate(recordId as string, value);
+          const recordId = finalValue.id || (finalValue as any).node_id || (finalValue as any).name;
+          await onSaveUpdate(recordId as string, finalValue);
           toast.success("Cambios guardados");
         } else {
           const eventType = isCreate ? `${entity.id}.created` : `${entity.id}.updated`;
-          await invoke("commit_event", { eventType, payload: JSON.stringify(value) });
+          await invoke("commit_event", { eventType, payload: JSON.stringify(finalValue) });
           toast.success(isCreate ? `${entity.label} creado` : "Cambios guardados");
         }
         setEditMode(false);
@@ -52,7 +54,11 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
   });
 
   useEffect(() => {
-    form.reset();
+    if (row) {
+      Object.entries(row).forEach(([k, v]) => {
+        form.setFieldValue(k, v);
+      });
+    }
     setFieldErrors({});
     setEditMode(!!isCreate);
   }, [row, isCreate]);

@@ -17,9 +17,10 @@ interface DetailPanelProps {
   onNavigate?: (dir: number) => void;
   isCreate?: boolean;
   onSaveCreate?: (row: Record<string, unknown>) => Promise<void>;
+  onSaveUpdate?: (id: string, val: Record<string, unknown>) => Promise<void>;
 }
 
-export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, onSaveCreate }: DetailPanelProps) {
+export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, onSaveCreate, onSaveUpdate }: DetailPanelProps) {
   const [activeTab, setActiveTab] = useState(isCreate ? "data" : entity.detail.tabs[0]?.key ?? "data");
   const [editMode, setEditMode] = useState(!!isCreate);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -28,11 +29,15 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
     defaultValues: row as Record<string, unknown>,
     onSubmit: async ({ value }) => {
       try {
+        const finalValue = { ...row, ...value };
         if (isCreate && onSaveCreate) {
-          await onSaveCreate(value);
+          await onSaveCreate(finalValue);
+        } else if (!isCreate && onSaveUpdate) {
+          const recordId = finalValue.id || (finalValue as any).node_id || (finalValue as any).name;
+          await onSaveUpdate(recordId as string, finalValue);
         } else {
           const eventType = isCreate ? `${entity.id}.created` : `${entity.id}.updated`;
-          await invoke("commit_event", { eventType, payload: JSON.stringify(value) });
+          await invoke("commit_event", { eventType, payload: JSON.stringify(finalValue) });
           toast.success(isCreate ? `${entity.label} creado` : "Cambios guardados");
         }
         setEditMode(false);
@@ -44,7 +49,11 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
   });
 
   useEffect(() => {
-    form.reset();
+    if (row) {
+      Object.entries(row).forEach(([k, v]) => {
+        form.setFieldValue(k, v);
+      });
+    }
     setFieldErrors({});
     setEditMode(!!isCreate);
   }, [row, isCreate]);
