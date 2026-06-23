@@ -74,7 +74,7 @@ export default function App() {
   const { data: roleData } = useQuery({
     queryKey: ["entity", "roles", activeOrg, role],
     queryFn: async () => {
-      const list: any[] = await invoke("query_entity", { entity: "roles" });
+      const list: any[] = await invoke("query_entity", { orgId: activeOrg, entity: "roles" });
       return list.find((r) => r.name === role);
     },
     enabled: !!activeOrg && !!role,

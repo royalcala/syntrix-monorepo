@@ -3,6 +3,7 @@ import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
 import { devicesEntity } from "../entities/devices";
 import { invoke } from "@tauri-apps/api/core";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 export function DevicesGridPage({ org }: { org: string }) {
   const queryClient = useQueryClient();
@@ -54,6 +55,7 @@ export function DevicesGridPage({ org }: { org: string }) {
         person: String(data.person || "")
       });
       queryClient.invalidateQueries({ queryKey: ["entity", "devices", org] });
+      toast.success("Invitación P2P enviada");
       return data as any;
     }}
     customActions={(row) => (
