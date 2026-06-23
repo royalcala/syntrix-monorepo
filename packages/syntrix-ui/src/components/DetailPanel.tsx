@@ -29,28 +29,7 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
     defaultValues: row as Record<string, unknown>,
     onSubmit: async ({ value }) => {
       try {
-        if (entity.collection) {
-          const col = entity.collection as any;
-          if (isCreate) {
-            if (typeof col.insert === "function") {
-              const tx = col.insert(value);
-              await tx.isPersisted.promise;
-            } else if (onSaveCreate) {
-              await onSaveCreate(value);
-            }
-          } else {
-            const recordId = value.id || (value as any).node_id || (value as any).name;
-            if (typeof col.update === "function") {
-              const tx = col.update(recordId, (draft: any) => {
-                Object.assign(draft, value);
-              });
-              await tx.isPersisted.promise;
-            } else if (onSaveUpdate) {
-              await onSaveUpdate(recordId as string, value);
-            }
-          }
-          toast.success(isCreate ? `${entity.label} creado` : "Cambios guardados");
-        } else if (isCreate && onSaveCreate) {
+        if (isCreate && onSaveCreate) {
           await onSaveCreate(value);
           toast.success(`${entity.label} creado`);
         } else if (!isCreate && onSaveUpdate) {

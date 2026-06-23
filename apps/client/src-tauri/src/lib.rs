@@ -43,9 +43,14 @@ fn set_active_org(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> R
 }
 
 #[tauri::command]
-fn commit_event(state: tauri::State<'_, Mutex<AppState>>, event_type: String, payload: String) -> Result<String, String> {
+fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, event_type: String, payload: String) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    events::commit_event(&s, &event_type, &payload).map_err(|e| e.to_string())
+    let res = events::commit_event(&s, &event_type, &payload).map_err(|e| e.to_string());
+    if res.is_ok() {
+        use tauri::Emitter;
+        let _ = app.emit("entity_changed", ());
+    }
+    res
 }
 
 #[tauri::command]
@@ -79,9 +84,14 @@ fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_n
 }
 
 #[tauri::command]
-fn sync_push(state: tauri::State<'_, Mutex<AppState>>, org_id: String, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
+fn sync_push(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, org_id: String, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    sync::sync_push(&mut s, &org_id, batch).map_err(|e| e.to_string())
+    let res = sync::sync_push(&mut s, &org_id, batch).map_err(|e| e.to_string());
+    if res.is_ok() {
+        use tauri::Emitter;
+        let _ = app.emit("entity_changed", ());
+    }
+    res
 }
 
 #[tauri::command]

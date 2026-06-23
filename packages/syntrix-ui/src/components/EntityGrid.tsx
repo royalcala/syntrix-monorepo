@@ -11,7 +11,9 @@ import {
   type VisibilityState,
 } from "@tanstack/react-table";
 import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
 import type { EntityDefinition } from "../fields/registry";
@@ -29,6 +31,13 @@ interface EntityGridProps {
 interface Row { id: string; [key: string]: unknown; }
 
 export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSaveUpdate }: EntityGridProps) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const unlisten = listen("entity_changed", () => {
+      queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+    });
+    return () => { unlisten.then(u => u()); };
+  }, [entity.id, orgId, queryClient]);
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<"edit" | "create">("edit");
@@ -269,8 +278,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                   row={selectedRow}
                   role={role}
                   isCreate={detailMode === "create"}
-                  onSaveCreate={onSaveCreate}
-                  onSaveUpdate={onSaveUpdate}
+                  onSaveCreate={onSaveCreate || (async (val) => {
+                    await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
+                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                  })}
+                  onSaveUpdate={onSaveUpdate || (async (id, val) => {
+                    await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
+                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                  })}
                   onClose={() => { setDetailOpen(false); }}
                   onNavigate={detailMode === "create" ? undefined : (dir) => {
                 const idx = rows.findIndex((r) => r.original.id === selectedRow.id);
@@ -291,7 +306,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                 row={selectedRow}
                 role={role}
           isCreate={detailMode === "create"}
-          onClose={() => { setDetailOpen(false); }}
+                  onSaveCreate={onSaveCreate || (async (val) => {
+                    await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
+                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                  })}
+                  onSaveUpdate={onSaveUpdate || (async (id, val) => {
+                    await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
+                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                  })}
               />
             </div>
           </div>
