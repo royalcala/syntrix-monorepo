@@ -70,6 +70,14 @@ export default function App() {
     ...deviceNavItems.slice(1),
   ];
 
+  const filteredNavItems = navItems.filter((item) => {
+    if (!role) return false;
+    if (role === "admin") return true;
+    if (role === "sales") return ["/customers", "/invoices", "/orders", "/products"].includes(item.href);
+    if (role === "contabilidad") return ["/invoices"].includes(item.href);
+    return false;
+  });
+
   const isEntityRoute = navItems.some((i) => location.pathname === i.href);
 
   return (
@@ -83,7 +91,7 @@ export default function App() {
       onRefresh={loadOrgs}
       onOpenCommand={() => setCmdOpen(true)}
       navItems={deviceItems}
-      extraNavItems={navItems}
+      extraNavItems={filteredNavItems}
     >
       <main className={isEntityRoute ? "h-[calc(100vh-4rem)]" : "p-4 md:p-6"}>
         <Routes>
