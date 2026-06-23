@@ -45,7 +45,7 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
         if (isCreate && onClose) onClose();
       } catch (error) {
         console.error("Save failed:", error);
-        toast.error("No se pudo guardar");
+        toast.error(error instanceof Error ? error.message : "Error al guardar los cambios");
       }
     },
   });

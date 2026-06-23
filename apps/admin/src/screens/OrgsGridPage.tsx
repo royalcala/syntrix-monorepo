@@ -7,5 +7,10 @@ export function OrgsGridPage() {
     localStorage.setItem("syntrix_admin_org", "");
   }, []);
 
-  return <EntityGrid entity={orgsEntity} role="admin" />;
+  return <EntityGrid 
+    entity={orgsEntity} 
+    role="admin" 
+    onSaveCreate={async () => { throw new Error("No se pueden crear orgs desde aquí"); }}
+    onSaveUpdate={async () => { throw new Error("No se pueden editar orgs desde aquí"); }}
+  />;
 }

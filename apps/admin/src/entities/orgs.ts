@@ -9,7 +9,8 @@ export const orgsEntity: EntityDefinition = {
   fields: [
     { key: "name", label: "Nombre", type: "text", width: 200, editable: false, sortable: true },
     { key: "node_count", label: "Dispositivos", type: "number", width: 120, editable: false, sortable: true },
-    { key: "created_at", label: "Creada", type: "date", width: 160, editable: false, sortable: true },
+    { key: "role", label: "Mi Rol", type: "text", width: 120, editable: false, sortable: true },
+    { key: "created_at", label: "Creado", type: "date", width: 150, editable: false, sortable: true },
   ],
   views: [
     {
