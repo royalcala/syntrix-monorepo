@@ -61,11 +61,14 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Detail Panel Avanzado:** Falta resize handle y sub-grids funcionales (ej. Ver facturas dentro del cliente).
 - **Grid Avanzado:** Sort funcional. Filtros parciales (solo globales). Faltan columnas redimensionables/ocultables y multi-selección.
 - **Estados Visuales y Transiciones:** Implementados Toasts y Skeletons. Faltan transiciones suaves en paneles.
+- **Feedback Visual de Sincronización:** Falta construir indicadores UI en la barra lateral (`SyncStatusIndicator`) mostrando estado P2P real (online/offline, docs pending).
 
 ### 🔜 Próximas Prioridades Técnicas (El Backlog Inmediato)
-1. **Paginación Server-Side:** Soporte para `limit` y `offset` en `query_entity` para no colapsar la RAM al tener >10k registros.
-2. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
-3. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
+1. **Persistencia de Membresía e Identidades P2P:** Reemplazar `MemStore` y claves efímeras en `identity.rs` por almacenamiento persistente para que la membresía y sync sobreviva a reinicios.
+2. **Sistema de Presencia (Heartbeat):** Implementar protocolo de latido escribiendo un timestamp en `control_doc` cada 30s para identificar clientes offline y online con exactitud real, con vista en el Admin Dashboard de Sync.
+3. **Paginación Server-Side:** Soporte para `limit` y `offset` en `query_entity` para no colapsar la RAM al tener >10k registros.
+4. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
+5. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
 
 ### ❌ Pendiente (Features de Negocio)
 - Workflow de facturas (draft → open → paid).
