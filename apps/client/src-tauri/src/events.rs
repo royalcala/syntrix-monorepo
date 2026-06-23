@@ -48,19 +48,31 @@ pub fn commit_event(
     let node_id = state.node_id();
 
     // Route event to the correct namespace
-    let (doc, ns_name) = match event_type.split('.').next().unwrap_or(event_type) {
-        "invoice" | "order" | "sales_note" => (&org.operational_doc, "operational"),
-        "product" | "customer" | "chart_of_accounts" => (&org.catalogs_doc, "catalogs"),
-        "payroll" => (&org.payroll_doc, "payroll"),
-        _ => return Err(anyhow::anyhow!("unknown event_type: {}", event_type)),
+    let module_name = match event_type.split('.').next().unwrap_or(event_type) {
+        "invoice" | "invoices" | "upsert_invoices" => "invoices",
+        "order" | "orders" | "upsert_orders" => "orders",
+        "product" | "products" | "upsert_products" => "products",
+        "customer" | "customers" | "upsert_customers" => "customers",
+        "supplier" | "suppliers" | "upsert_suppliers" => "suppliers",
+        "payroll" | "upsert_payroll" => "payroll",
+        _ => event_type,
     };
 
-    // Validate write permission
+    let (doc, ns_name) = match module_name {
+        "invoices" | "orders" | "sales_note" => (&org.operational_doc, "operational"),
+        "products" | "customers" | "suppliers" | "chart_of_accounts" => (&org.catalogs_doc, "catalogs"),
+        "payroll" => (&org.payroll_doc, "payroll"),
+        _ => return Err(anyhow::anyhow!("unknown event_type module: {}", module_name)),
+    };
+
+    // Validate write permission (allow if they have module permission OR namespace permission)
     let can_write = state.registry().read()
-        .map(|r| r.can_write(&org_id.into(), &node_id, ns_name))
+        .map(|r| {
+            r.can_write(&org_id.into(), &node_id, module_name) || r.can_write(&org_id.into(), &node_id, ns_name)
+        })
         .unwrap_or(false);
     if !can_write {
-        return Err(anyhow::anyhow!("Write denied: role cannot write to {} namespace", ns_name));
+        return Err(anyhow::anyhow!("Write denied: role cannot write to module {} or namespace {}", module_name, ns_name));
     }
 
     let hlc = Hlc::next(&node_id_hex, state.counter());
