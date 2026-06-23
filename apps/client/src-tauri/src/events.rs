@@ -66,11 +66,25 @@ pub fn commit_event(
     };
 
     // Validate write permission (allow if they have module permission OR namespace permission)
-    let can_write = state.registry().read()
-        .map(|r| {
-            r.can_write(&org_id.into(), &node_id, module_name) || r.can_write(&org_id.into(), &node_id, ns_name)
-        })
-        .unwrap_or(false);
+    let role = &org.role;
+    let role_key = format!("roles/{}", role);
+    let mut can_write = role == "admin"; // Admin bypass
+
+    if !can_write {
+        if let Ok(Some(entry)) = tauri::async_runtime::block_on(org.control_doc.get_exact(author, role_key.as_bytes(), false)) {
+            let hash = entry.content_hash();
+            if let Ok(bytes) = tauri::async_runtime::block_on(state.store().blobs().get_bytes(hash)) {
+                let bytes_ref: &[u8] = bytes.as_ref();
+                if let Ok(grants) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
+                    if let Some(write_perms) = grants.get("can_write").and_then(|v| v.as_array()) {
+                        let perms: Vec<&str> = write_perms.iter().filter_map(|v| v.as_str()).collect();
+                        can_write = perms.contains(&module_name) || perms.contains(&ns_name) || perms.contains(&"*");
+                    }
+                }
+            }
+        }
+    }
+
     if !can_write {
         return Err(anyhow::anyhow!("Write denied: role cannot write to module {} or namespace {}", module_name, ns_name));
     }
