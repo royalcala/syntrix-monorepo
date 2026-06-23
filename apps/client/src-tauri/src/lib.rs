@@ -137,11 +137,40 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
 }
 
 #[tauri::command]
-fn query_entity(state: tauri::State<'_, Mutex<AppState>>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    let org_id = s.active_org().unwrap_or("");
-    if org_id.is_empty() { return Ok(vec![]); }
-    s.indexer.query(org_id, &entity, filter_field.as_deref(), filter_value.as_deref()).map_err(|e| e.to_string())
+fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    let (oid, doc, store) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
+        if resolved_org_id.is_empty() { return Ok(vec![]); }
+
+        if entity != "roles" {
+            return s.indexer.query(&resolved_org_id, &entity, filter_field.as_deref(), filter_value.as_deref()).map_err(|e| e.to_string());
+        }
+
+        let org_state = s.get_org_docs(&resolved_org_id).ok_or_else(|| "Org docs not found".to_string())?;
+        (resolved_org_id, org_state.control_doc.clone(), s.store().clone())
+    };
+
+    tauri::async_runtime::block_on(async move {
+        let mut results = vec![];
+        let mut stream = doc.get_many(iroh_docs::api::Query::key_prefix("roles/")).await.map_err(|e| e.to_string())?;
+        use futures::StreamExt;
+        while let Some(entry_res) = stream.next().await {
+            if let Ok(entry) = entry_res {
+                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                    if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        let key = String::from_utf8_lossy(entry.key()).to_string();
+                        let name = key.replace("roles/", "");
+                        if let Some(obj) = json.as_object_mut() {
+                            obj.insert("name".into(), serde_json::Value::String(name));
+                        }
+                        results.push(json);
+                    }
+                }
+            }
+        }
+        Ok(results)
+    })
 }
 
 #[tauri::command]
