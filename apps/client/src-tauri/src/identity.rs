@@ -100,6 +100,7 @@ impl AppState {
     pub fn counter(&self) -> &AtomicU64 { &self.hlc_counter }
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
+    pub fn store(&self) -> &iroh_blobs::store::mem::MemStore { &self._store }
 
     pub fn list_orgs(&self) -> Vec<OrgInfo> {
         self.orgs.iter().map(|(id, o)| OrgInfo {

@@ -153,12 +153,14 @@ fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>
 
     tauri::async_runtime::block_on(async move {
         let mut results = vec![];
-        let mut stream = doc.get_many(iroh_docs::api::Query::key_prefix("roles/")).await.map_err(|e| e.to_string())?;
-        use futures::StreamExt;
+        let mut stream = doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await.map_err(|e| e.to_string())?;
+        use tokio_stream::StreamExt;
         while let Some(entry_res) = stream.next().await {
             if let Ok(entry) = entry_res {
-                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
-                    if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                let hash = entry.content_hash();
+                if let Ok(bytes) = store.blobs().get_bytes(hash).await {
+                    let bytes_ref: &[u8] = bytes.as_ref();
+                    if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
                         let key = String::from_utf8_lossy(entry.key()).to_string();
                         let name = key.replace("roles/", "");
                         if let Some(obj) = json.as_object_mut() {
