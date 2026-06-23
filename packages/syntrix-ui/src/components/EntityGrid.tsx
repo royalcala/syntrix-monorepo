@@ -20,7 +20,7 @@ import type { EntityDefinition } from "../fields/registry";
 import { DetailPanel } from "./DetailPanel";
 
 interface EntityGridProps {
-  entity: EntityDefinition & { loadData?: () => Promise<Array<Record<string, unknown>>> };
+  entity: EntityDefinition & { loadData?: (orgId?: string) => Promise<Array<Record<string, unknown>>> };
   activeView?: string;
   role?: string;
   orgId?: string;
@@ -54,14 +54,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
   const { data: liveData, isLoading } = useQuery({
     queryKey: ["entity", entity.id, orgId, viewId, columnFilters],
     queryFn: async () => {
-      if (entity.loadData) return await entity.loadData();
+      if (entity.loadData) return await entity.loadData(orgId);
       return [];
     },
   });
 
   const allRows = useMemo(() => {
     const raw = (liveData as Array<Record<string, unknown>> | undefined) ?? [];
-    return raw.map((r) => ({ ...r, id: (r.id ?? crypto.randomUUID()) as string })) as Row[];
+    return raw.map((r) => ({ ...r, id: (r.id ?? (crypto.randomUUID?.() || Math.random().toString(36).slice(2))) as string })) as Row[];
   }, [liveData]);
 
   const columns = useMemo(() =>
@@ -146,7 +146,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
   });
 
   const onCreateRecord = useCallback(async () => {
-    const newId = crypto.randomUUID?.() ?? `${Date.now()}`;
+    const newId = crypto.randomUUID?.() || `${Date.now()}`;
     const newRow: Row = { id: newId };
     entity.fields.forEach((f) => {
       if (f.key !== "id") {

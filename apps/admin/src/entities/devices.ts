@@ -5,7 +5,7 @@ export const devicesEntity: EntityDefinition = {
   id: "devices",
   label: "Dispositivos",
   icon: "users",
-  loadData: () => fetchEntityData("devices"),
+  loadData: (orgId?: string) => fetchEntityData("devices", undefined, undefined, orgId),
   fields: [
     { key: "node_id", label: "Node ID", type: "text", width: 180, editable: false, sortable: true },
     { key: "name", label: "Nombre", type: "text", width: 180, editable: true, sortable: true },

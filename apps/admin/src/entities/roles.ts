@@ -5,7 +5,7 @@ export const rolesEntity: EntityDefinition = {
   id: "roles",
   label: "Roles",
   icon: "shield",
-  loadData: () => fetchEntityData("roles"),
+  loadData: (orgId?: string) => fetchEntityData("roles", undefined, undefined, orgId),
   fields: [
     { key: "name", label: "Nombre", type: "text", width: 180, editable: false, sortable: true },
     { 

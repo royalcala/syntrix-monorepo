@@ -5,7 +5,7 @@ export const orgsEntity: EntityDefinition = {
   id: "orgs",
   label: "Organizaciones",
   icon: "building-2",
-  loadData: () => fetchEntityData("orgs"),
+  loadData: (orgId?: string) => fetchEntityData("orgs", undefined, undefined, orgId),
   fields: [
     { key: "name", label: "Nombre", type: "text", width: 200, editable: false, sortable: true },
     { key: "node_count", label: "Dispositivos", type: "number", width: 120, editable: false, sortable: true },

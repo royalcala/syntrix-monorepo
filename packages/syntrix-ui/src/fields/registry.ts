@@ -43,7 +43,8 @@ export interface EntityDefinition {
   id: string;
   label: string;
   icon: string;
-  loadData?: () => Promise<Array<Record<string, unknown>>>;
+  collection?: unknown;
+  loadData?: (orgId?: string) => Promise<Array<Record<string, unknown>>>;
   fields: EntityFieldConfig[];
   views: ViewDefinition[];
   detail: { tabs: DetailTab[] };
