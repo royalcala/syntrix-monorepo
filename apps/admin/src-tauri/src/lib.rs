@@ -132,10 +132,14 @@ fn share_org(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<Ve
 
 #[tauri::command]
 fn get_logs() -> Result<String, String> {
-    let log_dir = dirs_next::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("syntrix")
-        .join("logs");
+    let log_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+        std::path::PathBuf::from(custom_path).join("logs")
+    } else {
+        dirs_next::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("syntrix")
+            .join("logs")
+    };
     let log_file = log_dir.join("syntrix-admin.log");
     if log_file.exists() {
         std::fs::read_to_string(log_file).map_err(|e| e.to_string())
@@ -147,10 +151,14 @@ fn get_logs() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // File logging (rotating daily, kept for 7 days)
-    let log_dir = dirs_next::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("syntrix")
-        .join("logs");
+    let log_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+        std::path::PathBuf::from(custom_path).join("logs")
+    } else {
+        dirs_next::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("syntrix")
+            .join("logs")
+    };
     std::fs::create_dir_all(&log_dir).ok();
     
     let file_appender = tracing_appender::rolling::daily(&log_dir, "syntrix-admin.log");

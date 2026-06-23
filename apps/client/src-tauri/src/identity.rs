@@ -80,7 +80,11 @@ impl AppState {
 
         let author = api.author_create().await?;
         
-        let data_dir = dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix");
+        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+            std::path::PathBuf::from(custom_path)
+        } else {
+            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix")
+        };
         let indexer = crate::indexes::RelationalEngine::new(data_dir)?;
 
         Ok(Self {
