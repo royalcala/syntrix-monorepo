@@ -152,19 +152,41 @@ impl NamespaceRegistry {
             .and_then(|g| g.get(&role))
             .map(|g| &g.can_write)
         {
-            // Direct match
+            // "*" means write to everything
+            if can_write.iter().any(|n| n == "*") {
+                return true;
+            }
+
+            // Direct match (for backward compatibility)
             if can_write.iter().any(|n| n == namespace) {
                 return true;
             }
+
             // Wildcard match
             if can_write.iter().any(|pattern| {
                 pattern.contains('*') && namespace.starts_with(pattern.trim_end_matches('*'))
             }) {
                 return true;
             }
-            // "*" means write to everything
-            if can_write.iter().any(|n| n == "*") {
-                return true;
+
+            // Map business modules to technical namespaces for network sync validation
+            match namespace {
+                "catalogs" => {
+                    if can_write.iter().any(|n| ["customers", "products", "suppliers", "chart_of_accounts"].contains(&n.as_str())) {
+                        return true;
+                    }
+                }
+                "operational" => {
+                    if can_write.iter().any(|n| ["invoices", "orders", "sales_note"].contains(&n.as_str())) {
+                        return true;
+                    }
+                }
+                "payroll" => {
+                    if can_write.iter().any(|n| n == "payroll") {
+                        return true;
+                    }
+                }
+                _ => {}
             }
         }
 

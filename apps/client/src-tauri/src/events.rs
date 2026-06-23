@@ -71,14 +71,18 @@ pub fn commit_event(
     let mut can_write = role == "admin"; // Admin bypass
 
     if !can_write {
-        if let Ok(Some(entry)) = tauri::async_runtime::block_on(org.control_doc.get_exact(author, role_key.as_bytes(), false)) {
-            let hash = entry.content_hash();
-            if let Ok(bytes) = tauri::async_runtime::block_on(state.store().blobs().get_bytes(hash)) {
-                let bytes_ref: &[u8] = bytes.as_ref();
-                if let Ok(grants) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
-                    if let Some(write_perms) = grants.get("can_write").and_then(|v| v.as_array()) {
-                        let perms: Vec<&str> = write_perms.iter().filter_map(|v| v.as_str()).collect();
-                        can_write = perms.contains(&module_name) || perms.contains(&ns_name) || perms.contains(&"*");
+        if let Ok(stream_raw) = tauri::async_runtime::block_on(org.control_doc.get_many(iroh_docs::store::Query::key_exact(role_key.clone()))) {
+            let mut stream = Box::pin(stream_raw);
+            use futures_util::stream::StreamExt;
+            if let Some(Ok(entry)) = tauri::async_runtime::block_on(stream.next()) {
+                let hash = entry.content_hash();
+                if let Ok(bytes) = tauri::async_runtime::block_on(state.store().blobs().get_bytes(hash)) {
+                    let bytes_ref: &[u8] = bytes.as_ref();
+                    if let Ok(grants) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
+                        if let Some(write_perms) = grants.get("can_write").and_then(|v| v.as_array()) {
+                            let perms: Vec<&str> = write_perms.iter().filter_map(|v| v.as_str()).collect();
+                            can_write = perms.contains(&module_name) || perms.contains(&ns_name) || perms.contains(&"*");
+                        }
                     }
                 }
             }
