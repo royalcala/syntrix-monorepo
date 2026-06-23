@@ -132,7 +132,24 @@ function OrgsScreen({ nodeId, orgs, setActiveOrg }: { nodeId: string; orgs: OrgI
         <div className="flex items-center gap-2 mb-2">
           <p className="text-xs text-muted-foreground">Your Device Address</p>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={async () => {
-            await navigator.clipboard.writeText(addr); setCopied(true); setTimeout(() => setCopied(false), 2000);
+            try {
+              if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(addr);
+              } else {
+                const textArea = document.createElement("textarea");
+                textArea.value = addr;
+                textArea.style.position = "absolute";
+                textArea.style.left = "-999999px";
+                document.body.prepend(textArea);
+                textArea.select();
+                try { document.execCommand("copy"); } catch (e) { console.error(e); }
+                textArea.remove();
+              }
+              setCopied(true); setTimeout(() => setCopied(false), 2000);
+            } catch (err) {
+              console.error(err);
+              prompt("El navegador bloqueó el copiado automático. Por favor cópialo de aquí:", addr);
+            }
           }}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Copied" : "Copy"}</Button>
         </div>
         <code className="block text-xs font-mono break-all max-h-16 overflow-y-auto">{addr || "loading..."}</code>
