@@ -9,6 +9,8 @@ mod sync;
 mod invite;
 mod seed;
 pub mod indexes;
+pub mod search;
+
 
 pub use identity::AppState;
 
@@ -177,6 +179,25 @@ fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>
 }
 
 #[tauri::command]
+fn search_entity(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org_id: Option<String>,
+    query: String,
+    entities: Option<Vec<String>>,
+    limit: Option<usize>,
+) -> Result<Vec<search::SearchResult>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
+    if resolved_org_id.is_empty() { return Ok(vec![]); }
+
+    let limit_val = limit.unwrap_or(20);
+    s.indexer
+        .search_engine
+        .search(&resolved_org_id, &query, entities, limit_val)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_logs() -> Result<String, String> {
     let log_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
         std::path::PathBuf::from(custom_path).join("logs")
@@ -255,7 +276,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
             commit_event, sync_status, sync_push, sync_pull, sync_ping,
-            query_entity, seed_dev_data, get_logs,
+            query_entity, search_entity, seed_dev_data, get_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

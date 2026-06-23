@@ -20,10 +20,10 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Función:** Proveer consultas eficientes y lookups O(1).
 - **Cómo funciona:** `indexes.rs` actúa como un indexador en segundo plano. Al recibir un evento de iroh, extrae el JSON y crea índices secundarios vacíos en redb (`idx:{org}:{entity}:{field}:{value}:{doc_id}`) para escaneos de prefijo ultra-rápidos.
 
-### 1.3 Capa de Búsqueda (Próximamente)
+### 1.3 Capa de Búsqueda (Completada e Integrada)
 - **Tecnología:** `Tantivy` (Motor Full-Text embebido en Rust)
 - **Función:** Búsqueda difusa (fuzzy search), BM25 ranking y snippets.
-- **Cómo funciona:** Índice paralelo a redb. Se actualiza automáticamente desde `upsert_document`. El frontend consumirá esto a través de `invoke("search_entity")`. Reemplaza la idea inicial de usar FlexSearch en memoria.
+- **Cómo funciona:** Índice paralelo a redb. Se actualiza automáticamente desde `upsert_document` después de realizar la confirmación transaccional. El frontend consume esto mediante la query reactiva que invoca a `search_entity` por IPC para búsqueda en el grid y para búsqueda global en el Command Palette (Ctrl+K) con snippets resaltados en HTML.
 
 ---
 
@@ -51,18 +51,21 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Workspace UI Core:** `EntityGrid` y `DetailPanel` renderizando dinámicamente según la entidad.
 - **Reactividad de UI:** Edición de celdas/formularios actualiza la UI y sincroniza a otros peers.
 - **Field Types Base:** Text, number, currency, date, select, status, boolean implementados en Grid y Forms.
+- **Motor de Búsqueda Híbrido Tantivy + redb:** Búsqueda difusa, BM25 y snippets en Rust (`search.rs`), indexación automática en writes, y comando `search_entity` expuesto.
+- **Búsqueda Dinámica en Grids:** Filtro del `EntityGrid` conectado a Tantivy vía debounce + IPC.
+- **Búsqueda Global y Command Palette (Ctrl+K):** Cross-entity search en `App.tsx` conectado a Tantivy, mostrando snippets de coincidencia.
+- **Navegación e Interacción Integrada (Deep Linking):** Seleccionar un resultado del Command Palette redirige a la vista de la entidad, selecciona la fila y abre el panel de detalles automáticamente usando `useSearchParams`.
+- **Detail Panel Responsivo:** Bottom sheet para móviles y panel lateral para desktop implementado.
 
 ### ⚠️ En Progreso / Parcial
-- **Detail Panel Avanzado:** Falta diseño responsive (bottom sheet en mobile), resize handle, y sub-grids funcionales (ej. Ver facturas dentro del cliente).
-- **Command Palette (Ctrl+K):** UI existe, pero falta conectarlo al motor de búsqueda.
+- **Detail Panel Avanzado:** Falta resize handle y sub-grids funcionales (ej. Ver facturas dentro del cliente).
 - **Grid Avanzado:** Sort funcional. Filtros parciales (solo globales). Faltan columnas redimensionables/ocultables y multi-selección.
 - **Estados Visuales y Transiciones:** Implementados Toasts y Skeletons. Faltan transiciones suaves en paneles.
 
 ### 🔜 Próximas Prioridades Técnicas (El Backlog Inmediato)
-1. **Motor de Búsqueda Tantivy:** Crear `search.rs`, conectarlo al indexador y exponer `search_entity` para búsquedas globales (Ctrl+K) y por entidad.
-2. **Paginación Server-Side:** Soporte para `limit` y `offset` en `query_entity` para no colapsar la RAM al tener >10k registros.
-3. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
-4. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
+1. **Paginación Server-Side:** Soporte para `limit` y `offset` en `query_entity` para no colapsar la RAM al tener >10k registros.
+2. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
+3. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
 
 ### ❌ Pendiente (Features de Negocio)
 - Workflow de facturas (draft → open → paid).
@@ -80,3 +83,4 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - Sincronización multi-peer totalmente reactiva.
 - Recuperación offline probada y robusta.
 - Workflows básicos de facturación operando.
+

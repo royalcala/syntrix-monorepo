@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
-import { CommandPalette, type SearchResult, type QuickAction } from "@syntrix/ui/components/CommandPalette";
+import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
 import { Inbox } from "./screens/Inbox";
@@ -43,6 +43,73 @@ export default function App() {
   const [invites, setInvites] = useState<InvitePayload[]>([]);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdQuery, setCmdQuery] = useState("");
+  const [debouncedCmdQuery, setDebouncedCmdQuery] = useState("");
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedCmdQuery(cmdQuery);
+    }, 150);
+    return () => clearTimeout(handler);
+  }, [cmdQuery]);
+
+  const { data: dbSearchResults, isLoading: isSearchLoading } = useQuery({
+    queryKey: ["global-search", activeOrg, debouncedCmdQuery],
+    queryFn: async () => {
+      if (!debouncedCmdQuery.trim()) return [];
+      try {
+        const results = await invoke<any[]>("search_entity", {
+          orgId: activeOrg,
+          query: debouncedCmdQuery,
+          limit: 10,
+        });
+        return results;
+      } catch (err) {
+        console.error("Global search failed:", err);
+        return [];
+      }
+    },
+    enabled: !!activeOrg && !!debouncedCmdQuery.trim(),
+  });
+
+  const searchResults = useMemo(() => {
+    const navMatches = cmdQuery
+      ? navItems
+          .filter((i) => i.label.toLowerCase().includes(cmdQuery.toLowerCase()))
+          .map((i) => ({
+            id: i.href,
+            label: i.label,
+            entity: "nav",
+            entityLabel: "Navegar",
+          }))
+      : [];
+
+    const dbMatches = (dbSearchResults || []).map((r: any) => ({
+      id: r.doc_id,
+      label: r.title,
+      subtitle: r.snippet,
+      entity: r.entity,
+      entityLabel:
+        r.entity === "customers"
+          ? "Cliente"
+          : r.entity === "invoices"
+          ? "Factura"
+          : r.entity === "products"
+          ? "Producto"
+          : r.entity === "orders"
+          ? "Orden"
+          : r.entity,
+    }));
+
+    return [...navMatches, ...dbMatches];
+  }, [cmdQuery, dbSearchResults]);
+
+  const handleSelectResult = (r: any) => {
+    if (r.entity === "nav") {
+      navigate(r.id);
+    } else {
+      navigate(`/${r.entity}?id=${r.id}`);
+    }
+  };
 
   useEffect(() => {
     invoke<string>("get_node_id").then(setNodeId);
@@ -127,18 +194,17 @@ export default function App() {
       <CommandPalette
         open={cmdOpen}
         onClose={() => { setCmdOpen(false); setCmdQuery(""); }}
-        results={cmdQuery ? navItems.filter((i) => i.label.toLowerCase().includes(cmdQuery.toLowerCase())).map((i) => ({
-          id: i.href, label: i.label, entity: "nav", entityLabel: "Navegar",
-        })) : []}
+        results={searchResults}
         actions={[
           { id: "new-customer", label: "Nuevo cliente", shortcut: "⌘N", action: () => navigate("/customers") },
           { id: "new-invoice", label: "Nueva factura", action: () => navigate("/invoices") },
           { id: "orgs", label: "Ir a Mis Orgs", action: () => navigate("/orgs") },
           { id: "inbox", label: "Ir a Inbox", action: () => navigate("/inbox") },
         ]}
-        onSelectResult={(r) => navigate(r.id)}
+        onSelectResult={handleSelectResult}
         searchQuery={cmdQuery}
         onSearchChange={setCmdQuery}
+        isLoading={isSearchLoading}
       />
     </AppShell>
   );

@@ -2,6 +2,7 @@ use redb::{Database, TableDefinition, ReadableTable};
 use std::path::PathBuf;
 use serde_json::Value;
 use std::sync::Arc;
+use crate::search::SearchEngine;
 
 // Table: Key = "doc:{org_id}:{entity}:{doc_id}", Value = JSON bytes
 const DOCUMENTS: TableDefinition<&str, &[u8]> = TableDefinition::new("documents");
@@ -11,7 +12,9 @@ const INDEXES: TableDefinition<&str, &[u8]> = TableDefinition::new("indexes");
 
 pub struct RelationalEngine {
     db: Arc<Database>,
+    pub search_engine: SearchEngine,
 }
+
 
 impl RelationalEngine {
     pub fn new(data_dir: PathBuf) -> anyhow::Result<Self> {
@@ -28,8 +31,14 @@ impl RelationalEngine {
         }
         write_txn.commit()?;
 
-        Ok(Self { db: Arc::new(db) })
+        let search_engine = SearchEngine::new(data_dir.clone())?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            search_engine,
+        })
     }
+
 
     /// Upserts a document and automatically maintains its secondary indices
     pub fn upsert_document(
@@ -69,11 +78,36 @@ impl RelationalEngine {
                     }
                 }
             }
-        }
         write_txn.commit()?;
+
+        // 4. Index in Tantivy full-text search
+        let mut title = doc_id.to_string();
+        let mut body_parts = Vec::new();
+
+        if let Some(obj) = json_payload.as_object() {
+            for key in &["name", "title", "label"] {
+                if let Some(v) = obj.get(*key) {
+                    if let Some(s) = v.as_str() {
+                        title = s.to_string();
+                        break;
+                    }
+                }
+            }
+
+            for (_k, v) in obj {
+                if v.is_string() || v.is_number() || v.is_boolean() {
+                    let val_str = value_to_string(v);
+                    body_parts.push(val_str);
+                }
+            }
+        }
+
+        let body = body_parts.join(" ");
+        self.search_engine.index_document(org_id, entity, doc_id, &title, &body)?;
 
         Ok(())
     }
+
 
     /// Query documents using primary prefix or secondary indices
     pub fn query(

@@ -14,6 +14,7 @@ import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useHotkeys } from "@tanstack/react-hotkeys";
+import { useSearchParams } from "react-router-dom";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
 import type { EntityDefinition } from "../fields/registry";
 import { DetailPanel } from "./DetailPanel";
@@ -35,12 +36,39 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
   const [detailMode, setDetailMode] = useState<"edit" | "create">("edit");
   const [viewId, setViewId] = useState(activeView ?? entity.views[0]?.id ?? "all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 
   const view = entity.views.find((v) => v.id === viewId) ?? entity.views[0];
   const visibleCols = view?.visibleColumns ?? entity.fields.map((f) => f.key);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 150);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
+  // Reactive search results from Tantivy full-text index
+  const { data: searchResults } = useQuery({
+    queryKey: ["search", entity.id, orgId, debouncedSearchQuery],
+    queryFn: async () => {
+      if (!debouncedSearchQuery.trim()) return null;
+      try {
+        const results = await invoke<any[]>("search_entity", {
+          query: debouncedSearchQuery,
+          entities: [entity.id],
+        });
+        return results;
+      } catch (err) {
+        console.error("Search failed:", err);
+        return [];
+      }
+    },
+    enabled: !!debouncedSearchQuery.trim(),
+  });
 
   // Reactive data from Tauri backend via Relational Engine
   const { data: liveData, isLoading } = useQuery({
@@ -55,6 +83,34 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
     const raw = (liveData as Array<Record<string, unknown>> | undefined) ?? [];
     return raw.map((r) => ({ ...r, id: (r.id ?? crypto.randomUUID()) as string })) as Row[];
   }, [liveData]);
+
+  const displayedRows = useMemo(() => {
+    if (!debouncedSearchQuery.trim() || !searchResults) {
+      return allRows;
+    }
+    const scoreMap = new Map(searchResults.map((r: any, idx: number) => [r.doc_id, idx]));
+    return allRows
+      .filter((row) => scoreMap.has(row.id))
+      .sort((a, b) => scoreMap.get(a.id)! - scoreMap.get(b.id)!);
+  }, [allRows, debouncedSearchQuery, searchResults]);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectId = searchParams.get("id");
+
+  useEffect(() => {
+    if (selectId && allRows.length > 0) {
+      const row = allRows.find((r) => r.id === selectId);
+      if (row) {
+        setSelectedRow(row);
+        setDetailMode("edit");
+        setDetailOpen(true);
+        // Clear param so it doesn't reopen if closed
+        const newParams = new URLSearchParams(searchParams);
+        newParams.delete("id");
+        setSearchParams(newParams, { replace: true });
+      }
+    }
+  }, [selectId, allRows, searchParams, setSearchParams]);
 
   const columns = useMemo(() =>
     visibleCols.map((key) => {
@@ -100,7 +156,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
   );
 
   const table = useReactTable({
-    data: allRows,
+    data: displayedRows,
     columns,
     state: { sorting, columnFilters, columnVisibility },
     onSortingChange: setSorting,
@@ -111,6 +167,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
     getFilteredRowModel: getFilteredRowModel(),
     getRowId: (row) => row.id,
   });
+
 
   const onCreateRecord = useCallback(async () => {
     const newId = crypto.randomUUID?.() ?? `${Date.now()}`;
@@ -162,7 +219,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
               className="w-44 pl-7 pr-2 py-1 text-xs rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder="Buscar..."
               value={searchQuery}
-              onChange={(e) => { setSearchQuery(e.target.value); table.setGlobalFilter(e.target.value); }}
+              onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
           <button onClick={onCreateRecord}
@@ -185,7 +242,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                 <>
                   <Search className="w-8 h-8 opacity-30" />
                   <span>No hay resultados para "{searchQuery}"</span>
-                  <button onClick={() => { setSearchQuery(""); table.setGlobalFilter(""); }} className="text-xs text-primary hover:underline">Limpiar búsqueda</button>
+                  <button onClick={() => setSearchQuery("")} className="text-xs text-primary hover:underline">Limpiar búsqueda</button>
                 </>
               ) : (
                 <>
