@@ -67,10 +67,9 @@ pub async fn add_device(
 
 fn default_role_grants(role: &str) -> serde_json::Value {
     match role {
-        "admin" => serde_json::json!({"can_open": ["control","catalogs","operational","payroll"], "can_write": ["catalogs","operational","payroll"]}),
-        "sales" => serde_json::json!({"can_open": ["control","catalogs","operational"], "can_write": ["operational"]}),
-        "contabilidad" => serde_json::json!({"can_open": ["control","catalogs","operational","payroll"], "can_write": []}),
-        "hr" => serde_json::json!({"can_open": ["control","catalogs","payroll"], "can_write": ["payroll"]}),
+        "admin" => serde_json::json!({"can_open": ["customers","suppliers","products","invoices","orders"], "can_write": ["customers","suppliers","products","invoices","orders"]}),
+        "sales" => serde_json::json!({"can_open": ["customers","products","invoices","orders"], "can_write": ["customers","invoices","orders"]}),
+        "contabilidad" => serde_json::json!({"can_open": ["invoices","customers"], "can_write": []}),
         _ => serde_json::json!({"can_open": [], "can_write": []}),
     }
 }
@@ -195,25 +194,28 @@ pub async fn send_invite(
     let payroll_ticket = org_state.payroll_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
-    // Build selective ticket list based on role
+    // Build selective ticket list based on business modules -> namespaces mapping
     let grants = default_role_grants(role);
     let can_open: Vec<&str> = grants["can_open"].as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
+    let mut needs_control = true; // Everyone needs control docs
+    let mut needs_catalogs = false;
+    let mut needs_operational = false;
+
+    for perm in &can_open {
+        match *perm {
+            "products" | "suppliers" => needs_catalogs = true,
+            "customers" | "invoices" | "orders" => needs_operational = true,
+            _ => {}
+        }
+    }
+
     let mut tickets: Vec<serde_json::Value> = vec![];
-    if can_open.contains(&"control") {
-        tickets.push(serde_json::json!({"ns": "control", "ticket": control_ticket.to_string()}));
-    }
-    if can_open.contains(&"catalogs") {
-        tickets.push(serde_json::json!({"ns": "catalogs", "ticket": catalogs_ticket.to_string()}));
-    }
-    if can_open.contains(&"operational") {
-        tickets.push(serde_json::json!({"ns": "operational", "ticket": operational_ticket.to_string()}));
-    }
-    if can_open.contains(&"payroll") {
-        tickets.push(serde_json::json!({"ns": "payroll", "ticket": payroll_ticket.to_string()}));
-    }
+    if needs_control { tickets.push(serde_json::json!({"ns": "control", "ticket": control_ticket.to_string()})); }
+    if needs_catalogs { tickets.push(serde_json::json!({"ns": "catalogs", "ticket": catalogs_ticket.to_string()})); }
+    if needs_operational { tickets.push(serde_json::json!({"ns": "operational", "ticket": operational_ticket.to_string()})); }
 
     let payload = serde_json::json!({
         "org_name": org,

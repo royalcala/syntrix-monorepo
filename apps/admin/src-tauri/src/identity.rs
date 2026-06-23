@@ -192,10 +192,9 @@ struct RoleGrants { can_open: Vec<String>, can_write: Vec<String> }
 
 fn default_role_grants(role: &str) -> RoleGrants {
     match role {
-        "admin" => RoleGrants { can_open: vec!["control".into(),"catalogs".into(),"operational".into(),"payroll".into()], can_write: vec!["catalogs".into(),"operational".into(),"payroll".into()] },
-        "sales" => RoleGrants { can_open: vec!["control".into(),"catalogs".into(),"operational".into()], can_write: vec!["operational".into()] },
-        "contabilidad" => RoleGrants { can_open: vec!["control".into(),"catalogs".into(),"operational".into(),"payroll".into()], can_write: vec![] },
-        "hr" => RoleGrants { can_open: vec!["control".into(),"catalogs".into(),"payroll".into()], can_write: vec!["payroll".into()] },
+        "admin" => RoleGrants { can_open: vec!["customers".into(),"suppliers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"suppliers".into(),"products".into(),"invoices".into(),"orders".into()] },
+        "sales" => RoleGrants { can_open: vec!["customers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"invoices".into(),"orders".into()] },
+        "contabilidad" => RoleGrants { can_open: vec!["invoices".into(),"customers".into()], can_write: vec![] },
         _ => RoleGrants { can_open: vec![], can_write: vec![] },
     }
 }

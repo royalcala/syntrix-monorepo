@@ -1,17 +1,40 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
 import { devicesEntity } from "../entities/devices";
 import { invoke } from "@tauri-apps/api/core";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 
 export function DevicesGridPage({ org }: { org: string }) {
   const queryClient = useQueryClient();
+  
+  // Fetch actual roles
+  const { data: roles } = useQuery({
+    queryKey: ["entity", "roles", org],
+    queryFn: async () => {
+      return await invoke<any[]>("list_roles", { org });
+    }
+  });
+
   useEffect(() => {
     localStorage.setItem("syntrix_admin_org", org);
   }, [org]);
 
+  // Inject roles into the entity config dynamically
+  const entityWithDynamicRoles = useMemo(() => {
+    const newEntity = { ...devicesEntity };
+    const roleFieldIdx = newEntity.fields.findIndex(f => f.key === "role");
+    if (roleFieldIdx !== -1 && roles && roles.length > 0) {
+      newEntity.fields = [...newEntity.fields];
+      newEntity.fields[roleFieldIdx] = {
+        ...newEntity.fields[roleFieldIdx],
+        options: roles.map(r => ({ label: r.name, value: r.name }))
+      };
+    }
+    return newEntity;
+  }, [roles]);
+
   return <EntityGrid 
-    entity={devicesEntity} 
+    entity={entityWithDynamicRoles} 
     role="admin" 
     orgId={org} 
     onSaveUpdate={async (id, data) => {

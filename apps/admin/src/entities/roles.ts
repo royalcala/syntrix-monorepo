@@ -10,30 +10,28 @@ export const rolesEntity: EntityDefinition = {
     { key: "name", label: "Nombre", type: "text", width: 180, editable: false, sortable: true },
     { 
       key: "can_open", 
-      label: "Lectura", 
+      label: "Leer", 
       type: "multi-select", 
-      width: 300, 
+      width: 200, 
       editable: true, 
       sortable: false,
       options: [
-        { label: "Dispositivos", value: "devices" },
-        { label: "Organizaciones", value: "orgs" },
-        { label: "Roles", value: "roles" },
-        { label: "Logs", value: "logs" }
+        { label: "Clientes", value: "customers" },
+        { label: "Proveedores", value: "suppliers" },
+        { label: "Productos", value: "products" }
       ]
     },
     { 
       key: "can_write", 
-      label: "Escritura", 
+      label: "Escribir", 
       type: "multi-select", 
-      width: 300, 
+      width: 200, 
       editable: true, 
       sortable: false,
       options: [
-        { label: "Dispositivos", value: "devices" },
-        { label: "Organizaciones", value: "orgs" },
-        { label: "Roles", value: "roles" },
-        { label: "Logs", value: "logs" }
+        { label: "Clientes", value: "customers" },
+        { label: "Proveedores", value: "suppliers" },
+        { label: "Productos", value: "products" }
       ]
     },
   ],

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useQuery } from "@tanstack/react-query";
 import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
 import { CommandPalette, type SearchResult, type QuickAction } from "@syntrix/ui/components/CommandPalette";
@@ -70,12 +71,21 @@ export default function App() {
     ...deviceNavItems.slice(1),
   ];
 
+  const { data: roleData } = useQuery({
+    queryKey: ["entity", "roles", activeOrg, role],
+    queryFn: async () => {
+      const list: any[] = await invoke("query_entity", { entity: "roles" });
+      return list.find((r) => r.name === role);
+    },
+    enabled: !!activeOrg && !!role,
+  });
+
   const filteredNavItems = navItems.filter((item) => {
-    if (!role) return false;
-    if (role === "admin") return true;
-    if (role === "sales") return ["/customers", "/invoices", "/orders", "/products"].includes(item.href);
-    if (role === "contabilidad") return ["/invoices"].includes(item.href);
-    return false;
+    if (role === "admin") return true; // El admin local siempre ve todo por seguridad
+    if (!roleData) return false;
+    const canOpen = (roleData.can_open as string[]) || [];
+    const moduleName = item.href.substring(1); // ej. "/customers" -> "customers"
+    return canOpen.includes(moduleName);
   });
 
   const isEntityRoute = navItems.some((i) => location.pathname === i.href);
