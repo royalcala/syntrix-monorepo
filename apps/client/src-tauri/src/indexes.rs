@@ -65,7 +65,7 @@ impl RelationalEngine {
                     if v.is_string() || v.is_number() || v.is_boolean() {
                         let val_str = value_to_string(v);
                         let idx_key = format!("idx:{}:{}:{}:{}:{}", org_id, entity, k, val_str, doc_id);
-                        idx_table.insert(idx_key.as_str(), &[])?;
+                        idx_table.insert(idx_key.as_str(), &[] as &[u8])?;
                     }
                 }
             }
@@ -89,7 +89,7 @@ impl RelationalEngine {
             let idx_table = read_txn.open_table(INDEXES)?;
             let prefix = format!("idx:{}:{}:{}:{}:", org_id, entity, field, val);
             
-            let range = idx_table.range(prefix.as_str()..);
+            let range = idx_table.range(prefix.as_str()..)?;
             for item in range {
                 let (key, _) = item?;
                 let k = key.value();
@@ -108,7 +108,7 @@ impl RelationalEngine {
         } else {
             // Full table scan for this entity
             let prefix = format!("doc:{}:{}:", org_id, entity);
-            let range = docs_table.range(prefix.as_str()..);
+            let range = docs_table.range(prefix.as_str()..)?;
             for item in range {
                 let (key, value) = item?;
                 let k = key.value();
