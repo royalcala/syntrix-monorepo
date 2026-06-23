@@ -18,9 +18,10 @@ interface DetailPanelProps {
   isCreate?: boolean;
   onSaveCreate?: (row: Record<string, unknown>) => Promise<void>;
   onSaveUpdate?: (recordId: string, changes: Record<string, unknown>) => Promise<void>;
+  customActions?: (row: Record<string, unknown>) => React.ReactNode;
 }
 
-export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, onSaveCreate, onSaveUpdate }: DetailPanelProps) {
+export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, onSaveCreate, onSaveUpdate, customActions }: DetailPanelProps) {
   const [activeTab, setActiveTab] = useState(isCreate ? "data" : entity.detail.tabs[0]?.key ?? "data");
   const [editMode, setEditMode] = useState(!!isCreate);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -210,6 +211,7 @@ export function DetailPanel({ entity, row, role, onClose, onNavigate, isCreate, 
           </span>
         </div>
         <div className="flex items-center gap-1">
+          {customActions && customActions(row)}
           {!isCreate && entity.fields.some((f) => f.editable) && (
             <Button variant="ghost" size="sm" onClick={() => setEditMode(!editMode)}>{editMode ? "Ver" : "Editar"}</Button>
           )}

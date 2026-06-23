@@ -26,11 +26,12 @@ interface EntityGridProps {
   orgId?: string;
   onSaveCreate?: (row: Row) => Promise<Row>;
   onSaveUpdate?: (recordId: string, changes: Record<string, unknown>) => Promise<void>;
+  customActions?: (row: Record<string, unknown>) => React.ReactNode;
 }
 
 interface Row { id: string; [key: string]: unknown; }
 
-export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSaveUpdate }: EntityGridProps) {
+export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSaveUpdate, customActions }: EntityGridProps) {
   const queryClient = useQueryClient();
   useEffect(() => {
     const unlisten = listen("entity_changed", () => {
@@ -287,6 +288,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                     queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
                   })}
                   onClose={() => { setDetailOpen(false); }}
+                  customActions={customActions}
                   onNavigate={detailMode === "create" ? undefined : (dir) => {
                 const idx = rows.findIndex((r) => r.original.id === selectedRow.id);
                 const next = idx + dir;
@@ -314,6 +316,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                     await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
                     queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
                   })}
+                  customActions={customActions}
               />
             </div>
           </div>

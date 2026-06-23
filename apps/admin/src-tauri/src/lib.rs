@@ -116,9 +116,11 @@ fn send_invite(
     org: String,
     endpoint_addr_json: String,
     role: String,
+    name: String,
+    person: String,
 ) -> Result<(), String> {
-    let state = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(admin::send_invite(&state, &org, &endpoint_addr_json, &role))
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(admin::send_invite(&mut state, &org, &endpoint_addr_json, &role, &name, &person))
         .map_err(|e| e.to_string())
 }
 

@@ -26,10 +26,35 @@ export function DevicesGridPage({ org }: { org: string }) {
       await invoke("send_invite", {
         org, 
         endpointAddrJson: String(data.node_id), 
-        role: String(data.role || "sales")
+        role: String(data.role || "sales"),
+        name: String(data.name || "Nuevo Dispositivo"),
+        person: String(data.person || "")
       });
       queryClient.invalidateQueries({ queryKey: ["entity", "devices", org] });
       return data as any;
     }}
+    customActions={(row) => (
+      <button 
+        className="px-3 py-1 bg-primary text-primary-foreground text-xs rounded hover:opacity-90 transition-opacity"
+        onClick={async () => {
+          try {
+            const addr = prompt("Pega el Device Address (JSON) que el cliente copió para reenviar la invitación:", "");
+            if (!addr) return;
+            await invoke("send_invite", {
+              org, 
+              endpointAddrJson: addr, 
+              role: String(row.role || "sales"),
+              name: String(row.name || ""),
+              person: String(row.person || "")
+            });
+            alert("Invitación enviada");
+          } catch (e: any) {
+            alert(e.message || "Error al enviar");
+          }
+        }}
+      >
+        Re-enviar Invitación
+      </button>
+    )}
   />;
 }

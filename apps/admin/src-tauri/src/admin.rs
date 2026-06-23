@@ -143,10 +143,12 @@ pub async fn share_org_tickets(state: &mut AppState, org: &str) -> anyhow::Resul
 /// Send an org invitation to a client device.
 /// Accepts either a JSON with node_id + addrs, or just a hex node_id.
 pub async fn send_invite(
-    state: &AppState,
+    state: &mut AppState,
     org: &str,
     endpoint_addr_json: &str,
     role: &str,
+    name: &str,
+    person: &str,
 ) -> anyhow::Result<()> {
     // Try parsing as JSON (full address), fall back to raw hex node_id
     let (peer, addrs, _addr) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
@@ -234,6 +236,10 @@ pub async fn send_invite(
     send.finish()?;
     // Wait for client to read before closing connection (race condition fix)
     let _ = conn.closed().await;
+
+    // Register the device locally now that the invite was sent
+    let node_id_hex = hex::encode(&peer.as_bytes()[..]);
+    add_device(state, org, &node_id_hex, name, person, role, endpoint_addr_json).await?;
 
     Ok(())
 }
