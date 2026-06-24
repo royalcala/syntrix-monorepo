@@ -438,6 +438,8 @@ impl AppState {
                 can_write,
             });
         }
+    }
+
     pub async fn sync_and_populate_org_members(&self, org_id: &str) -> anyhow::Result<()> {
         let org_state = match self.get_org(org_id) {
             Some(o) => o,
