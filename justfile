@@ -35,3 +35,19 @@ remote-admin server_ip="100.64.0.2:1421":
 # [En laptop-rao] Compila y ejecuta la ventana local de client conectándose a server-1 (ej. just remote-client 100.64.0.2:1421)
 remote-client server_ip="100.64.0.2:1421":
     cd apps/client && cd src-tauri && cargo tauri dev --config '{"build": {"devUrl": "http://{{server_ip}}:1420", "beforeDevCommand": ""}}'
+
+# --- RESET DE DATOS (borra keypair, docs, blobs, orgs) ---
+
+# Borra todos los datos persistidos del admin (keypair, docs, blobs, orgs)
+# PRECAUCIÓN: esto eliminará la identidad y organización del admin. Ejecutar antes de iniciar de nuevo.
+clean-admin:
+    rm -rf ~/.local/share/syntrix-admin
+
+# Borra todos los datos persistidos del client
+clean-client:
+    rm -rf ~/.local/share/syntrix
+
+# Borra datos de AMBAS apps — empezar completamente de cero
+clean-all: clean-admin clean-client
+    @echo "✅  Datos de admin y client eliminados. Puedes reiniciar ambas apps."
+

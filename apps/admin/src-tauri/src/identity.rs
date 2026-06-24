@@ -297,6 +297,7 @@ impl AppState {
     }
 
     pub fn node_id(&self) -> NodeId { *self.secret.public().as_bytes() }
+    pub fn secret(&self) -> &SecretKey { &self.secret }
     pub fn api(&self) -> &iroh_docs::api::DocsApi { &self.docs_api }
     pub fn author(&self) -> iroh_docs::AuthorId { self.author }
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
@@ -445,58 +446,16 @@ impl AppState {
             Some(o) => o,
             None => return Ok(()),
         };
-        let ctrl_doc = org_state.control_doc.clone();
-        let cat_doc = org_state.catalogs_doc.clone();
-        let op_doc = org_state.operational_doc.clone();
-        let pay_doc = org_state.payroll_doc.clone();
-        
-        let store = self._store.clone();
-        let registry = self.registry.clone();
-        let secret = self.secret.clone();
-        
-        if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
-            let mut entries = Box::pin(entries);
-            while let Some(res) = entries.next().await {
-                if let Ok(entry) = res {
-                    if let Ok(key) = std::str::from_utf8(entry.key()) {
-                        let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
-                        if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
-                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
-                                let active = val["active"].as_bool().unwrap_or(true);
-                                let role = val["role"].as_str().unwrap_or("sales").to_string();
-                                let person = val["person"].as_str().unwrap_or("").to_string();
-                                let name_str = val["name"].as_str().unwrap_or("").to_string();
-                                let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
-
-                                if let Ok(mut reg) = registry.write() {
-                                    if let Ok(node_id_bytes) = hex::decode(&node_id) {
-                                        let mut id = [0u8; 32];
-                                        let len = node_id_bytes.len().min(32);
-                                        id[..len].copy_from_slice(&node_id_bytes[..len]);
-                                        reg.upsert_device(org_id.to_string(), id, iroh_syntrix_docs::registry::Device {
-                                            node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
-                                        });
-                                    }
-                                }
-
-                                if active {
-                                    if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
-                                        if endpoint_addr.id != secret.public() {
-                                            let peers_vec = vec![endpoint_addr];
-                                            let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
-                                            let _ = cat_doc.start_sync(peers_vec.clone()).await;
-                                            let _ = op_doc.start_sync(peers_vec.clone()).await;
-                                            let _ = pay_doc.start_sync(peers_vec.clone()).await;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
+        sync_and_populate_org_members_impl(
+            org_state.control_doc.clone(),
+            org_state.catalogs_doc.clone(),
+            org_state.operational_doc.clone(),
+            org_state.payroll_doc.clone(),
+            self._store.clone(),
+            self.registry.clone(),
+            self.secret.clone(),
+            org_id.to_string(),
+        ).await
     }
 }
 
@@ -510,3 +469,59 @@ fn default_role_grants(role: &str) -> RoleGrants {
         _ => RoleGrants { can_open: vec![], can_write: vec![] },
     }
 }
+
+pub async fn sync_and_populate_org_members_impl(
+    ctrl_doc: Doc,
+    cat_doc: Doc,
+    op_doc: Doc,
+    pay_doc: Doc,
+    store: iroh_blobs::api::Store,
+    registry: std::sync::Arc<std::sync::RwLock<iroh_syntrix_docs::registry::NamespaceRegistry>>,
+    secret: iroh::SecretKey,
+    org_id: String,
+) -> anyhow::Result<()> {
+    if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+        let mut entries = Box::pin(entries);
+        while let Some(res) = entries.next().await {
+            if let Ok(entry) = res {
+                if let Ok(key) = std::str::from_utf8(entry.key()) {
+                    let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
+                    if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                            let active = val["active"].as_bool().unwrap_or(true);
+                            let role = val["role"].as_str().unwrap_or("sales").to_string();
+                            let person = val["person"].as_str().unwrap_or("").to_string();
+                            let name_str = val["name"].as_str().unwrap_or("").to_string();
+                            let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+
+                            if let Ok(mut reg) = registry.write() {
+                                if let Ok(node_id_bytes) = hex::decode(&node_id) {
+                                    let mut id = [0u8; 32];
+                                    let len = node_id_bytes.len().min(32);
+                                    id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                    reg.upsert_device(org_id.clone(), id, iroh_syntrix_docs::registry::Device {
+                                        node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
+                                    });
+                                }
+                            }
+
+                            if active {
+                                if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
+                                    if endpoint_addr.id != secret.public() {
+                                        let peers_vec = vec![endpoint_addr];
+                                        let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                        let _ = cat_doc.start_sync(peers_vec.clone()).await;
+                                        let _ = op_doc.start_sync(peers_vec.clone()).await;
+                                        let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+

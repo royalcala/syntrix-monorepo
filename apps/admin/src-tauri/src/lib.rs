@@ -55,10 +55,26 @@ fn add_device(
     state: tauri::State<'_, Mutex<AppState>>,
     org: String, node_id: String, name: String, person: String, role: String, device_addr: Option<String>,
 ) -> Result<(), String> {
-    let mut state = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(
-        admin::add_device(&mut state, &org, &node_id, &name, &person, &role, &device_addr.unwrap_or_default())
-    ).map_err(|e| e.to_string())
+    let (ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret) = {
+        let mut state = state.lock().map_err(|e| e.to_string())?;
+        tauri::async_runtime::block_on(
+            admin::add_device(&mut state, &org, &node_id, &name, &person, &role, &device_addr.clone().unwrap_or_default())
+        ).map_err(|e| e.to_string())?;
+        let org_state = state.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
+        (
+            org_state.control_doc.clone(),
+            org_state.catalogs_doc.clone(),
+            org_state.operational_doc.clone(),
+            org_state.payroll_doc.clone(),
+            state.store().clone(),
+            state.registry().clone(),
+            state.secret.clone(),
+        )
+    };
+    // Immediately dial the new device so sync starts now
+    tauri::async_runtime::block_on(identity::sync_and_populate_org_members_impl(
+        ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret, org,
+    )).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
