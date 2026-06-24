@@ -98,7 +98,7 @@ pub fn start_heartbeat(doc: iroh_docs::api::Doc, author: iroh_docs::AuthorId, no
             let key = format!("heartbeat/{}", node_id);
             let val = serde_json::json!({"ts": ts, "status": "online"});
             let _ = doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&val).unwrap()).await;
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         }
     });
 }

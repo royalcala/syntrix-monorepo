@@ -101,7 +101,7 @@ impl AppState {
         let ep = Endpoint::builder(N0)
             .secret_key(secret.clone())
             .ca_roots_config(CaRootsConfig::insecure_skip_verify())
-            .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>()?)?
+            .bind_addr("0.0.0.0:0".parse::<std::net::SocketAddr>()?)?
             .bind()
             .await?;
 
