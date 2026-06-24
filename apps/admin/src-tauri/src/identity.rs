@@ -213,7 +213,7 @@ impl AppState {
 
                                                         if active {
                                                             if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
-                                                                if endpoint_addr.node_id != *secret.public() {
+                                                                if endpoint_addr.id != *secret.public() {
                                                                     let peers_vec = vec![endpoint_addr];
                                                                     let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
                                                                     let _ = cat_doc.start_sync(peers_vec.clone()).await;
@@ -481,7 +481,7 @@ impl AppState {
 
                                 if active {
                                     if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
-                                        if endpoint_addr.node_id != *secret.public() {
+                                        if endpoint_addr.id != *secret.public() {
                                             let peers_vec = vec![endpoint_addr];
                                             let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
                                             let _ = cat_doc.start_sync(peers_vec.clone()).await;
