@@ -132,10 +132,10 @@ impl AppState {
                         let payroll_id = cfg.payroll_id.parse::<iroh_docs::NamespaceId>().ok();
 
                         if let (Some(ctrl), Some(cat), Some(op), Some(pay)) = (control_id, catalogs_id, operational_id, payroll_id) {
-                            let control_doc = api.get(ctrl).await.ok().flatten();
-                            let catalogs_doc = api.get(cat).await.ok().flatten();
-                            let operational_doc = api.get(op).await.ok().flatten();
-                            let payroll_doc = api.get(pay).await.ok().flatten();
+                            let control_doc = api.open(ctrl).await.ok().flatten();
+                            let catalogs_doc = api.open(cat).await.ok().flatten();
+                            let operational_doc = api.open(op).await.ok().flatten();
+                            let payroll_doc = api.open(pay).await.ok().flatten();
 
                             if let (Some(ctrl_doc), Some(cat_doc), Some(op_doc), Some(pay_doc)) = (control_doc, catalogs_doc, operational_doc, payroll_doc) {
                                 let name = cfg.name.clone();
@@ -155,8 +155,8 @@ impl AppState {
                                         if let Ok(entry) = res {
                                             if let Ok(key) = std::str::from_utf8(entry.key()) {
                                                 let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
-                                                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
-                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
                                                         let active = val["active"].as_bool().unwrap_or(true);
                                                         let role = val["role"].as_str().unwrap_or("sales").to_string();
                                                         let person = val["person"].as_str().unwrap_or("").to_string();
@@ -197,8 +197,8 @@ impl AppState {
                                         if let Ok(entry) = res {
                                             if let Ok(key) = std::str::from_utf8(entry.key()) {
                                                 let role_name = key.strip_prefix("roles/").unwrap_or(key).to_string();
-                                                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
-                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
                                                         let can_open: Vec<String> = val["can_open"]
                                                             .as_array()
                                                             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())

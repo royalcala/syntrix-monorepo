@@ -191,7 +191,6 @@ pub async fn send_invite(
                 }
             }).collect())
             .unwrap_or_default();
-        let addr = iroh::EndpointAddr::from_parts(peer, addrs.clone());
         (peer, addrs, endpoint_addr_json.to_string())
     } else {
         // Raw hex node_id — rely on DNS
@@ -199,7 +198,6 @@ pub async fn send_invite(
         let node_id: [u8; 32] = node_id_bytes.as_slice().try_into()
             .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
         let peer: iroh::PublicKey = iroh::PublicKey::from_bytes(&node_id)?;
-        let addr = iroh::EndpointAddr::from_parts(peer, []);
         (peer, vec![], endpoint_addr_json.to_string())
     };
 
