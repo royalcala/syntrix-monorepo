@@ -121,7 +121,7 @@ pub async fn get_sync_info(state: &AppState, org_id: &str) -> anyhow::Result<Syn
     let org_state = state.get_org_docs(org_id).ok_or_else(|| anyhow::anyhow!("org {} not found", org_id))?;
     let doc = &org_state.control_doc;
     
-    let mut entries = doc.get_many(iroh_docs::store::Query::key_prefix("heartbeat/")).await?;
+    let mut entries = Box::pin(doc.get_many(iroh_docs::store::Query::key_prefix("heartbeat/")).await?);
     let mut peers = Vec::new();
     let now = chrono::Utc::now().timestamp_millis();
     

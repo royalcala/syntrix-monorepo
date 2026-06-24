@@ -169,19 +169,19 @@ impl SearchEngine {
             
             let doc_id_val = retrieved_doc
                 .get_first(self.doc_id)
-                .and_then(|v| v.as_text())
+                .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
             let entity_val = retrieved_doc
                 .get_first(self.entity)
-                .and_then(|v| v.as_text())
+                .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
             let title_val = retrieved_doc
                 .get_first(self.title)
-                .and_then(|v| v.as_text())
+                .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 

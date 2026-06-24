@@ -80,7 +80,7 @@ impl AppState {
         std::fs::create_dir_all(&docs_dir).ok();
         let docs = iroh_docs::protocol::Docs::persistent(docs_dir)
             .accept_callback(accept_cb)
-            .spawn(ep.clone(), store.clone(), gossip.clone())
+            .spawn(ep.clone(), store.clone().into(), gossip.clone())
             .await?;
         let api = docs.api().clone();
 
