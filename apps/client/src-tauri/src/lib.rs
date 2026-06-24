@@ -93,6 +93,17 @@ fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_n
     }
 
     if let Some(org_state) = s.get_org_docs(&final_org_id) {
+        let cfg = identity::ClientOrgConfig {
+            org_id: final_org_id.clone(),
+            name: name.clone(),
+            role: role.clone(),
+            control_id: org_state.control_doc.id().to_string(),
+            catalogs_id: org_state.catalogs_doc.id().to_string(),
+            operational_id: org_state.operational_doc.id().to_string(),
+            payroll_id: org_state.payroll_doc.id().to_string(),
+        };
+        let _ = s.save_org_config(cfg);
+        
         sync::start_heartbeat(org_state.control_doc.clone(), s.author(), hex::encode(s.node_id()));
     }
 

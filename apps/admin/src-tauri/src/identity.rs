@@ -8,6 +8,17 @@ use iroh_syntrix_docs::NodeId;
 use iroh_syntrix_docs::registry::NamespaceRegistry;
 use iroh_docs::api::Doc;
 use crate::{DeviceInfo, RoleInfo};
+use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OrgConfig {
+    pub name: String,
+    pub control_id: String,
+    pub catalogs_id: String,
+    pub operational_id: String,
+    pub payroll_id: String,
+}
 
 pub struct AppState {
     secret: SecretKey,
@@ -90,14 +101,153 @@ impl AppState {
             .accept(iroh_docs::ALPN, docs)
             .spawn();
 
-        let author = api.author_create().await?;
+        let author_path = data_dir.join("author.txt");
+        let author = if author_path.exists() {
+            let author_str = std::fs::read_to_string(&author_path)?;
+            if let Ok(aut) = author_str.trim().parse::<iroh_docs::AuthorId>() {
+                aut
+            } else {
+                let aut = api.author_create().await?;
+                std::fs::write(&author_path, aut.to_string())?;
+                aut
+            }
+        } else {
+            let aut = api.author_create().await?;
+            std::fs::write(&author_path, aut.to_string())?;
+            aut
+        };
+
+        let mut orgs = HashMap::new();
+        let mut devices = HashMap::new();
+        let mut roles = HashMap::new();
+
+        let orgs_config_path = data_dir.join("orgs.json");
+        if orgs_config_path.exists() {
+            if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
+                if let Ok(configs) = serde_json::from_str::<Vec<OrgConfig>>(&orgs_json) {
+                    for cfg in configs {
+                        let control_id = cfg.control_id.parse::<iroh_docs::NamespaceId>().ok();
+                        let catalogs_id = cfg.catalogs_id.parse::<iroh_docs::NamespaceId>().ok();
+                        let operational_id = cfg.operational_id.parse::<iroh_docs::NamespaceId>().ok();
+                        let payroll_id = cfg.payroll_id.parse::<iroh_docs::NamespaceId>().ok();
+
+                        if let (Some(ctrl), Some(cat), Some(op), Some(pay)) = (control_id, catalogs_id, operational_id, payroll_id) {
+                            let control_doc = api.get(ctrl).await.ok().flatten();
+                            let catalogs_doc = api.get(cat).await.ok().flatten();
+                            let operational_doc = api.get(op).await.ok().flatten();
+                            let payroll_doc = api.get(pay).await.ok().flatten();
+
+                            if let (Some(ctrl_doc), Some(cat_doc), Some(op_doc), Some(pay_doc)) = (control_doc, catalogs_doc, operational_doc, payroll_doc) {
+                                let name = cfg.name.clone();
+                                
+                                // Register namespaces in Gossip accept callback registry
+                                if let Ok(mut reg) = registry.write() {
+                                    reg.map_namespace_to_org(ctrl, name.clone());
+                                    reg.map_namespace_to_org(cat, name.clone());
+                                    reg.map_namespace_to_org(op, name.clone());
+                                    reg.map_namespace_to_org(pay, name.clone());
+                                }
+
+                                // 1. Load members from control_doc
+                                let mut dev_map = HashMap::new();
+                                if let Ok(mut entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                                    while let Some(res) = entries.next().await {
+                                        if let Ok(entry) = res {
+                                            if let Ok(key) = std::str::from_utf8(entry.key()) {
+                                                let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
+                                                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                        let active = val["active"].as_bool().unwrap_or(true);
+                                                        let role = val["role"].as_str().unwrap_or("sales").to_string();
+                                                        let person = val["person"].as_str().unwrap_or("").to_string();
+                                                        let name_str = val["name"].as_str().unwrap_or("").to_string();
+                                                        let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+
+                                                        dev_map.insert(node_id.clone(), DeviceInfo {
+                                                            node_id: node_id.clone(),
+                                                            active,
+                                                            role: role.clone(),
+                                                            person: person.clone(),
+                                                            name: name_str.clone(),
+                                                            device_addr: device_addr.clone(),
+                                                        });
+
+                                                        if let Ok(mut reg) = registry.write() {
+                                                            if let Ok(node_id_bytes) = hex::decode(&node_id) {
+                                                                let mut id = [0u8; 32];
+                                                                let len = node_id_bytes.len().min(32);
+                                                                id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                                                reg.upsert_device(name.clone(), id, iroh_syntrix_docs::registry::Device {
+                                                                    node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                devices.insert(name.clone(), dev_map);
+
+                                // 2. Load roles from control_doc
+                                let mut role_map = HashMap::new();
+                                if let Ok(mut entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                                    while let Some(res) = entries.next().await {
+                                        if let Ok(entry) = res {
+                                            if let Ok(key) = std::str::from_utf8(entry.key()) {
+                                                let role_name = key.strip_prefix("roles/").unwrap_or(key).to_string();
+                                                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                        let can_open: Vec<String> = val["can_open"]
+                                                            .as_array()
+                                                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                            .unwrap_or_default();
+                                                        let can_write: Vec<String> = val["can_write"]
+                                                            .as_array()
+                                                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                            .unwrap_or_default();
+
+                                                        role_map.insert(role_name.clone(), RoleInfo {
+                                                            name: role_name.clone(),
+                                                            can_open: can_open.clone(),
+                                                            can_write: can_write.clone(),
+                                                        });
+
+                                                        if let Ok(mut reg) = registry.write() {
+                                                            reg.upsert_role(name.clone(), role_name.clone(), iroh_syntrix_docs::registry::RoleGrants {
+                                                                can_open: can_open.clone(),
+                                                                can_write: can_write.clone(),
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                roles.insert(name.clone(), role_map);
+
+                                orgs.insert(name.clone(), OrgState {
+                                    name,
+                                    control_doc: ctrl_doc,
+                                    catalogs_doc: cat_doc,
+                                    operational_doc: op_doc,
+                                    payroll_doc: pay_doc,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Self {
             secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router,
             docs_api: api, author, registry,
-            orgs: HashMap::new(),
-            devices: HashMap::new(),
-            roles: HashMap::new(),
+            orgs,
+            devices,
+            roles,
         })
     }
 
@@ -113,6 +263,35 @@ impl AppState {
         self.orgs.insert(name.to_string(), OrgState { name: name.to_string(), control_doc, catalogs_doc, operational_doc, payroll_doc });
         self.devices.entry(name.to_string()).or_default();
         self.roles.entry(name.to_string()).or_default();
+    }
+
+    pub fn save_org_config(&self, name: &str, ctrl: &str, cat: &str, op: &str, pay: &str) -> anyhow::Result<()> {
+        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+            std::path::PathBuf::from(custom_path)
+        } else {
+            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix-admin")
+        };
+        let orgs_config_path = data_dir.join("orgs.json");
+        
+        let mut configs = Vec::new();
+        if orgs_config_path.exists() {
+            if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
+                if let Ok(existing) = serde_json::from_str::<Vec<OrgConfig>>(&orgs_json) {
+                    configs = existing;
+                }
+            }
+        }
+
+        configs.push(OrgConfig {
+            name: name.to_string(),
+            control_id: ctrl.to_string(),
+            catalogs_id: cat.to_string(),
+            operational_id: op.to_string(),
+            payroll_id: pay.to_string(),
+        });
+
+        std::fs::write(&orgs_config_path, serde_json::to_vec(&configs)?)?;
+        Ok(())
     }
 
     pub fn get_org(&self, name: &str) -> Option<&OrgState> { self.orgs.get(name) }

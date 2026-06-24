@@ -15,8 +15,11 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
 
     let node_id_hex = hex::encode(state.node_id());
     let device_json = serde_json::json!({
-        "active": true, "role": "admin", "person": "admin",
+        "active": true,
+        "role": "admin",
+        "person": "admin",
         "name": format!("Admin ({})", name),
+        "device_addr": "",
     });
     control_doc.set_bytes(
         author, format!("members/{}", node_id_hex).into_bytes(),
@@ -37,8 +40,14 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
         reg.map_namespace_to_org(payroll_doc.id(), name.into());
     }
 
+    let ctrl_id = control_doc.id().to_string();
+    let cat_id = catalogs_doc.id().to_string();
+    let op_id = operational_doc.id().to_string();
+    let pay_id = payroll_doc.id().to_string();
+
     state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, "");
     state.add_org(name, control_doc.clone(), catalogs_doc, operational_doc, payroll_doc);
+    state.save_org_config(name, &ctrl_id, &cat_id, &op_id, &pay_id)?;
     
     start_heartbeat(control_doc, author, node_id_hex);
 
@@ -53,7 +62,13 @@ pub async fn add_device(
     let doc = &org_state.control_doc;
     let author = state.author();
 
-    let device_json = serde_json::json!({"active": true, "role": role, "person": person, "name": name});
+    let device_json = serde_json::json!({
+        "active": true,
+        "role": role,
+        "person": person,
+        "name": name,
+        "device_addr": device_addr,
+    });
     doc.set_bytes(author, format!("members/{}", node_id).into_bytes(),
         serde_json::to_vec(&device_json)?,
     ).await?;

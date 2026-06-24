@@ -10,6 +10,19 @@ use iroh_syntrix_docs::registry::NamespaceRegistry;
 use iroh_docs::api::Doc;
 use crate::OrgInfo;
 use crate::sync::SyncEntry;
+use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ClientOrgConfig {
+    pub org_id: String,
+    pub name: String,
+    pub role: String,
+    pub control_id: String,
+    pub catalogs_id: String,
+    pub operational_id: String,
+    pub payroll_id: String,
+}
 
 pub struct AppState {
     secret: SecretKey,
@@ -107,14 +120,137 @@ impl AppState {
             .accept(crate::invite::INVITE_ALPN, invite_handler.clone())
             .spawn();
 
-        let author = api.author_create().await?;
+        let author_path = data_dir.join("author.txt");
+        let author = if author_path.exists() {
+            let author_str = std::fs::read_to_string(&author_path)?;
+            if let Ok(aut) = author_str.trim().parse::<iroh_docs::AuthorId>() {
+                aut
+            } else {
+                let aut = api.author_create().await?;
+                std::fs::write(&author_path, aut.to_string())?;
+                aut
+            }
+        } else {
+            let aut = api.author_create().await?;
+            std::fs::write(&author_path, aut.to_string())?;
+            aut
+        };
         
-        let indexer = crate::indexes::RelationalEngine::new(data_dir)?;
+        let indexer = crate::indexes::RelationalEngine::new(data_dir.clone())?;
+
+        let mut orgs = HashMap::new();
+        let orgs_config_path = data_dir.join("orgs.json");
+        if orgs_config_path.exists() {
+            if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
+                if let Ok(configs) = serde_json::from_str::<Vec<ClientOrgConfig>>(&orgs_json) {
+                    for cfg in configs {
+                        let control_id = cfg.control_id.parse::<iroh_docs::NamespaceId>().ok();
+                        let catalogs_id = cfg.catalogs_id.parse::<iroh_docs::NamespaceId>().ok();
+                        let operational_id = cfg.operational_id.parse::<iroh_docs::NamespaceId>().ok();
+                        let payroll_id = cfg.payroll_id.parse::<iroh_docs::NamespaceId>().ok();
+
+                        if let (Some(ctrl), Some(cat), Some(op), Some(pay)) = (control_id, catalogs_id, operational_id, payroll_id) {
+                            let control_doc = api.get(ctrl).await.ok().flatten();
+                            let catalogs_doc = api.get(cat).await.ok().flatten();
+                            let operational_doc = api.get(op).await.ok().flatten();
+                            let payroll_doc = api.get(pay).await.ok().flatten();
+
+                            if let (Some(ctrl_doc), Some(cat_doc), Some(op_doc), Some(pay_doc)) = (control_doc, catalogs_doc, operational_doc, payroll_doc) {
+                                let org_id = cfg.org_id.clone();
+                                let name = cfg.name.clone();
+                                let role = cfg.role.clone();
+                                
+                                // Register namespaces in Gossip accept callback registry
+                                if let Ok(mut reg) = registry.write() {
+                                    reg.map_namespace_to_org(ctrl, org_id.clone());
+                                    reg.map_namespace_to_org(cat, org_id.clone());
+                                    reg.map_namespace_to_org(op, org_id.clone());
+                                    reg.map_namespace_to_org(pay, org_id.clone());
+                                }
+
+                                // 1. Load members from control_doc
+                                if let Ok(mut entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                                    while let Some(res) = entries.next().await {
+                                        if let Ok(entry) = res {
+                                            if let Ok(key) = std::str::from_utf8(entry.key()) {
+                                                let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
+                                                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                        let active = val["active"].as_bool().unwrap_or(true);
+                                                        let r = val["role"].as_str().unwrap_or("sales").to_string();
+                                                        let person = val["person"].as_str().unwrap_or("").to_string();
+                                                        let name_str = val["name"].as_str().unwrap_or("").to_string();
+
+                                                        if let Ok(mut reg) = registry.write() {
+                                                            if let Ok(node_id_bytes) = hex::decode(&node_id) {
+                                                                let mut id = [0u8; 32];
+                                                                let len = node_id_bytes.len().min(32);
+                                                                id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                                                reg.upsert_device(org_id.clone(), id, iroh_syntrix_docs::registry::Device {
+                                                                    node_id: id, active, role: r.clone(), person: person.clone(), name: name_str.clone(),
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 2. Load roles from control_doc
+                                if let Ok(mut entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                                    while let Some(res) = entries.next().await {
+                                        if let Ok(entry) = res {
+                                            if let Ok(key) = std::str::from_utf8(entry.key()) {
+                                                let role_name = key.strip_prefix("roles/").unwrap_or(key).to_string();
+                                                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                                        let can_open: Vec<String> = val["can_open"]
+                                                            .as_array()
+                                                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                            .unwrap_or_default();
+                                                        let can_write: Vec<String> = val["can_write"]
+                                                            .as_array()
+                                                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                            .unwrap_or_default();
+
+                                                        if let Ok(mut reg) = registry.write() {
+                                                            reg.upsert_role(org_id.clone(), role_name.clone(), iroh_syntrix_docs::registry::RoleGrants {
+                                                                can_open: can_open.clone(),
+                                                                can_write: can_write.clone(),
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                orgs.insert(org_id.clone(), OrgState {
+                                    name,
+                                    role,
+                                    control_doc: ctrl_doc.clone(),
+                                    catalogs_doc: cat_doc,
+                                    operational_doc: op_doc,
+                                    payroll_doc: pay_doc,
+                                });
+
+                                // Start heartbeat sync automatically
+                                let node_id_hex = hex::encode(*secret.public().as_bytes());
+                                crate::sync::start_heartbeat(ctrl_doc, author, node_id_hex);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Self {
             secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router, _invite_router,
             docs_api: api, author, hlc_counter: AtomicU64::new(0), registry,
-            orgs: HashMap::new(), active_org: None,
+            orgs, active_org: None,
             indexer,
             events: HashMap::new(),
             invite_handler,
@@ -164,6 +300,31 @@ impl AppState {
             "payroll" => entry.payroll_doc = doc,
             _ => {}
         }
+    }
+
+    pub fn save_org_config(&self, cfg: ClientOrgConfig) -> anyhow::Result<()> {
+        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+            std::path::PathBuf::from(custom_path)
+        } else {
+            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix")
+        };
+        let orgs_config_path = data_dir.join("orgs.json");
+
+        let mut configs = Vec::new();
+        if orgs_config_path.exists() {
+            if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
+                if let Ok(existing) = serde_json::from_str::<Vec<ClientOrgConfig>>(&orgs_json) {
+                    configs = existing;
+                }
+            }
+        }
+
+        // Avoid duplicates
+        configs.retain(|c| c.org_id != cfg.org_id);
+        configs.push(cfg);
+
+        std::fs::write(&orgs_config_path, serde_json::to_vec(&configs)?)?;
+        Ok(())
     }
 
     pub fn get_org_docs(&self, org_id: &str) -> Option<&OrgState> {
