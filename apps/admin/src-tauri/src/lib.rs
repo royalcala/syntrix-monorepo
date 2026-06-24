@@ -68,7 +68,7 @@ fn add_device(
             org_state.payroll_doc.clone(),
             state.store().clone(),
             state.registry().clone(),
-            state.secret.clone(),
+            state.secret().clone(),
         )
     };
     // Immediately dial the new device so sync starts now
