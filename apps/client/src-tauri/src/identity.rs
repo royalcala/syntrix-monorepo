@@ -24,7 +24,7 @@ pub struct ClientOrgConfig {
     pub payroll_id: String,
 }
 
-fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
+pub fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
     if addr_str.is_empty() {
         return None;
     }
@@ -274,14 +274,17 @@ impl AppState {
                                     name,
                                     role,
                                     control_doc: ctrl_doc.clone(),
-                                    catalogs_doc: cat_doc,
-                                    operational_doc: op_doc,
-                                    payroll_doc: pay_doc,
+                                    catalogs_doc: cat_doc.clone(),
+                                    operational_doc: op_doc.clone(),
+                                    payroll_doc: pay_doc.clone(),
                                 });
 
-                                // Start heartbeat sync automatically
+                                // Start heartbeat + periodic re-sync automatically
                                 let node_id_hex = hex::encode(*secret.public().as_bytes());
-                                crate::sync::start_heartbeat(ctrl_doc, author, node_id_hex);
+                                crate::sync::start_heartbeat_with_resync(
+                                    ctrl_doc, cat_doc, op_doc, pay_doc,
+                                    author, node_id_hex, store.clone().into(), secret.clone(),
+                                );
                             }
                         }
                     }

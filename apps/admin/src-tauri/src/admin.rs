@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use iroh_docs::api::protocol::{ShareMode, AddrInfoOptions};
 
-use crate::identity::AppState;
+use crate::identity::{AppState, parse_device_addr};
 use crate::{DeviceInfo, RoleInfo};
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
@@ -14,12 +14,14 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     let payroll_doc = api.create().await?;
 
     let node_id_hex = hex::encode(state.node_id());
+    // Build device_addr for admin itself so peers can re-sync with us
+    let own_device_addr = build_device_addr_string(state.endpoint());
     let device_json = serde_json::json!({
         "active": true,
         "role": "admin",
         "person": "admin",
         "name": format!("Admin ({})", name),
-        "device_addr": "",
+        "device_addr": own_device_addr,
     });
     control_doc.set_bytes(
         author, format!("members/{}", node_id_hex).into_bytes(),
@@ -45,11 +47,16 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     let op_id = operational_doc.id().to_string();
     let pay_id = payroll_doc.id().to_string();
 
-    state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, "");
-    state.add_org(name, control_doc.clone(), catalogs_doc, operational_doc, payroll_doc);
+    state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, &own_device_addr);
+    state.add_org(name, control_doc.clone(), catalogs_doc.clone(), operational_doc.clone(), payroll_doc.clone());
     state.save_org_config(name, &ctrl_id, &cat_id, &op_id, &pay_id)?;
     
-    start_heartbeat(control_doc, author, node_id_hex);
+    let store = state.store().clone();
+    let secret = state.secret().clone();
+    start_heartbeat_with_resync(
+        control_doc.clone(), catalogs_doc.clone(), operational_doc.clone(), payroll_doc.clone(),
+        author, node_id_hex, store, secret,
+    );
 
     Ok(())
 }
@@ -312,6 +319,22 @@ pub async fn update_role(
     Ok(())
 }
 
+/// Build a device_addr string from an endpoint's current addresses.
+/// Format: "<node_id_hex>;<addr1>;<addr2>;..."
+pub fn build_device_addr_string(endpoint: &iroh::Endpoint) -> String {
+    let addr = endpoint.addr();
+    let node_id_hex = hex::encode(addr.id.as_bytes());
+    let addrs: Vec<String> = addr.addrs.iter().map(|a| match a {
+        iroh::TransportAddr::Relay(url) => format!("relay:{}", url),
+        iroh::TransportAddr::Ip(sa) => format!("ip:{}", sa),
+    }).collect();
+    if addrs.is_empty() {
+        node_id_hex
+    } else {
+        format!("{};{}", node_id_hex, addrs.join(";"))
+    }
+}
+
 pub fn start_heartbeat(doc: iroh_docs::api::Doc, author: iroh_docs::AuthorId, node_id: String) {
     tokio::spawn(async move {
         loop {
@@ -319,6 +342,57 @@ pub fn start_heartbeat(doc: iroh_docs::api::Doc, author: iroh_docs::AuthorId, no
             let key = format!("heartbeat/{}", node_id);
             let val = serde_json::json!({"ts": ts, "status": "online"});
             let _ = doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&val).unwrap()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
+}
+
+/// Heartbeat + periodic re-sync: writes heartbeat AND re-dials all known peers from control doc.
+/// This ensures that when a peer restarts, the sync session is re-established within one cycle.
+pub fn start_heartbeat_with_resync(
+    ctrl_doc: iroh_docs::api::Doc,
+    cat_doc: iroh_docs::api::Doc,
+    op_doc: iroh_docs::api::Doc,
+    pay_doc: iroh_docs::api::Doc,
+    author: iroh_docs::AuthorId,
+    node_id: String,
+    store: iroh_blobs::api::Store,
+    secret: iroh::SecretKey,
+) {
+    tokio::spawn(async move {
+        loop {
+            // 1. Write heartbeat
+            let ts = chrono::Utc::now().timestamp_millis();
+            let key = format!("heartbeat/{}", node_id);
+            let val = serde_json::json!({"ts": ts, "status": "online"});
+            let _ = ctrl_doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&val).unwrap()).await;
+
+            // 2. Re-dial all known peers from control doc members
+            if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                let mut entries = Box::pin(entries);
+                while let Some(res) = entries.next().await {
+                    if let Ok(entry) = res {
+                        if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                                let active = val["active"].as_bool().unwrap_or(true);
+                                let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+                                if active {
+                                    if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
+                                        if endpoint_addr.id != secret.public() {
+                                            let peers_vec = vec![endpoint_addr];
+                                            let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = cat_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = op_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         }
     });

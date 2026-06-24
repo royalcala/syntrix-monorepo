@@ -106,7 +106,16 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         };
         let _ = s.save_org_config(cfg);
         
-        sync::start_heartbeat(org_state.control_doc.clone(), s.author(), hex::encode(s.node_id()));
+        sync::start_heartbeat_with_resync(
+            org_state.control_doc.clone(),
+            org_state.catalogs_doc.clone(),
+            org_state.operational_doc.clone(),
+            org_state.payroll_doc.clone(),
+            s.author(),
+            hex::encode(s.node_id()),
+            s.store().clone(),
+            s.secret().clone(),
+        );
         
         (
             org_state.control_doc.clone(),

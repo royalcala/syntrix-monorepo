@@ -103,6 +103,57 @@ pub fn start_heartbeat(doc: iroh_docs::api::Doc, author: iroh_docs::AuthorId, no
     });
 }
 
+/// Heartbeat + periodic re-sync: writes heartbeat AND re-dials all known peers from control doc.
+/// This ensures that when a peer restarts, the sync session is re-established within one cycle.
+pub fn start_heartbeat_with_resync(
+    ctrl_doc: iroh_docs::api::Doc,
+    cat_doc: iroh_docs::api::Doc,
+    op_doc: iroh_docs::api::Doc,
+    pay_doc: iroh_docs::api::Doc,
+    author: iroh_docs::AuthorId,
+    node_id: String,
+    store: iroh_blobs::api::Store,
+    secret: iroh::SecretKey,
+) {
+    tokio::spawn(async move {
+        loop {
+            // 1. Write heartbeat
+            let ts = chrono::Utc::now().timestamp_millis();
+            let key = format!("heartbeat/{}", node_id);
+            let val = serde_json::json!({"ts": ts, "status": "online"});
+            let _ = ctrl_doc.set_bytes(author, key.into_bytes(), serde_json::to_vec(&val).unwrap()).await;
+
+            // 2. Re-dial all known peers from control doc members
+            if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                let mut entries = Box::pin(entries);
+                while let Some(res) = entries.next().await {
+                    if let Ok(entry) = res {
+                        if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                                let active = val["active"].as_bool().unwrap_or(true);
+                                let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+                                if active {
+                                    if let Some(endpoint_addr) = crate::identity::parse_device_addr(&device_addr) {
+                                        if endpoint_addr.id != secret.public() {
+                                            let peers_vec = vec![endpoint_addr];
+                                            let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = cat_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = op_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
+}
+
 #[derive(serde::Serialize)]
 pub struct PeerStatus {
     pub node_id: String,

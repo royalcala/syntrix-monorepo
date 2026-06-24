@@ -20,7 +20,7 @@ pub struct OrgConfig {
     pub payroll_id: String,
 }
 
-fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
+pub fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
     if addr_str.is_empty() {
         return None;
     }
@@ -269,9 +269,28 @@ impl AppState {
                                 }
                                 roles.insert(name.clone(), role_map);
 
-                                // Start heartbeat sync automatically
+                                // Start heartbeat + periodic re-sync automatically
                                 let node_id_hex = hex::encode(*secret.public().as_bytes());
-                                crate::admin::start_heartbeat(ctrl_doc.clone(), author, node_id_hex);
+                                crate::admin::start_heartbeat_with_resync(
+                                    ctrl_doc.clone(), cat_doc.clone(), op_doc.clone(), pay_doc.clone(),
+                                    author, node_id_hex, store.clone().into(), secret.clone(),
+                                );
+
+                                // Also update admin's own device_addr in control doc
+                                // (in case endpoint address changed since last run)
+                                let own_device_addr = crate::admin::build_device_addr_string(&ep);
+                                let own_node_id = hex::encode(*secret.public().as_bytes());
+                                let device_json = serde_json::json!({
+                                    "active": true,
+                                    "role": "admin",
+                                    "person": "admin",
+                                    "name": format!("Admin ({})", name),
+                                    "device_addr": own_device_addr,
+                                });
+                                let _ = ctrl_doc.set_bytes(
+                                    author, format!("members/{}", own_node_id).into_bytes(),
+                                    serde_json::to_vec(&device_json).unwrap_or_default(),
+                                ).await;
 
                                 orgs.insert(name.clone(), OrgState {
                                     name,
