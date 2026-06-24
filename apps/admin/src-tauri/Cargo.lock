@@ -6000,6 +6000,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs-next",
+ "futures-util",
  "hex",
  "iroh",
  "iroh-blobs",

@@ -195,7 +195,7 @@ pub async fn send_invite(
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
     let operational_ticket = org_state.operational_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let payroll_ticket = org_state.payroll_doc
+    let _payroll_ticket = org_state.payroll_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
     // Build selective ticket list based on business modules -> namespaces mapping
@@ -204,7 +204,7 @@ pub async fn send_invite(
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let mut needs_control = true; // Everyone needs control docs
+    let needs_control = true; // Everyone needs control docs
     let mut needs_catalogs = false;
     let mut needs_operational = false;
 
@@ -334,11 +334,12 @@ pub async fn get_sync_info(state: &AppState, org: &str) -> anyhow::Result<SyncIn
     let org_state = state.get_org(org).ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
     let doc = &org_state.control_doc;
     
-    let mut entries = doc.get_many(iroh_docs::api::Query::key_prefix("heartbeat/")).await?;
+    let mut entries = Box::pin(doc.get_many(iroh_docs::store::Query::key_prefix("heartbeat/")).await?);
     let mut peers = Vec::new();
     let now = chrono::Utc::now().timestamp_millis();
     
-    while let Some(entry) = entries.try_next().await? {
+    while let Some(res) = entries.next().await {
+        let entry = res?;
         let key_bytes = entry.key();
         if let Ok(key) = std::str::from_utf8(key_bytes) {
             if let Some(peer_id) = key.strip_prefix("heartbeat/") {

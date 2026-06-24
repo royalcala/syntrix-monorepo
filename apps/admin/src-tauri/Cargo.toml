@@ -28,6 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs-next = "2"
+futures-util = "0.3"
 
 [profile.dev]
 debug = "line-tables-only"
