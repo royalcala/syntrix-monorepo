@@ -85,14 +85,16 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         docs.push((ti.ns.clone(), doc));
     }
 
-    let mut s = state.lock().map_err(|e| e.to_string())?;
     let role = invite.role.clone();
+    let (ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret) = {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
 
-    for (ns, doc) in docs {
-        s.add_org_docs(&ns, &final_org_id, &name, &role, doc);
-    }
+        for (ns, doc) in docs {
+            s.add_org_docs(&ns, &final_org_id, &name, &role, doc);
+        }
 
-    let (ctrl_doc, cat_doc, op_doc, pay_doc) = if let Some(org_state) = s.get_org_docs(&final_org_id) {
+        let org_state = s.get_org_docs(&final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
+        
         let cfg = identity::ClientOrgConfig {
             org_id: final_org_id.clone(),
             name: name.clone(),
@@ -105,20 +107,17 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         let _ = s.save_org_config(cfg);
         
         sync::start_heartbeat(org_state.control_doc.clone(), s.author(), hex::encode(s.node_id()));
+        
         (
             org_state.control_doc.clone(),
             org_state.catalogs_doc.clone(),
             org_state.operational_doc.clone(),
             org_state.payroll_doc.clone(),
+            s.store().clone(),
+            s.registry().clone(),
+            s.secret().clone(),
         )
-    } else {
-        return Ok(OrgInfo { id: final_org_id, name, role });
     };
-
-    let store = s.store().clone();
-    let registry = s.registry().clone();
-    let secret = s.secret().clone();
-    drop(s);
 
     let _ = identity::sync_and_populate_org_members_impl(
         ctrl_doc,
