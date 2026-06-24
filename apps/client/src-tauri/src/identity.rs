@@ -24,6 +24,33 @@ pub struct ClientOrgConfig {
     pub payroll_id: String,
 }
 
+fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
+    if addr_str.is_empty() {
+        return None;
+    }
+    if addr_str.contains(';') {
+        let parts: Vec<&str> = addr_str.split(';').collect();
+        let node_id_bytes = hex::decode(parts[0]).ok()?;
+        let node_id: [u8; 32] = node_id_bytes.as_slice().try_into().ok()?;
+        let peer = iroh::PublicKey::from_bytes(&node_id).ok()?;
+        
+        let addrs: Vec<iroh::TransportAddr> = parts[1..].iter().filter_map(|s| {
+            if let Some(relay_str) = s.strip_prefix("relay:") {
+                relay_str.parse::<iroh::RelayUrl>().ok().map(iroh::TransportAddr::Relay)
+            } else {
+                let s_addr = s.strip_prefix("ip:").unwrap_or(s);
+                s_addr.parse::<std::net::SocketAddr>().ok().map(iroh::TransportAddr::Ip)
+            }
+        }).collect();
+        Some(iroh::EndpointAddr::from_parts(peer, addrs))
+    } else {
+        let node_id_bytes = hex::decode(addr_str).ok()?;
+        let node_id: [u8; 32] = node_id_bytes.as_slice().try_into().ok()?;
+        let peer = iroh::PublicKey::from_bytes(&node_id).ok()?;
+        Some(iroh::EndpointAddr::from_parts(peer, []))
+    }
+}
+
 pub struct AppState {
     secret: SecretKey,
     _endpoint: Endpoint,
@@ -181,6 +208,7 @@ impl AppState {
                                                         let r = val["role"].as_str().unwrap_or("sales").to_string();
                                                         let person = val["person"].as_str().unwrap_or("").to_string();
                                                         let name_str = val["name"].as_str().unwrap_or("").to_string();
+                                                        let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
 
                                                         if let Ok(mut reg) = registry.write() {
                                                             if let Ok(node_id_bytes) = hex::decode(&node_id) {
@@ -190,6 +218,18 @@ impl AppState {
                                                                 reg.upsert_device(org_id.clone(), id, iroh_syntrix_docs::registry::Device {
                                                                     node_id: id, active, role: r.clone(), person: person.clone(), name: name_str.clone(),
                                                                 });
+                                                            }
+                                                        }
+
+                                                        if active {
+                                                            if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
+                                                                if endpoint_addr.node_id != *secret.public() {
+                                                                    let peers_vec = vec![endpoint_addr];
+                                                                    let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                                                    let _ = cat_doc.start_sync(peers_vec.clone()).await;
+                                                                    let _ = op_doc.start_sync(peers_vec.clone()).await;
+                                                                    let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -288,6 +328,9 @@ impl AppState {
     }
 
     pub fn add_org_docs(&mut self, ns_name: &str, org_id: &str, name: &str, role: &str, doc: Doc) {
+        if let Ok(mut reg) = self.registry.write() {
+            reg.map_namespace_to_org(doc.id(), org_id.to_string());
+        }
         let entry = self.orgs.entry(org_id.into()).or_insert_with(|| OrgState {
             name: name.into(), role: role.into(),
             control_doc: doc.clone(),
@@ -335,6 +378,65 @@ impl AppState {
 
     pub fn record_event(&mut self, org_id: &str, _seq_num: u64, entry: serde_json::Value) {
         self.events.entry(org_id.into()).or_default().push(crate::sync::SyncEntry { event_encoded: entry });
+    }
+
+    pub async fn sync_and_populate_org_members(&self, org_id: &str) -> anyhow::Result<()> {
+        let org_state = match self.get_org_docs(org_id) {
+            Some(o) => o,
+            None => return Ok(()),
+        };
+        let ctrl_doc = org_state.control_doc.clone();
+        let cat_doc = org_state.catalogs_doc.clone();
+        let op_doc = org_state.operational_doc.clone();
+        let pay_doc = org_state.payroll_doc.clone();
+        
+        let store = self._store.clone();
+        let registry = self.registry.clone();
+        let secret = self.secret.clone();
+        
+        if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+            let mut entries = Box::pin(entries);
+            while let Some(res) = entries.next().await {
+                if let Ok(entry) = res {
+                    if let Ok(key) = std::str::from_utf8(entry.key()) {
+                        let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
+                        if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                                let active = val["active"].as_bool().unwrap_or(true);
+                                let r = val["role"].as_str().unwrap_or("sales").to_string();
+                                let person = val["person"].as_str().unwrap_or("").to_string();
+                                let name_str = val["name"].as_str().unwrap_or("").to_string();
+                                let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+
+                                if let Ok(mut reg) = registry.write() {
+                                    if let Ok(node_id_bytes) = hex::decode(&node_id) {
+                                        let mut id = [0u8; 32];
+                                        let len = node_id_bytes.len().min(32);
+                                        id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                        reg.upsert_device(org_id.to_string(), id, iroh_syntrix_docs::registry::Device {
+                                            node_id: id, active, role: r.clone(), person: person.clone(), name: name_str.clone(),
+                                        });
+                                    }
+                                }
+
+                                if active {
+                                    if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
+                                        if endpoint_addr.node_id != *secret.public() {
+                                            let peers_vec = vec![endpoint_addr];
+                                            let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = cat_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = op_doc.start_sync(peers_vec.clone()).await;
+                                            let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn get_events_since(&self, org_id: &str, since_ts: u64) -> Vec<crate::sync::SyncEntry> {

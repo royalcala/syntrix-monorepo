@@ -105,6 +105,7 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         let _ = s.save_org_config(cfg);
         
         sync::start_heartbeat(org_state.control_doc.clone(), s.author(), hex::encode(s.node_id()));
+        let _ = s.sync_and_populate_org_members(&final_org_id).await;
     }
 
     Ok(OrgInfo { id: final_org_id, name, role })
