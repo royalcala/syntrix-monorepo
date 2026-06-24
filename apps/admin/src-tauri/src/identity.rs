@@ -150,7 +150,8 @@ impl AppState {
 
                                 // 1. Load members from control_doc
                                 let mut dev_map = HashMap::new();
-                                if let Ok(mut entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                                if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                                    let mut entries = Box::pin(entries);
                                     while let Some(res) = entries.next().await {
                                         if let Ok(entry) = res {
                                             if let Ok(key) = std::str::from_utf8(entry.key()) {
@@ -192,7 +193,8 @@ impl AppState {
 
                                 // 2. Load roles from control_doc
                                 let mut role_map = HashMap::new();
-                                if let Ok(mut entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                                if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                                    let mut entries = Box::pin(entries);
                                     while let Some(res) = entries.next().await {
                                         if let Ok(entry) = res {
                                             if let Ok(key) = std::str::from_utf8(entry.key()) {
