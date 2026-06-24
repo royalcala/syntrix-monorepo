@@ -15,7 +15,7 @@ pub struct AppState {
     secret: SecretKey,
     _endpoint: Endpoint,
     _gossip: iroh_gossip::net::Gossip,
-    _store: iroh_blobs::store::fs::Store,
+    _store: iroh_blobs::api::Store,
     _router: iroh::protocol::Router,
     _invite_router: iroh::protocol::Router,
     docs_api: iroh_docs::api::DocsApi,
@@ -79,7 +79,7 @@ impl AppState {
 
         let blobs_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blobs_dir).ok();
-        let store = iroh_blobs::store::fs::Store::load(&blobs_dir).await?;
+        let store = iroh_blobs::store::fs::FsStore::load(&blobs_dir).await?;
 
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
 
@@ -112,7 +112,7 @@ impl AppState {
         let indexer = crate::indexes::RelationalEngine::new(data_dir)?;
 
         Ok(Self {
-            secret, _endpoint: ep, _gossip: gossip, _store: store, _router: router, _invite_router,
+            secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router, _invite_router,
             docs_api: api, author, hlc_counter: AtomicU64::new(0), registry,
             orgs: HashMap::new(), active_org: None,
             indexer,
@@ -128,7 +128,7 @@ impl AppState {
     pub fn counter(&self) -> &AtomicU64 { &self.hlc_counter }
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
-    pub fn store(&self) -> &iroh_blobs::store::fs::Store { &self._store }
+    pub fn store(&self) -> &iroh_blobs::api::Store { &self._store }
 
     pub fn list_orgs(&self) -> Vec<OrgInfo> {
         self.orgs.iter().map(|(id, o)| OrgInfo {

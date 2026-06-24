@@ -45,7 +45,6 @@ pub fn commit_event(
         .ok_or_else(|| anyhow::anyhow!("org {} not found", org_id))?;
     let author = state.author();
     let node_id_hex = hex::encode(state.node_id());
-    let node_id = state.node_id();
 
     // Route event to the correct namespace
     let module_name = match event_type.split('.').next().unwrap_or(event_type) {

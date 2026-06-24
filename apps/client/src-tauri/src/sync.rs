@@ -121,11 +121,12 @@ pub async fn get_sync_info(state: &AppState, org_id: &str) -> anyhow::Result<Syn
     let org_state = state.get_org_docs(org_id).ok_or_else(|| anyhow::anyhow!("org {} not found", org_id))?;
     let doc = &org_state.control_doc;
     
-    let mut entries = doc.get_many(iroh_docs::api::Query::key_prefix("heartbeat/")).await?;
+    let mut entries = doc.get_many(iroh_docs::store::Query::key_prefix("heartbeat/")).await?;
     let mut peers = Vec::new();
     let now = chrono::Utc::now().timestamp_millis();
     
-    while let Some(entry) = entries.try_next().await? {
+    while let Some(res) = entries.next().await {
+        let entry = res?;
         let key_bytes = entry.key();
         if let Ok(key) = std::str::from_utf8(key_bytes) {
             if let Some(peer_id) = key.strip_prefix("heartbeat/") {

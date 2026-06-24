@@ -13,7 +13,7 @@ pub struct AppState {
     secret: SecretKey,
     _endpoint: Endpoint,
     _gossip: iroh_gossip::net::Gossip,
-    _store: iroh_blobs::store::fs::Store,
+    _store: iroh_blobs::api::Store,
     _router: iroh::protocol::Router,
     docs_api: iroh_docs::api::DocsApi,
     author: iroh_docs::AuthorId,
@@ -69,7 +69,7 @@ impl AppState {
 
         let blobs_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blobs_dir).ok();
-        let store = iroh_blobs::store::fs::Store::load(&blobs_dir).await?;
+        let store = iroh_blobs::store::fs::FsStore::load(&blobs_dir).await?;
         
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
 
@@ -93,7 +93,7 @@ impl AppState {
         let author = api.author_create().await?;
 
         Ok(Self {
-            secret, _endpoint: ep, _gossip: gossip, _store: store, _router: router,
+            secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router,
             docs_api: api, author, registry,
             orgs: HashMap::new(),
             devices: HashMap::new(),
@@ -105,7 +105,7 @@ impl AppState {
     pub fn api(&self) -> &iroh_docs::api::DocsApi { &self.docs_api }
     pub fn author(&self) -> iroh_docs::AuthorId { self.author }
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
-    pub fn store(&self) -> &iroh_blobs::store::fs::Store { &self._store }
+    pub fn store(&self) -> &iroh_blobs::api::Store { &self._store }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn list_orgs(&self) -> Vec<String> { self.orgs.keys().cloned().collect() }
 

@@ -150,7 +150,7 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
 
 #[tauri::command]
 fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
-    let (oid, doc, store) = {
+    let (_oid, doc, store) = {
         let s = state.lock().map_err(|e| e.to_string())?;
         let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
         if resolved_org_id.is_empty() { return Ok(vec![]); }

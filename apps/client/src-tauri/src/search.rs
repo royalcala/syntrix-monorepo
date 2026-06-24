@@ -1,5 +1,5 @@
 use tantivy::schema::*;
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term, SnippetGenerator};
+use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term, SnippetGenerator, TantivyDocument};
 use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
 use tantivy::collector::TopDocs;
 use std::path::PathBuf;
@@ -165,7 +165,7 @@ impl SearchEngine {
         let mut results = vec![];
 
         for (score, doc_address) in top_docs {
-            let retrieved_doc = searcher.doc(doc_address)?;
+            let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
             
             let doc_id_val = retrieved_doc
                 .get_first(self.doc_id)
