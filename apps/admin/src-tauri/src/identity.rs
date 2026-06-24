@@ -230,6 +230,10 @@ impl AppState {
                                 }
                                 roles.insert(name.clone(), role_map);
 
+                                // Start heartbeat sync automatically
+                                let node_id_hex = hex::encode(*secret.public().as_bytes());
+                                crate::admin::start_heartbeat(ctrl_doc.clone(), author, node_id_hex);
+
                                 orgs.insert(name.clone(), OrgState {
                                     name,
                                     control_doc: ctrl_doc,

@@ -56,7 +56,7 @@ fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle,
 }
 
 #[tauri::command]
-fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
+async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
     let name = org_name.unwrap_or_else(|| "org-unknown".into());
 
     let invite: invite::InvitePayload = serde_json::from_str(&invite_json)
@@ -79,7 +79,7 @@ fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_n
             final_org_id = hex::encode(&ticket.capability.id().as_bytes()[..4]);
         }
 
-        let doc = tauri::async_runtime::block_on(api.import(ticket))
+        let doc = api.import(ticket).await
             .map_err(|e| format!("import ticket for {}: {}", ti.ns, e))?;
 
         docs.push((ti.ns.clone(), doc));
