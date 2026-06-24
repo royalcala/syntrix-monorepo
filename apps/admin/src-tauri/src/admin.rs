@@ -146,15 +146,17 @@ pub async fn share_org_tickets(state: &mut AppState, org: &str) -> anyhow::Resul
 /// Send an org invitation to a client device.
 /// Accepts either a JSON with node_id + addrs, or just a hex node_id.
 pub async fn send_invite(
-    state: &mut AppState,
+    control_doc: iroh_docs::api::Doc,
+    catalogs_doc: iroh_docs::api::Doc,
+    operational_doc: iroh_docs::api::Doc,
+    payroll_doc: iroh_docs::api::Doc,
+    endpoint: iroh::Endpoint,
     org: &str,
     endpoint_addr_json: &str,
     role: &str,
-    name: &str,
-    person: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(String, String)> {
     // Try parsing as JSON (full address), fall back to raw hex node_id
-    let (peer, addrs, _addr) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
+    let (peer, addrs, device_addr_str) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"].as_str()
             .ok_or_else(|| anyhow::anyhow!("invalid addr json: missing node_id"))?;
         let node_id_bytes = hex::decode(node_id_hex)?;
@@ -175,7 +177,7 @@ pub async fn send_invite(
             }).collect())
             .unwrap_or_default();
         let addr = iroh::EndpointAddr::from_parts(peer, addrs.clone());
-        (peer, addrs, addr)
+        (peer, addrs, endpoint_addr_json.to_string())
     } else {
         // Raw hex node_id — rely on DNS
         let node_id_bytes = hex::decode(endpoint_addr_json)?;
@@ -183,19 +185,16 @@ pub async fn send_invite(
             .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
         let peer: iroh::PublicKey = iroh::PublicKey::from_bytes(&node_id)?;
         let addr = iroh::EndpointAddr::from_parts(peer, []);
-        (peer, vec![], addr)
+        (peer, vec![], endpoint_addr_json.to_string())
     };
 
-    let org_state = state.get_org(org)
-        .ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
-
-    let control_ticket = org_state.control_doc
+    let control_ticket = control_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let catalogs_ticket = org_state.catalogs_doc
+    let catalogs_ticket = catalogs_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let operational_ticket = org_state.operational_doc
+    let operational_ticket = operational_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let _payroll_ticket = org_state.payroll_doc
+    let _payroll_ticket = payroll_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
     // Build selective ticket list based on business modules -> namespaces mapping
@@ -227,7 +226,6 @@ pub async fn send_invite(
         "tickets": tickets,
     });
 
-    let endpoint = state.endpoint();
     let conn = match endpoint.connect(peer, b"/syntrix/invite/1").await {
         Ok(c) => c,
         Err(_) => {
@@ -243,11 +241,8 @@ pub async fn send_invite(
     // Wait for client to read before closing connection (race condition fix)
     let _ = conn.closed().await;
 
-    // Register the device locally now that the invite was sent
     let node_id_hex = hex::encode(&peer.as_bytes()[..]);
-    add_device(state, org, &node_id_hex, name, person, role, endpoint_addr_json).await?;
-
-    Ok(())
+    Ok((node_id_hex, device_addr_str))
 }
 
 pub async fn create_role(
@@ -330,9 +325,7 @@ pub struct SyncInfo {
     pub peers: Vec<PeerStatus>,
 }
 
-pub async fn get_sync_info(state: &AppState, org: &str) -> anyhow::Result<SyncInfo> {
-    let org_state = state.get_org(org).ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
-    let doc = &org_state.control_doc;
+pub async fn get_sync_info(doc: iroh_docs::api::Doc, store: iroh_blobs::api::Store, node_id: [u8; 32]) -> anyhow::Result<SyncInfo> {
     
     let mut entries = Box::pin(doc.get_many(iroh_docs::store::Query::key_prefix("heartbeat/")).await?);
     let mut peers = Vec::new();
@@ -343,7 +336,7 @@ pub async fn get_sync_info(state: &AppState, org: &str) -> anyhow::Result<SyncIn
         let key_bytes = entry.key();
         if let Ok(key) = std::str::from_utf8(key_bytes) {
             if let Some(peer_id) = key.strip_prefix("heartbeat/") {
-                if let Ok(bytes) = state.store().blobs().get_bytes(entry.content_hash()).await {
+                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                         if let Some(ts) = val["ts"].as_i64() {
                             let status = if now - ts < 60000 { "online" } else { "offline" };
@@ -360,7 +353,7 @@ pub async fn get_sync_info(state: &AppState, org: &str) -> anyhow::Result<SyncIn
     }
     
     Ok(SyncInfo {
-        node_id: hex::encode(state.node_id()),
+        node_id: hex::encode(node_id),
         is_online: true,
         peers,
     })

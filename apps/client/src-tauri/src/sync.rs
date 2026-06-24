@@ -117,9 +117,7 @@ pub struct SyncInfo {
     pub peers: Vec<PeerStatus>,
 }
 
-pub async fn get_sync_info(state: &AppState, org_id: &str) -> anyhow::Result<SyncInfo> {
-    let org_state = state.get_org_docs(org_id).ok_or_else(|| anyhow::anyhow!("org {} not found", org_id))?;
-    let doc = &org_state.control_doc;
+pub async fn get_sync_info(doc: iroh_docs::api::Doc, store: iroh_blobs::api::Store, node_id: [u8; 32]) -> anyhow::Result<SyncInfo> {
     
     let mut entries = Box::pin(doc.get_many(iroh_docs::store::Query::key_prefix("heartbeat/")).await?);
     let mut peers = Vec::new();
@@ -130,7 +128,7 @@ pub async fn get_sync_info(state: &AppState, org_id: &str) -> anyhow::Result<Syn
         let key_bytes = entry.key();
         if let Ok(key) = std::str::from_utf8(key_bytes) {
             if let Some(peer_id) = key.strip_prefix("heartbeat/") {
-                if let Ok(bytes) = state.store().blobs().get_bytes(entry.content_hash()).await {
+                if let Ok(bytes) = store.blobs().get_bytes(entry.content_hash()).await {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                         if let Some(ts) = val["ts"].as_i64() {
                             let status = if now - ts < 60000 { "online" } else { "offline" };
@@ -147,7 +145,7 @@ pub async fn get_sync_info(state: &AppState, org_id: &str) -> anyhow::Result<Syn
     }
     
     Ok(SyncInfo {
-        node_id: hex::encode(state.node_id()),
+        node_id: hex::encode(node_id),
         is_online: true,
         peers,
     })

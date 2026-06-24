@@ -112,8 +112,12 @@ fn network_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, St
 
 #[tauri::command]
 fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<admin::SyncInfo, String> {
-    let state = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(admin::get_sync_info(&state, &org)).map_err(|e| e.to_string())
+    let (doc, store, node_id) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
+        (org_state.control_doc.clone(), s.store().clone(), s.node_id())
+    };
+    tauri::async_runtime::block_on(admin::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -125,9 +129,41 @@ fn send_invite(
     name: String,
     person: String,
 ) -> Result<(), String> {
-    let mut state = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(admin::send_invite(&mut state, &org, &endpoint_addr_json, &role, &name, &person))
-        .map_err(|e| e.to_string())
+    let (control_doc, catalogs_doc, operational_doc, payroll_doc, endpoint) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
+        (
+            org_state.control_doc.clone(),
+            org_state.catalogs_doc.clone(),
+            org_state.operational_doc.clone(),
+            org_state.payroll_doc.clone(),
+            s.endpoint().clone(),
+        )
+    };
+
+    let (node_id_hex, device_addr) = tauri::async_runtime::block_on(admin::send_invite(
+        control_doc,
+        catalogs_doc,
+        operational_doc,
+        payroll_doc,
+        endpoint,
+        &org,
+        &endpoint_addr_json,
+        &role,
+    )).map_err(|e| e.to_string())?;
+
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(admin::add_device(
+        &mut s,
+        &org,
+        &node_id_hex,
+        &name,
+        &person,
+        &role,
+        &device_addr,
+    )).map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]

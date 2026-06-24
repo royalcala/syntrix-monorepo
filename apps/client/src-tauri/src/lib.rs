@@ -57,15 +57,18 @@ fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle,
 
 #[tauri::command]
 fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
-    let mut s = state.lock().map_err(|e| e.to_string())?;
     let name = org_name.unwrap_or_else(|| "org-unknown".into());
 
-    // Try parsing as new format (with tickets array), then old format (control_ticket + data_ticket)
     let invite: invite::InvitePayload = serde_json::from_str(&invite_json)
         .map_err(|e| format!("invalid invite json: {}", e))?;
 
+    let api = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.api().clone()
+    };
+
     let mut final_org_id = String::new();
-    let role = invite.role.clone();
+    let mut docs = Vec::new();
 
     for ti in &invite.tickets {
         let ticket: iroh_docs::DocTicket = ti.ticket
@@ -76,10 +79,17 @@ fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_n
             final_org_id = hex::encode(&ticket.capability.id().as_bytes()[..4]);
         }
 
-        let doc = tauri::async_runtime::block_on(s.api().import(ticket))
+        let doc = tauri::async_runtime::block_on(api.import(ticket))
             .map_err(|e| format!("import ticket for {}: {}", ti.ns, e))?;
 
-        s.add_org_docs(&ti.ns, &final_org_id, &name, &role, doc);
+        docs.push((ti.ns.clone(), doc));
+    }
+
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    let role = invite.role.clone();
+
+    for (ns, doc) in docs {
+        s.add_org_docs(&ns, &final_org_id, &name, &role, doc);
     }
 
     if let Some(org_state) = s.get_org_docs(&final_org_id) {
@@ -120,8 +130,12 @@ fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, Strin
 
 #[tauri::command]
 fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<sync::SyncInfo, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(sync::get_sync_info(&s, &org)).map_err(|e| e.to_string())
+    let (doc, store, node_id) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let org_state = s.get_org_docs(&org).ok_or_else(|| format!("org {} not found", org))?;
+        (org_state.control_doc.clone(), s.store().clone(), s.node_id())
+    };
+    tauri::async_runtime::block_on(sync::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
