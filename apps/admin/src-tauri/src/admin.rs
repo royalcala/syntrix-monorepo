@@ -324,9 +324,10 @@ pub async fn update_role(
 pub fn build_device_addr_string(endpoint: &iroh::Endpoint) -> String {
     let addr = endpoint.addr();
     let node_id_hex = hex::encode(addr.id.as_bytes());
-    let addrs: Vec<String> = addr.addrs.iter().map(|a| match a {
-        iroh::TransportAddr::Relay(url) => format!("relay:{}", url),
-        iroh::TransportAddr::Ip(sa) => format!("ip:{}", sa),
+    let addrs: Vec<String> = addr.addrs.iter().filter_map(|a| match a {
+        iroh::TransportAddr::Relay(url) => Some(format!("relay:{}", url)),
+        iroh::TransportAddr::Ip(sa) => Some(format!("ip:{}", sa)),
+        _ => None,
     }).collect();
     if addrs.is_empty() {
         node_id_hex
