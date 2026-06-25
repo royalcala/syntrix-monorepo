@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+
+# Evitar loops recursivos
+export IN_CARGO_BRIDGE=1
+
+# Determinar rutas relativas de forma dinámica basadas en la ubicación del script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+REMOTE_REPO_ROOT="/root/remote-builds/syntrix-monorepo"
+
+# Buscar el cargo real en el PATH (evitando nuestra propia carpeta bin)
+REAL_CARGO=""
+IFS=':' read -r -a array <<< "$PATH"
+for element in "${array[@]}"; do
+    if [[ "$element" == *"/syntrix-monorepo/bin" ]]; then
+        continue
+    fi
+    if [ -x "$element/cargo" ]; then
+        REAL_CARGO="$element/cargo"
+        break
+    fi
+done
+
+if [ -z "$REAL_CARGO" ]; then
+    REAL_CARGO="/run/current-system/sw/bin/cargo"
+fi
+
+# Si es una compilación o ejecución, la delegamos al servidor
+if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ]]; then
+    # Servidor remoto por defecto (se puede sobreescribir con la variable de entorno REMOTE_HOST)
+    REMOTE_HOST="${REMOTE_HOST:-server-1}"
+
+    # IPs correspondientes para validación rápida de ping
+    IP_SERVER1="192.168.1.10"
+    IP_SERVER2="192.168.1.11"
+
+    # Comprobación de disponibilidad y failover automático
+    if [[ "$REMOTE_HOST" == "server-2" ]]; then
+        # Si queremos usar server-2 pero está apagado/inaccesible, caemos en server-1
+        if ! ping -c 1 -W 1 "$IP_SERVER2" >/dev/null 2>&1; then
+            echo "=== [Bridge] server-2 ($IP_SERVER2) está apagado o inaccesible. Redirigiendo compilación a server-1... ==="
+            REMOTE_HOST="server-1"
+        fi
+    elif [[ "$REMOTE_HOST" == "server-1" ]]; then
+        # Si queremos usar server-1 pero está apagado/inaccesible, intentamos caer en server-2
+        if ! ping -c 1 -W 1 "$IP_SERVER1" >/dev/null 2>&1; then
+            echo "=== [Bridge] server-1 ($IP_SERVER1) está apagado o inaccesible. Redirigiendo compilación a server-2... ==="
+            if ping -c 1 -W 1 "$IP_SERVER2" >/dev/null 2>&1; then
+                REMOTE_HOST="server-2"
+            else
+                echo "=== [Bridge] ¡ADVERTENCIA! Ambos servidores están inaccesibles. Usando server-1 por defecto. ==="
+                REMOTE_HOST="server-1"
+            fi
+        fi
+    fi
+
+    # Calcular la ruta relativa de la carpeta actual
+    CURRENT_DIR=$(pwd)
+    if [[ "$CURRENT_DIR" == "$REPO_ROOT"* ]]; then
+        RELATIVE_DIR=${CURRENT_DIR#"$REPO_ROOT"}
+        RELATIVE_DIR=${RELATIVE_DIR#/}
+    else
+        RELATIVE_DIR=""
+    fi
+    REMOTE_DIR="$REMOTE_REPO_ROOT/$RELATIVE_DIR"
+
+    echo "=== [Bridge] Sincronizando código a $REMOTE_HOST (ThinkCentre)... ==="
+    # Asegurar que el directorio remoto existe en el servidor elegido
+    ssh "$REMOTE_HOST" "mkdir -p $REMOTE_REPO_ROOT"
+    
+    # Sincronizar código fuente de la laptop al servidor elegido
+    rsync -avz --delete \
+      --exclude 'target' \
+      --exclude 'node_modules' \
+      --exclude '.git' \
+      --exclude '.direnv' \
+      --exclude '.devenv' \
+      "$REPO_ROOT/" \
+      "$REMOTE_HOST:$REMOTE_REPO_ROOT/"
+
+    # Reemplazar rutas absolutas de la laptop a las del servidor en los argumentos
+    # Y si es "run", transformarlo a "build" para el servidor, quitando el "--" y argumentos subsiguientes
+    REMOTE_ARGS=()
+    if [[ "$1" == "run" ]]; then
+        REMOTE_ARGS+=("build")
+        for arg in "${@:2}"; do
+            if [[ "$arg" == "--" ]]; then
+                break
+            fi
+            # Reemplazar ruta local por ruta remota
+            REMOTE_ARGS+=("${arg//$REPO_ROOT/$REMOTE_REPO_ROOT}")
+        done
+    else
+        for arg in "$@"; do
+            # Reemplazar ruta local por ruta remota
+            REMOTE_ARGS+=("${arg//$REPO_ROOT/$REMOTE_REPO_ROOT}")
+        done
+    fi
+
+    echo "=== [Bridge] Escribiendo script de compilación remoto en $REMOTE_HOST... ==="
+    # Escribimos el script de compilación en el servidor sin problemas de escape usando un heredoc con comillas simples ('EOF')
+    ssh "$REMOTE_HOST" "cat > /tmp/remote_cargo_build.sh" << 'EOF'
+#!/usr/bin/env bash
+REMOTE_DIR="$1"
+shift
+
+DEPS="nixpkgs#glib.dev nixpkgs#gtk3.dev nixpkgs#webkitgtk_4_1.dev nixpkgs#libsoup_3.dev nixpkgs#openssl.dev nixpkgs#cairo.dev nixpkgs#pango.dev nixpkgs#gdk-pixbuf.dev nixpkgs#at-spi2-core.dev nixpkgs#harfbuzz.dev nixpkgs#freetype.dev nixpkgs#fontconfig.dev nixpkgs#libxkbcommon.dev nixpkgs#libepoxy.dev nixpkgs#graphene.dev nixpkgs#libdrm.dev nixpkgs#zlib.dev nixpkgs#libpng.dev nixpkgs#libjpeg.dev nixpkgs#pkg-config nixpkgs#cargo nixpkgs#rustc nixpkgs#cmake nixpkgs#perl nixpkgs#nodejs_22 nixpkgs#mold nixpkgs#clang"
+
+PKG_SETUP='export PKG_CONFIG_PATH=""; for d in /nix/store/*/lib/pkgconfig /nix/store/*/share/pkgconfig; do [ -d "$d" ] && ls "$d"/*.pc >/dev/null 2>&1 && PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$d"; done; export PKG_CONFIG_PATH'
+
+cd "$REMOTE_DIR" || exit 1
+nix --extra-experimental-features 'nix-command flakes' shell $DEPS --command bash -c "$PKG_SETUP && cargo $*"
+EOF
+
+    echo "=== [Bridge] Compilando remotamente en $REMOTE_HOST... ==="
+    ssh "$REMOTE_HOST" "bash /tmp/remote_cargo_build.sh '$REMOTE_DIR' ${REMOTE_ARGS[@]}"
+    EXIT_CODE=$?
+
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo "=== [Bridge] Descargando binario y target compilado de regreso... ==="
+        # Traer de regreso el directorio target (rsync inteligente, solo copia el binario final y metadatos)
+        rsync -avz "$REMOTE_HOST:$REMOTE_DIR/target/" "$CURRENT_DIR/target/"
+        
+        # Si era un "run", ahora ejecutamos el binario local directamente
+        # para evitar por completo que el cargo local intente re-compilar debido a discrepancias de metadatos.
+        if [[ "$1" == "run" ]]; then
+            BINARY_NAME=""
+            if [[ -f "Cargo.toml" ]]; then
+                BINARY_NAME=$(grep -m1 '^name = ' Cargo.toml | cut -d'"' -f2)
+            fi
+            BINARY_NAME="${BINARY_NAME:-syntrix-admin}"
+            BINARY_PATH="./target/debug/$BINARY_NAME"
+            
+            # Obtener los argumentos después del "--"
+            BIN_ARGS=()
+            FOUND_SEPARATOR=false
+            for arg in "$@"; do
+                if [[ "$FOUND_SEPARATOR" == true ]]; then
+                    BIN_ARGS+=("$arg")
+                elif [[ "$arg" == "--" ]]; then
+                    FOUND_SEPARATOR=true
+                fi
+            done
+            
+            if [[ -f "$BINARY_PATH" ]]; then
+                echo "=== [Bridge] Iniciando ejecución local directa: $BINARY_PATH ${BIN_ARGS[@]} ==="
+                chmod +x "$BINARY_PATH"
+                exec "$BINARY_PATH" "${BIN_ARGS[@]}"
+            else
+                echo "=== [Bridge] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
+                exec "$REAL_CARGO" "$@"
+            fi
+        fi
+    fi
+    exit $EXIT_CODE
+else
+    # Ejecutar localmente cualquier otro comando
+    exec "$REAL_CARGO" "$@"
+fi
