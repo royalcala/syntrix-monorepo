@@ -3,7 +3,8 @@ default:
 
 DEPS := "nixpkgs#glib.dev nixpkgs#gtk3.dev nixpkgs#webkitgtk_4_1.dev nixpkgs#libsoup_3.dev nixpkgs#openssl.dev nixpkgs#cairo.dev nixpkgs#pango.dev nixpkgs#gdk-pixbuf.dev nixpkgs#at-spi2-core.dev nixpkgs#harfbuzz.dev nixpkgs#freetype.dev nixpkgs#fontconfig.dev nixpkgs#libxkbcommon.dev nixpkgs#libepoxy.dev nixpkgs#graphene.dev nixpkgs#libdrm.dev nixpkgs#zlib.dev nixpkgs#libpng.dev nixpkgs#libjpeg.dev nixpkgs#pkg-config nixpkgs#cargo nixpkgs#rustc nixpkgs#cmake nixpkgs#perl nixpkgs#nodejs_22 nixpkgs#mold nixpkgs#clang"
 
-PKG_SETUP := 'export PKG_CONFIG_PATH=""; for d in /nix/store/*/lib/pkgconfig /nix/store/*/share/pkgconfig; do [ -d "$d" ] && ls "$d"/*.pc >/dev/null 2>&1 && PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$d"; done; export PKG_CONFIG_PATH'
+PKG_SETUP := 'export PKG_CONFIG_PATH=""; for d in /nix/store/*/lib/pkgconfig /nix/store/*/share/pkgconfig; do [ -d "$d" ] && ls "$d"/*.pc >/dev/null 2>&1 && PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$d"; done; export PKG_CONFIG_PATH; export WEBKIT_DISABLE_COMPOSITING_MODE=1; export WEBKIT_DISABLE_DMABUF_RENDERER=1'
+
 
 # =========================================================================
 # 1. DESARROLLO ESTÁNDAR LOCAL (Compila y ejecuta en la laptop)
@@ -120,7 +121,21 @@ docs:
     pkill -f "[a]stro dev" || true
     pnpm docs:dev
 
-# Compila el sitio estático de la documentación
+# Compila el sitio estático de la documentación (incluyendo rustdoc remoto y Astro Starlight)
 docs-build:
+    @echo "=== Compilando Rustdoc remotamente en el servidor ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c ' \
+        {{PKG_SETUP}}; \
+        export REMOTE_HOST="server-1"; \
+        export PATH="$$PWD/bin:$$PATH"; \
+        cd apps/admin/src-tauri && cargo doc --no-deps -p syntrix-admin -p syntrix_admin_lib -p iroh-syntrix-docs; \
+        cd ../../client/src-tauri && cargo doc --no-deps -p syntrix-client -p syntrix_client_lib \
+    '
+    @echo "=== Copiando Rustdoc generado a la carpeta pública de Astro ==="
+    rm -rf apps/docs/public/rustdoc
+    mkdir -p apps/docs/public/rustdoc
+    cp -r apps/admin/src-tauri/target/doc/* apps/docs/public/rustdoc/
+    cp -r apps/client/src-tauri/target/doc/* apps/docs/public/rustdoc/ || true
+    @echo "=== Compilando el sitio de Astro Starlight ==="
     pnpm docs:build
 

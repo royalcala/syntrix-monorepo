@@ -26,7 +26,7 @@ if [ -z "$REAL_CARGO" ]; then
 fi
 
 # Si es una compilación o ejecución, la delegamos al servidor
-if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ]]; then
+if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" || "$1" == "doc" ]]; then
     # Servidor remoto por defecto (se puede sobreescribir con la variable de entorno REMOTE_HOST)
     REMOTE_HOST="${REMOTE_HOST:-server-1}"
 
@@ -119,7 +119,12 @@ EOF
     if [ $EXIT_CODE -eq 0 ]; then
         echo "=== [Bridge] Descargando binario y target compilado de regreso... ==="
         # Traer de regreso el directorio target (rsync inteligente, solo copia el binario final y metadatos)
-        rsync -avz "$REMOTE_HOST:$REMOTE_DIR/target/" "$CURRENT_DIR/target/"
+        rsync -avz \
+          --exclude 'incremental' \
+          --exclude '.fingerprint' \
+          --exclude 'build' \
+          --exclude 'deps' \
+          "$REMOTE_HOST:$REMOTE_DIR/target/" "$CURRENT_DIR/target/"
         
         # Si era un "run", ahora ejecutamos el binario local directamente
         # para evitar por completo que el cargo local intente re-compilar debido a discrepancias de metadatos.
