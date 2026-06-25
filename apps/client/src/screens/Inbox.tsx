@@ -2,6 +2,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Mail, Check } from "lucide-react";
+import { PageLayout } from "@syntrix/ui/components/PageLayout";
 
 interface InvitePayload {
   org_name: string;
@@ -17,13 +18,16 @@ export function Inbox({
   onAccept: (invite: InvitePayload) => void;
 }) {
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Mail size={24} className="text-primary" />
-        <h2 className="text-xl font-semibold">Inbox</h2>
-        {invites.length > 0 && <Badge variant="destructive">{invites.length} new</Badge>}
-      </div>
-
+    <PageLayout
+      title={
+        <div className="flex items-center gap-3">
+          <Mail size={24} className="text-primary" />
+          <span>Bandeja de Entrada</span>
+          {invites.length > 0 && <Badge variant="destructive">{invites.length} new</Badge>}
+        </div>
+      }
+      description="Administra y acepta invitaciones de organizaciones enviadas por administradores."
+    >
       {invites.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
@@ -51,6 +55,6 @@ export function Inbox({
           ))}
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

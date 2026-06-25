@@ -1,18 +1,17 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useNavigate } from "react-router-dom";
 import { 
   Activity, 
   Copy, 
   Check, 
   Laptop, 
-  ArrowLeft, 
   Network, 
   Shield, 
   User, 
   MapPin, 
   RefreshCw 
 } from "lucide-react";
+import { PageLayout } from "./PageLayout";
 import { Button } from "./ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -40,7 +39,6 @@ interface SyncDetailsPageProps {
 }
 
 export function SyncDetailsPage({ org, nodeId: propNodeId }: SyncDetailsPageProps) {
-  const navigate = useNavigate();
   const [info, setInfo] = useState<SyncInfo | null>(null);
   const [localAddr, setLocalAddr] = useState<{ node_id: string; addrs: string[] } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -126,29 +124,27 @@ export function SyncDetailsPage({ org, nodeId: propNodeId }: SyncDetailsPageProp
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header Area */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate(-1)} className="rounded-full">
-            <ArrowLeft size={18} />
-          </Button>
-          <div>
-            <div className="flex items-center gap-2">
-              <Network size={20} className="text-primary" />
-              <h1 className="text-2xl font-bold tracking-tight">Sincronización P2P</h1>
-              {refreshing && <RefreshCw size={14} className="animate-spin text-muted-foreground ml-1" />}
-            </div>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Estado de sincronización y dispositivos conectados para la organización: <span className="font-semibold text-foreground">{org}</span>
-            </p>
-          </div>
+    <PageLayout
+      title={
+        <div className="flex items-center gap-2">
+          <Network size={22} className="text-primary" />
+          <span>Sincronización P2P</span>
+          {refreshing && <RefreshCw size={14} className="animate-spin text-muted-foreground ml-2" />}
         </div>
-        <Button variant="outline" size="sm" onClick={() => fetchSyncInfo(true)} className="flex items-center gap-1.5 self-start">
+      }
+      description={
+        <>
+          Estado de sincronización y dispositivos conectados para la organización:{" "}
+          <span className="font-semibold text-foreground">{org}</span>
+        </>
+      }
+      actions={
+        <Button variant="outline" size="sm" onClick={() => fetchSyncInfo(true)} className="flex items-center gap-1.5">
           <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
           Actualizar
         </Button>
-      </div>
+      }
+    >
 
       {/* Overview Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -340,6 +336,6 @@ export function SyncDetailsPage({ org, nodeId: propNodeId }: SyncDetailsPageProp
           )}
         </CardContent>
       </Card>
-    </div>
+    </PageLayout>
   );
 }

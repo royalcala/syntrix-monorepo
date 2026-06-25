@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { PageLayout } from "@syntrix/ui";
 import { Card, CardContent } from "@syntrix/ui/components/ui/card";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { RefreshCw } from "lucide-react";
@@ -14,16 +15,23 @@ export function Logs() {
   useEffect(() => { load(); }, []);
 
   return (
-    <Card>
-      <div className="px-6 py-5 border-b flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Logs</h3>
-        <Button variant="ghost" size="icon" onClick={load}><RefreshCw size={16} /></Button>
-      </div>
-      <CardContent className="p-0">
-        <pre className="text-xs font-mono p-4 max-h-[70vh] overflow-y-auto whitespace-pre-wrap break-all">
-          {logs}
-        </pre>
-      </CardContent>
-    </Card>
+    <PageLayout
+      title="Logs del Sistema"
+      description="Historial detallado de eventos de sincronización y comunicación P2P."
+      actions={
+        <Button variant="outline" size="sm" onClick={load} className="flex items-center gap-1.5">
+          <RefreshCw size={14} />
+          Actualizar
+        </Button>
+      }
+    >
+      <Card>
+        <CardContent className="p-0">
+          <pre className="text-xs font-mono p-4 max-h-[70vh] overflow-y-auto whitespace-pre-wrap break-all bg-muted/20">
+            {logs}
+          </pre>
+        </CardContent>
+      </Card>
+    </PageLayout>
   );
 }

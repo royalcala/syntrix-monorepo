@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
+import { Routes, Route, useNavigate, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useQuery } from "@tanstack/react-query";
@@ -7,6 +7,7 @@ import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } 
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
+import { PageLayout } from "@syntrix/ui/components/PageLayout";
 import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
@@ -34,7 +35,6 @@ const deviceNavItems: NavItem[] = [
 
 export default function App() {
   const navigate = useNavigate();
-  const location = useLocation();
   const [nodeId, setNodeId] = useState<string>("");
   const [orgs, setOrgs] = useState<OrgInfo[]>([]);
   const [activeOrg, setActiveOrg] = useState<string>("");
@@ -159,8 +159,6 @@ export default function App() {
     return canOpen.includes(moduleName);
   });
 
-  const isEntityRoute = navItems.some((i) => location.pathname === i.href);
-
   return (
     <AppShell
       appName="Syntrix"
@@ -175,7 +173,7 @@ export default function App() {
       extraNavItems={filteredNavItems}
       syncIndicator={activeOrg ? <SyncStatusIndicator org={activeOrg} /> : null}
     >
-      <main className={isEntityRoute ? "h-[calc(100vh-4rem)]" : "p-4 md:p-6"}>
+      <main className="h-[calc(100vh-4rem)] lg:h-screen flex flex-col overflow-y-auto">
         <Routes>
           <Route path="/inbox" element={<Inbox invites={invites} onAccept={async (invite) => {
             await invoke("join_org", { inviteJson: JSON.stringify(invite), orgName: invite.org_name });
@@ -184,10 +182,46 @@ export default function App() {
           }} />} />
           <Route path="/orgs" element={<OrgsScreen nodeId={nodeId} orgs={orgs} setActiveOrg={(id) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }} />} />
           <Route index element={<Navigate to="/customers" replace />} />
-          <Route path="/customers" element={<EntityGrid entity={customersEntity} orgId={activeOrg} role={role} />} />
-          <Route path="/invoices" element={<EntityGrid entity={invoicesEntity} orgId={activeOrg} role={role} />} />
-          <Route path="/products" element={<EntityGrid entity={productsEntity} orgId={activeOrg} role={role} />} />
-          <Route path="/orders" element={<EntityGrid entity={ordersEntity} orgId={activeOrg} role={role} />} />
+          <Route path="/customers" element={
+            <PageLayout
+              title="Clientes"
+              description="Administración de la cartera de clientes y cuentas asociadas."
+              className="h-full"
+              contentClassName="flex-1 min-h-0 flex flex-col"
+            >
+              <EntityGrid entity={customersEntity} orgId={activeOrg} role={role} />
+            </PageLayout>
+          } />
+          <Route path="/invoices" element={
+            <PageLayout
+              title="Facturas"
+              description="Gestión y emisión de facturas para los clientes autorizados."
+              className="h-full"
+              contentClassName="flex-1 min-h-0 flex flex-col"
+            >
+              <EntityGrid entity={invoicesEntity} orgId={activeOrg} role={role} />
+            </PageLayout>
+          } />
+          <Route path="/products" element={
+            <PageLayout
+              title="Productos"
+              description="Listado y control de inventario de productos y servicios."
+              className="h-full"
+              contentClassName="flex-1 min-h-0 flex flex-col"
+            >
+              <EntityGrid entity={productsEntity} orgId={activeOrg} role={role} />
+            </PageLayout>
+          } />
+          <Route path="/orders" element={
+            <PageLayout
+              title="Órdenes"
+              description="Administración de pedidos y órdenes de compra de la organización."
+              className="h-full"
+              contentClassName="flex-1 min-h-0 flex flex-col"
+            >
+              <EntityGrid entity={ordersEntity} orgId={activeOrg} role={role} />
+            </PageLayout>
+          } />
           <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />
         </Routes>
       </main>
@@ -216,51 +250,55 @@ function OrgsScreen({ nodeId: _nodeId, orgs, setActiveOrg }: { nodeId: string; o
   const [copied, setCopied] = useState(false);
   useEffect(() => { invoke<string>("get_endpoint_addr").then(setAddr); }, []);
   return (
-    <div className="space-y-6 p-4 md:p-6">
-      <h2 className="text-xl font-semibold">Mis Organizaciones</h2>
-      <div className="bg-card rounded-xl border border-border p-4">
-        <div className="flex items-center gap-2 mb-2">
-          <p className="text-xs text-muted-foreground">Your Device Address</p>
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={async () => {
-            try {
-              if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(addr);
-              } else {
-                const textArea = document.createElement("textarea");
-                textArea.value = addr;
-                textArea.style.position = "absolute";
-                textArea.style.left = "-999999px";
-                document.body.prepend(textArea);
-                textArea.select();
-                try { document.execCommand("copy"); } catch (e) { console.error(e); }
-                textArea.remove();
+    <PageLayout
+      title="Mis Organizaciones"
+      description="Visualiza tus organizaciones y comparte tu dirección de dispositivo para recibir invitaciones."
+    >
+      <div className="space-y-6">
+        <div className="bg-card rounded-xl border border-border p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <p className="text-xs text-muted-foreground">Your Device Address</p>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={async () => {
+              try {
+                if (navigator.clipboard && window.isSecureContext) {
+                  await navigator.clipboard.writeText(addr);
+                } else {
+                  const textArea = document.createElement("textarea");
+                  textArea.value = addr;
+                  textArea.style.position = "absolute";
+                  textArea.style.left = "-999999px";
+                  document.body.prepend(textArea);
+                  textArea.select();
+                  try { document.execCommand("copy"); } catch (e) { console.error(e); }
+                  textArea.remove();
+                }
+                setCopied(true); setTimeout(() => setCopied(false), 2000);
+              } catch (err) {
+                console.error(err);
+                prompt("El navegador bloqueó el copiado automático. Por favor cópialo de aquí:", addr);
               }
-              setCopied(true); setTimeout(() => setCopied(false), 2000);
-            } catch (err) {
-              console.error(err);
-              prompt("El navegador bloqueó el copiado automático. Por favor cópialo de aquí:", addr);
-            }
-          }}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Copied" : "Copy"}</Button>
+            }}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? "Copied" : "Copy"}</Button>
+          </div>
+          <code className="block text-xs font-mono break-all max-h-16 overflow-y-auto">{addr || "loading..."}</code>
         </div>
-        <code className="block text-xs font-mono break-all max-h-16 overflow-y-auto">{addr || "loading..."}</code>
+        {orgs.length === 0 ? (
+          <div className="text-center py-8">
+            <Building2 size={40} className="text-muted-foreground mx-auto mb-4" />
+            <p className="text-muted-foreground mb-2">You are not a member of any organization yet.</p>
+            <p className="text-sm text-muted-foreground">Share your Device Address above with an admin to get invited.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {orgs.map((o) => (
+              <div key={o.id} className="bg-card rounded-xl border border-border p-5 hover:shadow-md transition-shadow cursor-pointer"
+                   onClick={() => { setActiveOrg(o.id); navigate("/"); }}>
+                <h3 className="font-semibold text-lg">{o.name}</h3>
+                <Badge variant="outline" className="mt-2">{o.role}</Badge>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-      {orgs.length === 0 ? (
-        <div className="text-center py-8">
-          <Building2 size={40} className="text-muted-foreground mx-auto mb-4" />
-          <p className="text-muted-foreground mb-2">You are not a member of any organization yet.</p>
-          <p className="text-sm text-muted-foreground">Share your Device Address above with an admin to get invited.</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {orgs.map((o) => (
-            <div key={o.id} className="bg-card rounded-xl border border-border p-5 hover:shadow-md transition-shadow cursor-pointer"
-                 onClick={() => { setActiveOrg(o.id); navigate("/"); }}>
-              <h3 className="font-semibold text-lg">{o.name}</h3>
-              <Badge variant="outline" className="mt-2">{o.role}</Badge>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    </PageLayout>
   );
 }

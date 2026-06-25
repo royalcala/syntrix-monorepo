@@ -5,6 +5,7 @@ import { Users, Shield, Building2, Terminal, Plus } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
+import { PageLayout } from "@syntrix/ui/components/PageLayout";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { CreateOrg } from "./screens/CreateOrg";
 import { Logs } from "./screens/Logs";
@@ -56,20 +57,45 @@ export default function App() {
         activeOrg={activeOrg}
         onSelectOrg={setActiveOrg}
         navItems={navItems}
-        syncIndicator={activeOrg ? <SyncStatusIndicator org={activeOrg} /> : null}
-        headerActions={
-          <>
-            <ShareDialog org={activeOrg} />
-            <Button size="sm" variant="outline" onClick={() => setNewOrgOpen(true)}>
-              <Plus size={14} /> <span className="hidden sm:inline ml-1">New Org</span>
-            </Button>
-          </>
-        }>
+        syncIndicator={activeOrg ? <SyncStatusIndicator org={activeOrg} /> : null}>
           <Routes>
             <Route index element={<Navigate to="/devices" replace />} />
-            <Route path="/devices" element={<DevicesGridPage org={activeOrg} />} />
-            <Route path="/roles" element={<RolesGridPage org={activeOrg} />} />
-            <Route path="/orgs" element={<OrgsGridPage />} />
+            <Route path="/devices" element={
+              <PageLayout
+                title="Dispositivos"
+                description="Monitorea y autoriza dispositivos conectados en la red P2P de esta organización."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0 flex flex-col"
+                actions={<ShareDialog org={activeOrg} />}
+              >
+                <DevicesGridPage org={activeOrg} />
+              </PageLayout>
+            } />
+            <Route path="/roles" element={
+              <PageLayout
+                title="Roles"
+                description="Define y administra los roles y niveles de acceso a la base de datos."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0 flex flex-col"
+              >
+                <RolesGridPage org={activeOrg} />
+              </PageLayout>
+            } />
+            <Route path="/orgs" element={
+              <PageLayout
+                title="Organizaciones"
+                description="Administra todas las organizaciones locales registradas en este nodo."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0 flex flex-col"
+                actions={
+                  <Button size="sm" variant="outline" onClick={() => setNewOrgOpen(true)}>
+                    <Plus size={14} /> <span className="ml-1">New Org</span>
+                  </Button>
+                }
+              >
+                <OrgsGridPage />
+              </PageLayout>
+            } />
             <Route path="/logs" element={<Logs />} />
             <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />
           </Routes>

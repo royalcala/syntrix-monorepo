@@ -159,13 +159,13 @@ export function AppShell({
       </aside>
 
       <div className="lg:pl-64">
-        <header className="h-16 border-b border-border bg-background flex items-center px-4 md:px-6 gap-3 sticky top-0 z-20">
-          <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-2 rounded-md hover:bg-accent">
+        <header className="lg:hidden h-16 border-b border-border bg-background flex items-center px-4 md:px-6 gap-3 sticky top-0 z-20">
+          <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 rounded-md hover:bg-accent">
             <Menu size={20} />
           </button>
           <h2 className="text-lg font-semibold truncate">{currentLabel}</h2>
           <div className="ml-auto flex gap-2 items-center">
-            {role && <span className="hidden sm:inline text-xs text-muted-foreground mr-2">{activeOrgName} · {role}</span>}
+            {role && <span className="text-xs text-muted-foreground mr-2">{activeOrgName} · {role}</span>}
             {onRefresh && (
               <Button variant="ghost" size="icon" onClick={onRefresh}><RefreshCw size={16} /></Button>
             )}
