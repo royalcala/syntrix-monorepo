@@ -31,9 +31,9 @@ export default defineConfig({
 					items: [
 						{ label: 'Comandos de Tauri', slug: 'referencia/comandos-tauri' },
 						{ label: 'Esquemas y Tipos', slug: 'referencia/esquemas' },
-						{ label: 'Rustdoc: Admin Core', link: '/rustdoc/syntrix_admin_lib/index.html', attrs: { target: '_blank' } },
-						{ label: 'Rustdoc: Client Core', link: '/rustdoc/syntrix_client_lib/index.html', attrs: { target: '_blank' } },
-						{ label: 'Rustdoc: Iroh Docs Engine', link: '/rustdoc/iroh_syntrix_docs/index.html', attrs: { target: '_blank' } },
+						{ label: 'Rustdoc: Admin Core', link: '/rustdoc/syntrix_admin_lib/', attrs: { target: '_blank' } },
+						{ label: 'Rustdoc: Client Core', link: '/rustdoc/syntrix_client_lib/', attrs: { target: '_blank' } },
+						{ label: 'Rustdoc: Iroh Docs Engine', link: '/rustdoc/iroh_syntrix_docs/', attrs: { target: '_blank' } },
 					],
 				},
 				{
