@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --filter @syntrix/client dev",
-    "build": "pnpm --filter @syntrix/client build && pnpm --filter @syntrix/admin build"
+    "build": "pnpm --filter @syntrix/client build && pnpm --filter @syntrix/admin build",
+    "docs:dev": "pnpm --filter @syntrix/docs dev",
+    "docs:build": "pnpm --filter @syntrix/docs build"
   }
 }

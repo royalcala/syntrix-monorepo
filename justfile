@@ -110,3 +110,17 @@ clean-data-client:
 # Borra datos persistidos de AMBAS aplicaciones para empezar de cero
 clean-data-all: clean-data-admin clean-data-client
     @echo "✅ Datos persistidos locales eliminados."
+
+# =========================================================================
+# 5. DOCUMENTACIÓN
+# =========================================================================
+
+# Levanta el servidor de desarrollo para la documentación de Astro Starlight
+docs:
+    pkill -f "[a]stro dev" || true
+    pnpm docs:dev
+
+# Compila el sitio estático de la documentación
+docs-build:
+    pnpm docs:build
+
