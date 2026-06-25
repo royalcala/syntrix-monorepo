@@ -16,11 +16,9 @@ admin:
     pkill -x syntrix-admin || true
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/admin/src-tauri; cargo tauri dev'
 
-# Compila y ejecuta una segunda app de administración en local para pruebas
+# Compila y ejecuta una segunda app de administración en local para pruebas en paralelo
 admin-2:
-    pkill -f "apps/a[d]min/.*vite" || true
-    pkill -x syntrix-admin || true
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-admin-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-admin-2"; cd apps/admin/src-tauri; cargo tauri dev'
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-admin-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-admin-2"; cd apps/admin/src-tauri; cargo tauri dev --config "{\"build\": {\"devUrl\": \"http://localhost:1426\", \"beforeDevCommand\": \"pnpm dev --port 1426\"}}"'
 
 # Compila y ejecuta la app del cliente en local
 client:
@@ -28,11 +26,9 @@ client:
     pkill -x syntrix-client || true
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/client/src-tauri; cargo tauri dev'
 
-# Compila y ejecuta una segunda app del cliente en local para pruebas
+# Compila y ejecuta una segunda app del cliente en local para pruebas en paralelo
 client-2:
-    pkill -f "apps/c[l]ient/.*vite" || true
-    pkill -x syntrix-client || true
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-2"; cd apps/client/src-tauri; cargo tauri dev'
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-2"; cd apps/client/src-tauri; cargo tauri dev --config "{\"build\": {\"devUrl\": \"http://localhost:1425\", \"beforeDevCommand\": \"pnpm dev --port 1425\"}}"'
 
 # =========================================================================
 # 2. COMPILACIÓN REMOTA (Estrategia B: Compila en servidor, ejecuta en laptop)
@@ -44,11 +40,19 @@ remote-compile-admin:
     pkill -x syntrix-admin || true
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cd apps/admin/src-tauri; cargo tauri dev'
 
+# Compila remotamente en server-1 y ejecuta la segunda app de admin localmente en paralelo
+remote-compile-admin-2:
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-admin-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-admin-2"; cd apps/admin/src-tauri; cargo tauri dev --config "{\"build\": {\"devUrl\": \"http://localhost:1426\", \"beforeDevCommand\": \"pnpm dev --port 1426\"}}"'
+
 # Compila remotamente en server-2 y ejecuta la app del cliente localmente sin usar CPU local
 remote-compile-client:
     pkill -f "apps/c[l]ient/.*vite" || true
     pkill -x syntrix-client || true
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-2"; export PATH="$PWD/bin:$PATH"; cd apps/client/src-tauri; cargo tauri dev'
+
+# Compila remotamente en server-2 y ejecuta la segunda app del cliente localmente en paralelo
+remote-compile-client-2:
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-2"; export PATH="$PWD/bin:$PATH"; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-2"; cd apps/client/src-tauri; cargo tauri dev --config "{\"build\": {\"devUrl\": \"http://localhost:1425\", \"beforeDevCommand\": \"pnpm dev --port 1425\"}}"'
 
 # =========================================================================
 # 3. ENFOQUE HÍBRIDO (Vite Remoto en Servidor + Ventana Tauri Local en Laptop)
