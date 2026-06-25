@@ -1,33 +1,97 @@
 ---
-title: "Estructura de Namespaces"
-description: "Modelado de datos en Syntrix: los 4 namespaces core, su propósito y seguridad."
+title: "Estructura de Namespaces y Autorización"
+description: "Modelado de datos en Syntrix: segregación en namespaces criptográficos, políticas de acceso basadas en roles y validación activa a nivel de red."
 ---
 
-# Estructura de Namespaces
+# Estructura de Namespaces y Autorización
 
-En Syntrix, los datos no viven en tablas tradicionales de bases de datos relacionales, sino en **Namespaces** (espacios de nombres criptográficos). Un namespace es un espacio compartido de almacenamiento clave-valor controlado por firmas criptográficas basadas en llaves públicas y privadas.
-
-## Los 4 Namespaces Core
-
-El modelado de datos y aislamiento en Syntrix se estructura en 4 namespaces con propósitos y niveles de acceso específicos:
-
-| Namespace | Identificador / Prefijo | Propósito | Permiso de Escritura / Acceso |
-|---|---|---|---|
-| **Control** | `control_id` | Contiene metadatos de la organización, registro de dispositivos miembro (`members/`), roles y políticas de permisos (`roles/`). | Administradores de la Organización |
-| **Catalogs** | `catalogs_id` | Almacena datos operativos maestros comunes (catálogo de productos, catálogo de clientes, proveedores). | Roles autorizados (ej: Admin, Sales) |
-| **Operational** | `operational_id` | Registra transacciones diarias, facturas creadas, órdenes y movimientos de inventario. | Roles con permisos de escritura operativa |
-| **Payroll** | `payroll_id` | Datos altamente sensibles correspondientes a nóminas, salarios y transacciones internas del personal. | Restringido (ej: Solo Admin o Contabilidad) |
+Syntrix no utiliza una única base de datos global. En su lugar, el modelado y aislamiento de los datos se estructura en **Namespaces** (espacios de nombres criptográficos). Cada namespace es un almacén clave-valor aislado, protegido por llaves públicas/privadas de Iroh y cifrado de extremo a extremo (E2EE).
 
 ---
 
-## Seguridad, Autorización y Aislamiento
+## 1. Los 4 Namespaces Core de una Organización
 
-### Cifrado de Extremo a Extremo (E2EE)
-Cada uno de estos 4 namespaces está protegido con llaves simétricas distribuidas únicamente a los dispositivos autenticados. La red de transporte (incluso los servidores DERP/Relay intermedios) solo transmite datos cifrados.
+Para asegurar que un usuario solo tenga acceso físico y de sincronización a los datos que le corresponden por su puesto, la información de una organización se segrega en 4 namespaces:
 
-### Roles y Validación Activa (`accept_cb`)
-Syntrix no se limita a un control de acceso superficial en la interfaz. Cuando un nodo intenta sincronizar un namespace, el motor de red ejecuta el callback `accept_cb` definido en la librería `iroh-syntrix-docs`:
+```mermaid
+graph TD
+    subgraph Organización P2P
+        A[Namespace Control: Miembros, Roles y Permisos]
+        B[Namespace Catalogs: Clientes, Productos, Proveedores]
+        C[Namespace Operational: Facturas, Órdenes, Transacciones]
+        D[Namespace Payroll: Nóminas, Contratos y Salarios]
+    end
+```
 
-1. **Lectura de Políticas**: Se consulta la lista de miembros y roles configurada en el namespace **Control**.
-2. **Rechazo Criptográfico**: Si el dispositivo solicitante no tiene un rol válido con permisos de acceso para el namespace solicitado (por ejemplo, un vendedor intentando sincronizar el namespace de **Payroll**), el handshake de Iroh se aborta inmediatamente a nivel de protocolo de red.
-3. **Heartbeats Activos**: Los nodos reportan periódicamente su estado de presencia y dirección de red mediante entradas con formato `heartbeat/<node_id_hex>` dentro del namespace de **Control**, permitiendo un monitoreo dinámico de los peers activos.
+### Namespace 1: Control (`control_id`)
+- **Propósito**: Contiene los metadatos core de la organización, la lista de miembros autorizados, sus roles, configuraciones del espacio y políticas de permisos de red.
+- **Ruta de Claves**:
+  - `org`: Metadatos generales de la organización (`{"name": "Empresa S.A.", "created_at": "..."}`).
+  - `members/<node_id_hex>`: Información del dispositivo del miembro, incluyendo estado activo, rol y dirección de red.
+  - `roles/<role_name>`: Especifica los permisos exactos del rol (`can_open` y `can_write` por módulo).
+  - `heartbeat/<node_id_hex>`: Registros dinámicos de presencia.
+
+### Namespace 2: Catalogs (`catalogs_id`)
+- **Propósito**: Almacena datos operativos maestros que no son confidenciales pero son necesarios para operar a diario.
+- **Entidades**: Catálogo de productos, lista de clientes, proveedores y catálogo de cuentas contables.
+
+### Namespace 3: Operational (`operational_id`)
+- **Propósito**: Registra las actividades y operaciones comerciales transaccionales de la empresa.
+- **Entidades**: Facturas de venta/compra, órdenes de servicio, cotizaciones y movimientos físicos de inventario.
+
+### Namespace 4: Payroll (`payroll_id`)
+- **Propósito**: Datos sensibles de carácter privado y restringido.
+- **Entidades**: Nóminas de empleados, salarios, contratos y logs de auditoría de nómina.
+
+---
+
+## 2. Definición y Estructura de Roles
+
+Las políticas de acceso a los módulos y namespaces se definen en el namespace de **Control** en formato JSON bajo las claves `roles/<nombre_rol>`. Un ejemplo típico de estructura JSON es el siguiente:
+
+```json
+// roles/sales
+{
+  "can_open": ["customers", "products", "invoices", "orders"],
+  "can_write": ["customers", "invoices", "orders"]
+}
+```
+
+El sistema cuenta con tres roles predeterminados parametrizados en el backend nativo:
+- **`admin`**: Acceso total de lectura y escritura en todos los namespaces (`*`).
+- **`sales` (Ventas)**: Lectura en catálogos y operaciones, escritura restringida a clientes y facturación. Sin acceso al namespace de **Payroll**.
+- **`contabilidad`**: Lectura contable de facturas y catálogos. Sin acceso de escritura operativa.
+
+---
+
+## 3. Autorización Activa a Nivel de Red (`accept_cb`)
+
+En Syntrix, la seguridad no se limita a ocultar botones en la interfaz gráfica del frontend. La seguridad se implementa de manera activa y criptográfica en la capa de transporte P2P en Rust a través de un callback de aceptación personalizado (`accept_cb`) en la librería `iroh-syntrix-docs`.
+
+Cuando un dispositivo externo (Peer) intenta conectarse e iniciar la sincronización de un namespace de datos:
+
+```mermaid
+sequenceDiagram
+    participant Peer as Peer Solicitante (Vendedor)
+    participant Local as Nodo Local (Servidor/Admin)
+    participant Reg as Namespace Registry
+    participant Ctrl as Namespace Control (Iroh Docs)
+
+    Peer->>Local: 1. Intenta handshake QUIC (solicita sincronía de Namespace A)
+    Local->>Local: 2. Dispara Callback de Aceptación (accept_cb)
+    Local->>Reg: 3. Consulta Org y relación del Namespace A
+    Reg-->>Local: Devuelve Org Name (ej: "Empresa S.A.")
+    Local->>Ctrl: 4. Verifica rol del Node ID del Peer en el Namespace Control
+    Ctrl-->>Local: Retorna Rol (ej: "sales") y permisos ("can_open")
+    alt El Rol permite abrir el Namespace A
+        Local-->>Peer: Acepta Handshake y sincroniza datos
+    else Rol insuficiente (ej: solicita Payroll y es sales)
+        Local-->>Peer: Aborta conexión inmediatamente a nivel de transporte
+    end
+```
+
+### Mecanismo de Validación Criptográfica
+1. **Identidad del Peer**: El `NodeId` del peer remoto es su clave pública de Iroh (32 bytes). Esta identidad es inalterable e imposible de falsificar gracias a las firmas criptográficas de QUIC/TLS 1.3.
+2. **Mapeo de Namespaces**: El nodo local registra dinámicamente qué namespaces pertenecen a qué organización.
+3. **Consulta de Membresía**: El callback busca la entrada `members/<peer_node_id_hex>` dentro del namespace de **Control** correspondiente.
+4. **Validación**: Compara si el rol asociado al miembro tiene la capacidad de abrir o escribir en el namespace en cuestión. Si no tiene permisos, **el flujo de red se cancela de forma inmediata**, impidiendo la descarga de un solo byte de datos.
