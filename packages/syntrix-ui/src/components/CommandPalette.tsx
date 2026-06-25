@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Search, Plus, ArrowRight } from "lucide-react";
+import { Search, Plus } from "lucide-react";
 import { cn } from "../lib/utils";
 
 export interface SearchResult {
@@ -98,8 +98,8 @@ export function CommandPalette({
                 {Object.entries(grouped).map(([entityLabel, items]) => (
                   <div key={entityLabel} className="mb-2">
                     <p className="text-[11px] text-muted-foreground font-medium px-2 py-1">{entityLabel}</p>
-                    {items.map((item, i) => {
-                      const globalIndex = results.indexOf(item);
+                    {items.map((item) => {
+                       const globalIndex = results.indexOf(item);
                       return (
                         <button
                           key={item.id}
@@ -158,4 +158,3 @@ export function CommandPalette({
   );
 }
 
-export type { SearchResult, QuickAction };

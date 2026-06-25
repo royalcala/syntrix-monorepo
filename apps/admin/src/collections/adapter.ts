@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 export async function fetchEntityData<T>(
   entityId: string,
-  filterField?: string,
-  filterValue?: string,
+  _filterField?: string,
+  _filterValue?: string,
   orgId?: string
 ): Promise<T[]> {
   try {

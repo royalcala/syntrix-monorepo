@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
+import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
 import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
@@ -18,10 +19,6 @@ import { ordersEntity } from "./entities/orders";
 
 type InvitePayload = { org_name: string; role: string; tickets: { ns: string; ticket: string }[] };
 
-const entityMap: Record<string, typeof customersEntity> = {
-  customers: customersEntity, invoices: invoicesEntity,
-  products: productsEntity, orders: ordersEntity,
-} as Record<string, typeof customersEntity>;
 
 const navItems: NavItem[] = [
   { href: "/customers", label: "Clientes", icon: Users, section: "org" },
@@ -171,7 +168,7 @@ export default function App() {
       nodeId={nodeId}
       orgs={orgs}
       activeOrg={activeOrg}
-      onSelectOrg={(id) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }}
+      onSelectOrg={(id: string) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }}
       onRefresh={loadOrgs}
       onOpenCommand={() => setCmdOpen(true)}
       navItems={deviceItems}
@@ -191,6 +188,7 @@ export default function App() {
           <Route path="/invoices" element={<EntityGrid entity={invoicesEntity} orgId={activeOrg} role={role} />} />
           <Route path="/products" element={<EntityGrid entity={productsEntity} orgId={activeOrg} role={role} />} />
           <Route path="/orders" element={<EntityGrid entity={ordersEntity} orgId={activeOrg} role={role} />} />
+          <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />
         </Routes>
       </main>
       <CommandPalette
@@ -212,7 +210,7 @@ export default function App() {
   );
 }
 
-function OrgsScreen({ nodeId, orgs, setActiveOrg }: { nodeId: string; orgs: OrgInfo[]; setActiveOrg: (id: string) => void }) {
+function OrgsScreen({ nodeId: _nodeId, orgs, setActiveOrg }: { nodeId: string; orgs: OrgInfo[]; setActiveOrg: (id: string) => void }) {
   const navigate = useNavigate();
   const [addr, setAddr] = useState<string>("");
   const [copied, setCopied] = useState(false);

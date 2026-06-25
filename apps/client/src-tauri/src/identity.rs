@@ -28,6 +28,30 @@ pub fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
     if addr_str.is_empty() {
         return None;
     }
+    // Check if it is a JSON string
+    if addr_str.trim().starts_with('{') {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(addr_str) {
+            let node_id_hex = val["node_id"].as_str()?;
+            let node_id_bytes = hex::decode(node_id_hex).ok()?;
+            let node_id: [u8; 32] = node_id_bytes.as_slice().try_into().ok()?;
+            let peer = iroh::PublicKey::from_bytes(&node_id).ok()?;
+            
+            let addrs: Vec<iroh::TransportAddr> = val["addrs"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| {
+                    let s = v.as_str()?;
+                    if let Some(relay_str) = s.strip_prefix("relay:") {
+                        relay_str.parse::<iroh::RelayUrl>().ok().map(iroh::TransportAddr::Relay)
+                    } else {
+                        let addr_str = s.strip_prefix("ip:").unwrap_or(s);
+                        addr_str.parse::<std::net::SocketAddr>().ok().map(iroh::TransportAddr::Ip)
+                    }
+                }).collect())
+                .unwrap_or_default();
+            return Some(iroh::EndpointAddr::from_parts(peer, addrs));
+        }
+    }
+
     if addr_str.contains(';') {
         let parts: Vec<&str> = addr_str.split(';').collect();
         let node_id_bytes = hex::decode(parts[0]).ok()?;
@@ -51,13 +75,13 @@ pub fn parse_device_addr(addr_str: &str) -> Option<iroh::EndpointAddr> {
     }
 }
 
+
 pub struct AppState {
     secret: SecretKey,
     _endpoint: Endpoint,
     _gossip: iroh_gossip::net::Gossip,
     _store: iroh_blobs::api::Store,
     _router: iroh::protocol::Router,
-    _invite_router: iroh::protocol::Router,
     docs_api: iroh_docs::api::DocsApi,
     author: iroh_docs::AuthorId,
     hlc_counter: AtomicU64,
@@ -140,10 +164,6 @@ impl AppState {
             .accept(iroh_blobs::ALPN, iroh_blobs::BlobsProtocol::new(&store, None))
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(iroh_docs::ALPN, docs)
-            .spawn();
-
-        // Invite handler on a SEPARATE router (must not share with docs/gossip/blobs)
-        let _invite_router = iroh::protocol::Router::builder(ep.clone())
             .accept(crate::invite::INVITE_ALPN, invite_handler.clone())
             .spawn();
 
@@ -293,7 +313,7 @@ impl AppState {
         }
 
         Ok(Self {
-            secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router, _invite_router,
+            secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router,
             docs_api: api, author, hlc_counter: AtomicU64::new(0), registry,
             orgs, active_org: None,
             indexer,

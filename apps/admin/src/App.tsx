@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Users, Shield, Building2, Terminal, Plus } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
+import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { CreateOrg } from "./screens/CreateOrg";
 import { Logs } from "./screens/Logs";
@@ -70,6 +71,7 @@ export default function App() {
             <Route path="/roles" element={<RolesGridPage org={activeOrg} />} />
             <Route path="/orgs" element={<OrgsGridPage />} />
             <Route path="/logs" element={<Logs />} />
+            <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />
           </Routes>
       </AppShell>
 

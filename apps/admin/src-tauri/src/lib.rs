@@ -206,6 +206,17 @@ fn get_logs() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let addr = s.endpoint().addr();
+    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
+    Ok(serde_json::json!({
+        "node_id": hex::encode(s.node_id()),
+        "addrs": addrs,
+    }).to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // File logging (rotating daily, kept for 7 days)
@@ -250,7 +261,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, create_org,
             add_device, update_device, list_devices, list_roles, network_status,
-            share_org, send_invite, get_logs,
+            share_org, send_invite, get_logs, get_endpoint_addr,
             create_role, update_role, get_sync_info,
         ])
         .run(tauri::generate_context!())

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+// import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EntityGrid } from "../components/EntityGrid";
 import { customersEntity } from "../entities/customers";
@@ -22,7 +22,7 @@ describe("EntityGrid Editing Reactivity", () => {
       { id: "c1", name: "Acme Corp", email: "contact@acme.com", tax_id: "ACM123" }
     ];
 
-    (invoke as any).mockImplementation((cmd: string, args: any) => {
+    (invoke as any).mockImplementation((cmd: string, _args: any) => {
       if (cmd === "query_entity") return Promise.resolve(mockData);
       if (cmd === "commit_event") return Promise.resolve("ok");
       return Promise.resolve();

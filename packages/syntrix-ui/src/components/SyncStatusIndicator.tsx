@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Activity, CheckCircle2, XCircle } from "lucide-react";
+import { Button } from "./ui/button";
 
 export interface PeerStatus {
   node_id: string;
@@ -16,6 +18,7 @@ export interface SyncInfo {
 
 export function SyncStatusIndicator({ org }: { org: string }) {
   const [info, setInfo] = useState<SyncInfo | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (!org) return;
@@ -77,6 +80,15 @@ export function SyncStatusIndicator({ org }: { org: string }) {
           {info.peers.length > 3 && <div className="text-center text-[10px] text-muted-foreground pt-1">+{info.peers.length - 3} más</div>}
         </div>
       )}
+      
+      <Button 
+        variant="ghost" 
+        size="sm" 
+        className="w-full text-xs h-7 text-primary hover:text-primary hover:bg-primary/5 border border-dashed border-primary/20 hover:border-primary/30 mt-2 font-normal rounded-md"
+        onClick={() => navigate("/sync")}
+      >
+        Detalles de red
+      </Button>
     </div>
   );
 }
