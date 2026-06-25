@@ -7,22 +7,21 @@ description: "Funcionamiento del protocolo de red descentralizado, entrelazado d
 
 La red descentralizada de Syntrix se construye sobre el ecosistema **Iroh**, el cual nos permite entrelazar datos entre múltiples nodos de forma orgánica, invisible y resistente a caídas de internet global.
 
-## Protocolo Iroh Docs
+## Protocolo Iroh Docs & Blobs
 
-Syntrix utiliza **Iroh Docs**, un motor de sincronización de documentos basado en CRDTs (Conflict-Free Replicated Data Types) llave-valor.
+Syntrix utiliza **Iroh Docs** como motor de sincronización de documentos clave-valor basado en CRDTs (Conflict-Free Replicated Data Types), emparejado con **Iroh Blobs** para la transferencia optimizada de datos binarios y estructurados de gran tamaño.
 
 ### Características del Protocolo:
-- **P2P Directo (Hole Punching)**: Los nodos se conectan directamente entre sí siempre que sea posible. Si ambos están detrás de cortafuegos estrictos, el tráfico pasa por un servidor DERP intermedio de forma cifrada de extremo a extremo.
-- **Sincronía Eventual**: Si un nodo se desconecta (por ejemplo, viaja en un avión o se corta la electricidad), sigue operando en modo local. Al recuperar la conectividad, Iroh realiza un "handshake" automático de reconciliación y fusiona las ramas de datos de manera determinista.
+- **P2P Directo (Hole Punching)**: Los nodos intentan establecer conexiones directas peer-to-peer (usando protocolos de hole punching como STUN/TURN/DERP). Si los firewalls son muy restrictivos, la conexión se triangula a través de un servidor de relevo (Relay/DERP) manteniendo el cifrado de extremo a extremo (E2EE).
+- **Gossip Protocol (`iroh-gossip`)**: Utilizado para la difusión rápida y multidifusión de eventos y estados de sincronización en tiempo real dentro del grupo de la organización.
+- **Sincronía Eventual Nativa**: Si un nodo pierde conexión (trabajo offline, viajes, etc.), opera localmente sin problemas. En el momento en que detecta conectividad con otros peers, Iroh ejecuta una reconciliación automática (handshake) fusionando el log de cambios de manera determinista.
 
 ---
 
-## Resolución de Conflictos
+## Resolución de Conflictos y Consistencia
 
-Dado que no existe una base de datos central ni una noción global del tiempo absoluto, los conflictos se resuelven mediante las siguientes políticas:
+Dado que no existe un servidor centralizado o una noción de tiempo global absoluta, Syntrix e Iroh Docs garantizan la consistencia mediante:
 
-1. **LWW (Last-Write-Wins)**: En campos simples, el cambio con la marca de tiempo criptográfica más reciente es el que prevalece.
-2. **Historial de Modificaciones**: Para registros críticos (como facturación o cambios de inventario), cada acción se registra como una entrada inmutable de tipo append-only en el log de Iroh Docs. El estado actual se calcula recalculando el log.
-
-> [!WARNING]
-> Dado que dependemos de relojes locales de los dispositivos para resolver colisiones LWW, Syntrix implementa una tolerancia y sincronización de desvíos de reloj durante el protocolo de saludo (handshake).
+1. **LWW (Last-Write-Wins) a nivel de Entrada**: En la asignación de claves, el cambio con la firma de autor y marca de tiempo criptográfica más reciente prevalece.
+2. **Logs Append-Only**: Para registros transaccionales críticos (como operaciones contables, facturación o logs de auditoría), Syntrix modela los datos como logs inmutables ordenados en el tiempo. El estado actual de la entidad es el resultado de procesar secuencialmente este log inmutable.
+3. **Validación Autorizada**: Toda sincronización de red corre a través de un callback de aceptación personalizado (`accept_cb` provisto por `iroh-syntrix-docs`) que valida criptográficamente que el peer remoto tenga los permisos correctos antes de aceptar la réplica de datos.

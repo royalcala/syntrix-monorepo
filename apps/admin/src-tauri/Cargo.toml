@@ -16,6 +16,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 iroh-syntrix-docs = { path = "../../../crates/iroh-syntrix-docs" }
+syntrix-core = { path = "../../../crates/syntrix-core" }
 iroh = { version = "=1.0.0-rc.1", features = ["test-utils"] }
 iroh-docs = { git = "https://github.com/royalcala/iroh-docs", branch = "syntrix", features = ["fs-store"] }
 iroh-blobs = { version = "=0.102.0" }
