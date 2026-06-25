@@ -10,10 +10,27 @@ export default defineConfig({
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/royalcala/syntrix-monorepo' }],
 			sidebar: [
 				{
-					label: 'Guía de Inicio',
+					label: 'Guías de Desarrollo',
 					items: [
 						{ label: 'Introducción a Syntrix', slug: 'introduccion' },
 						{ label: 'Instalación y Setup', slug: 'setup' },
+						{ label: 'Desarrollo Frontend (React)', slug: 'guias/frontend' },
+						{ label: 'Desarrollo Backend (Rust)', slug: 'guias/backend' },
+					],
+				},
+				{
+					label: 'Arquitectura Core',
+					items: [
+						{ label: 'Motor de Base de Datos', slug: 'arquitectura/database' },
+						{ label: 'Sincronización P2P (Iroh)', slug: 'arquitectura/sincronizacion' },
+						{ label: 'Estructura de Namespaces', slug: 'arquitectura/namespaces' },
+					],
+				},
+				{
+					label: 'Referencia',
+					items: [
+						{ label: 'Comandos de Tauri', slug: 'referencia/comandos-tauri' },
+						{ label: 'Esquemas y Tipos', slug: 'referencia/esquemas' },
 					],
 				},
 				{
