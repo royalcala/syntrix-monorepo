@@ -127,9 +127,9 @@ docs-build:
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c ' \
         {{PKG_SETUP}}; \
         export REMOTE_HOST="server-1"; \
-        export PATH="$$PWD/bin:$$PATH"; \
-        cd apps/admin/src-tauri && cargo doc --no-deps -p syntrix-admin -p syntrix_admin_lib -p iroh-syntrix-docs; \
-        cd ../../client/src-tauri && cargo doc --no-deps -p syntrix-client -p syntrix_client_lib \
+        export PATH="$PWD/bin:$PATH"; \
+        cd apps/admin/src-tauri && cargo doc --no-deps -p syntrix-admin -p iroh-syntrix-docs; \
+        cd ../../client/src-tauri && cargo doc --no-deps -p syntrix-client \
     '
     @echo "=== Copiando Rustdoc generado a la carpeta pública de Astro ==="
     rm -rf apps/docs/public/rustdoc
