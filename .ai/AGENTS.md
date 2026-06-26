@@ -47,7 +47,7 @@ Use the predefined tasks in the `justfile` for running/testing:
 - `apps/client/` — Client/Worker application (Tauri + React)
 - `packages/syntrix-ui/` — Shared UI component library (`@syntrix/ui/*`)
 - `bin/` — Helper scripts including the `cargo` remote compiler bridge
-- `crates/` — Shared Rust libraries (e.g., `iroh-syntrix-docs`)
+- `crates/` — Shared Rust libraries (e.g., `syntrix-core`)
 - `justfile` — Project automation runner
 
 ---

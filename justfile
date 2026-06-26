@@ -123,7 +123,14 @@ clean-data-all: clean-data-admin clean-data-client
 # Levanta el servidor de desarrollo para la documentación de Astro Starlight
 docs:
     pkill -f "[a]stro dev" || true
+    pkill -f "[n]ode.*astro" || true
     pnpm docs:dev
+
+# Mata el servidor de desarrollo de la documentación de Astro Starlight
+docs-kill:
+    pkill -f "[a]stro dev" || true
+    pkill -f "[n]ode.*astro" || true
+
 
 # Compila el sitio estático de la documentación (incluyendo rustdoc remoto y Astro Starlight)
 docs-build:
@@ -132,7 +139,7 @@ docs-build:
         {{PKG_SETUP}}; \
         export REMOTE_HOST="server-1"; \
         export PATH="$PWD/bin:$PATH"; \
-        cd apps/admin/src-tauri && cargo doc --no-deps -p syntrix-admin -p iroh-syntrix-docs; \
+        cd apps/admin/src-tauri && cargo doc --no-deps -p syntrix-admin -p syntrix-core; \
         cd ../../client/src-tauri && cargo doc --no-deps -p syntrix-client \
     '
     @echo "=== Copiando Rustdoc generado a la carpeta pública de Astro ==="

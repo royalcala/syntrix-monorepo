@@ -8,7 +8,6 @@ description = "Shared P2P sync primitives for syntrix-admin and syntrix-client"
 iroh         = { version = "=1.0.0-rc.1" }
 iroh-docs    = { git = "https://github.com/royalcala/iroh-docs", branch = "syntrix", features = ["fs-store"] }
 iroh-blobs   = { version = "=0.102.0" }
-iroh-syntrix-docs = { path = "../iroh-syntrix-docs" }
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 hex          = "0.4"

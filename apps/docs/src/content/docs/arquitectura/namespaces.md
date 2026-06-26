@@ -74,24 +74,24 @@ Cuando un dispositivo externo (Peer) intenta conectarse e iniciar la sincronizac
 sequenceDiagram
     participant Peer as Peer Solicitante (Vendedor)
     participant Local as Nodo Local (Servidor/Admin)
-    participant Reg as Namespace Registry
-    participant Ctrl as Namespace Control (Iroh Docs)
+    participant Reg as Namespace Registry (Memoria)
 
     Peer->>Local: 1. Intenta handshake QUIC (solicita sincronía de Namespace A)
     Local->>Local: 2. Dispara Callback de Aceptación (accept_cb)
-    Local->>Reg: 3. Consulta Org y relación del Namespace A
-    Reg-->>Local: Devuelve Org Name (ej: "Empresa S.A.")
-    Local->>Ctrl: 4. Verifica rol del Node ID del Peer en el Namespace Control
-    Ctrl-->>Local: Retorna Rol (ej: "sales") y permisos ("can_open")
-    alt El Rol permite abrir el Namespace A
-        Local-->>Peer: Acepta Handshake y sincroniza datos
-    else Rol insuficiente (ej: solicita Payroll y es sales)
-        Local-->>Peer: Aborta conexión inmediatamente a nivel de transporte
+    Local->>Reg: 3. Consulta Org asociada al Namespace A (lookup_org)
+    Reg-->>Local: Retorna Org ID (ej: "Empresa S.A.") o None
+    Local->>Reg: 4. Verifica si el NodeID del Peer está activo en esa Org (is_device_active)
+    Reg-->>Local: Retorna true o false
+    alt Peer activo en la Org
+        Local-->>Peer: Acepta Handshake (AcceptOutcome::Allow) y sincroniza
+    else Peer inactivo o Namespace no mapeado
+        Local-->>Peer: Aborta conexión de inmediato (AcceptOutcome::Reject)
     end
 ```
 
 ### Mecanismo de Validación Criptográfica
 1. **Identidad del Peer**: El `NodeId` del peer remoto es su clave pública de Iroh (32 bytes). Esta identidad es inalterable e imposible de falsificar gracias a las firmas criptográficas de QUIC/TLS 1.3.
-2. **Mapeo de Namespaces**: El nodo local registra dinámicamente qué namespaces pertenecen a qué organización.
-3. **Consulta de Membresía**: El callback busca la entrada `members/<peer_node_id_hex>` dentro del namespace de **Control** correspondiente.
-4. **Validación**: Compara si el rol asociado al miembro tiene la capacidad de abrir o escribir en el namespace en cuestión. Si no tiene permisos, **el flujo de red se cancela de forma inmediata**, impidiendo la descarga de un solo byte de datos.
+2. **Mapeo de Namespaces**: El nodo local registra dinámicamente qué namespaces pertenecen a qué organización en el registry.
+3. **Consulta de Membresía**: El callback busca de forma instantánea en memoria si el `NodeId` es un dispositivo activo en la organización propietaria (`registry.is_device_active`).
+4. **Validación**: Si no está registrado o figura como inactivo, **el flujo de red se cancela de forma inmediata**, impidiendo la descarga de un solo byte de datos.
+

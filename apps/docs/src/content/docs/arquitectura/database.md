@@ -60,16 +60,59 @@ Dado que el modelado en Syntrix se construye sobre clave-valor criptográfico y 
 | **Fila / Registro** | Un documento JSON mapeado por su identificador único `doc_id`. | Los datos se guardan estructurados e indexados como blobs de bytes JSON. |
 | **Clave Primaria** | El sufijo `doc_id` en la tabla `DOCUMENTS`. | Usualmente derivado del HLC o UUID de la entidad. |
 | **UPDATE / INSERT** | Se escribe un nuevo evento causal en **Iroh Docs**. El indexador local intercepta el evento e incrementa/modifica la proyección física. | Operación 100% libre de bloqueos. Garantiza consistencia eventual P2P a nivel de red y local. |
-| **Índice Secundario** | Entradas indexadas en la tabla `INDEXES` de **Redb** con el formato `idx:{org}:{entity}:{field}:{value}:{doc_id}`. | Las búsquedas por campos específicos (ej. buscar facturas de un cliente) se resuelven mediante escaneo por rango de prefijo en Redb. |
-| **Consultas Complejas (JOINS)** | Denormalización en el documento o joins a nivel de aplicación en el backend de Rust. | Se prefiere la denormalización para mantener la inmediatez local, o múltiples búsquedas indexadas y mapeadas en memoria en Rust. |
 | **Búsqueda por Texto (`LIKE`)** | Motor de búsqueda invertida **Tantivy**. | Búsqueda por lenguaje natural o aproximaciones directamente sobre el índice optimizado en disco. |
 
 ---
 
-## 3. Manejo de Índices y Esquemas en Syntrix
+## 3. Hibridación de Datos: Event Sourcing P2P vs. Proyecciones Locales
+
+Syntrix no utiliza una única estrategia. Combina el modelo **Event Sourcing** (para la transmisión distribuida en red P2P) con el modelo de **Proyecciones de Estado** (para las lecturas locales y consultas del frontend):
+
+#### Capa de Red P2P (Iroh Docs)
+El almacenamiento distribuido de Iroh Docs opera bajo **Event Sourcing**. Los datos son inmutables y de solo añadir (*append-only*). Las claves nunca se sobrescriben directamente para evitar conflictos de sincronización de red.
+
+- **Formato de Clave Causal (HLC)**: `evt:<timestamp_hlc>:<count>:<node_id>`
+- **Valor (Encapsulado de Evento)**:
+  ```json
+  {
+    "type": "customer.upsert",
+    "hlc": { "ts": 1719414545000, "count": 2, "node": "f8a4b27a..." },
+    "payload": {
+      "id": "cust_1234",
+      "name": "Juan Perez",
+      "email": "juan@gmail.com"
+    }
+  }
+  ```
+
+#### Capa de Consulta Local (Redb y Tantivy)
+Para evitar que el frontend tenga que leer secuencialmente el log histórico de eventos de Iroh Docs cada vez que solicita datos (lo cual arruinaría el rendimiento), el backend nativo proyecta el estado actual a la base de datos local **Redb** como registros planos consolidados.
+
+- **Formato de Clave Estática**: `doc:{org_id}:{entity}:{doc_id}` (ej: `doc:org_abc:customer:cust_1234`)
+- **Valor (JSON plano consolidado)**:
+  ```json
+  {
+    "id": "cust_1234",
+    "name": "Juan Perez",
+    "email": "juan@gmail.com"
+  }
+  ```
+
+#### Ciclo de Vida de las Mutaciones
+
+| Operación | Comportamiento en Iroh Docs (Red P2P) | Comportamiento en Redb (Base de Datos Local) |
+|---|---|---|
+| **Crear (Insert)** | Genera un evento `entity.upsert` con clave temporal única `evt:<hlc>`. | Inserta el payload plano en `DOCUMENTS` y crea sus entradas indexadas en `INDEXES`. |
+| **Editar (Update)** | Genera **otro** evento `entity.upsert` con una clave `evt:<hlc>` más reciente. | Sobrescribe el JSON en `DOCUMENTS` con el nuevo payload y actualiza las claves del índice. |
+| **Borrar (Delete)** | Genera un evento `entity.delete` (tombstone) con clave `evt:<hlc>` que registra criptográficamente la eliminación. | Elimina físicamente el documento en `DOCUMENTS` y sus índices en `INDEXES` para no ser consultado más. |
+
+---
+
+## 4. Manejo de Índices y Esquemas en Redb
 
 ### Estructura de las Claves de Índices en Redb
 El motor relacional indexa automáticamente cada campo de primer nivel del JSON (que sea de tipo string, número o boolean) convirtiendo el valor a minúsculas para búsquedas insensibles a mayúsculas:
+
 
 ```rust
 // Inserción de un índice secundario para buscar facturas pendientes
@@ -85,7 +128,7 @@ Cuando el frontend solicita listar facturas pendientes, el motor realiza una con
 
 ---
 
-## 4. Resiliencia y robustez de los Datos
+## 5. Resiliencia y robustez de los Datos
 
 Para garantizar la integridad y robustez del sistema ante fallos o corrupciones de disco, Syntrix implementa los siguientes mecanismos:
 
@@ -100,3 +143,4 @@ Si el archivo de índices se corrompe o se elimina:
 Al no existir un motor SQL rígido, las modificaciones de estructura en el tiempo (por ejemplo, cambiar un campo de dirección simple a un objeto estructurado) se manejan en la capa de serialización (Rust Serde) mediante transformaciones activas (Upcasters):
 - Los eventos antiguos persisten intactos en el log de Iroh Docs (preservando la integridad del historial).
 - Cuando el indexador procesa un evento con versión antigua, la función de proyección lo transforma dinámicamente al esquema más reciente antes de guardarlo en `Redb` y `Tantivy`.
+

@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock};
 use iroh::{Endpoint, SecretKey};
 use iroh::endpoint::presets::N0;
 use iroh::tls::CaRootsConfig;
-use iroh_syntrix_docs::NodeId;
-use iroh_syntrix_docs::registry::NamespaceRegistry;
+use syntrix_core::NodeId;
+use syntrix_core::registry::{NamespaceRegistry, Device, RoleGrants};
 use iroh_docs::api::Doc;
 use crate::{DeviceInfo, RoleInfo};
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,7 @@ impl AppState {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
 
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
-        let accept_cb = iroh_syntrix_docs::accept::make_accept_cb(registry.clone());
+        let accept_cb = syntrix_core::make_accept_cb(registry.clone());
 
         let docs_dir = data_dir.join("docs");
         std::fs::create_dir_all(&docs_dir).ok();
@@ -184,7 +184,7 @@ impl AppState {
                                                                 let mut id = [0u8; 32];
                                                                 let len = node_id_bytes.len().min(32);
                                                                 id[..len].copy_from_slice(&node_id_bytes[..len]);
-                                                                reg.upsert_device(name.clone(), id, iroh_syntrix_docs::registry::Device {
+                                                                reg.upsert_device(name.clone(), id, Device {
                                                                     node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
                                                                 });
                                                             }
@@ -235,7 +235,7 @@ impl AppState {
                                                         });
 
                                                         if let Ok(mut reg) = registry.write() {
-                                                            reg.upsert_role(name.clone(), role_name.clone(), iroh_syntrix_docs::registry::RoleGrants {
+                                                            reg.upsert_role(name.clone(), role_name.clone(), syntrix_core::registry::RoleGrants {
                                                                 can_open: can_open.clone(),
                                                                 can_write: can_write.clone(),
                                                             });
@@ -352,12 +352,12 @@ impl AppState {
             let mut id = [0u8; 32];
             let len = node_id_bytes.len().min(32);
             id[..len].copy_from_slice(&node_id_bytes[..len]);
-            reg.upsert_device(org.into(), id, iroh_syntrix_docs::registry::Device {
+            reg.upsert_device(org.into(), id, Device {
                 node_id: id, active, role: role.into(), person: person.into(), name: name.into(),
             });
             // Auto-populate role grants (already uses new 4-namespace format)
             let grants = default_role_grants(role);
-            reg.upsert_role(org.into(), role.into(), iroh_syntrix_docs::registry::RoleGrants {
+            reg.upsert_role(org.into(), role.into(), RoleGrants {
                 can_open: grants.can_open, can_write: grants.can_write,
             });
         }
@@ -405,7 +405,7 @@ impl AppState {
                 }
             }
 
-            reg.upsert_device(org.into(), id, iroh_syntrix_docs::registry::Device {
+            reg.upsert_device(org.into(), id, Device {
                 node_id: id, active,
                 role: role.unwrap_or(current_role),
                 person: person.unwrap_or(current_person),
@@ -432,7 +432,7 @@ impl AppState {
         }
         // Update registry too
         if let Ok(mut reg) = self.registry.write() {
-            reg.upsert_role(org.into(), name.into(), iroh_syntrix_docs::registry::RoleGrants {
+            reg.upsert_role(org.into(), name.into(), RoleGrants {
                 can_open,
                 can_write,
             });
@@ -457,8 +457,6 @@ impl AppState {
     }
 }
 
-struct RoleGrants { can_open: Vec<String>, can_write: Vec<String> }
-
 fn default_role_grants(role: &str) -> RoleGrants {
     match role {
         "admin" => RoleGrants { can_open: vec!["customers".into(),"suppliers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"suppliers".into(),"products".into(),"invoices".into(),"orders".into()] },
@@ -474,7 +472,7 @@ pub async fn sync_and_populate_org_members_impl(
     op_doc: Doc,
     pay_doc: Doc,
     store: iroh_blobs::api::Store,
-    registry: std::sync::Arc<std::sync::RwLock<iroh_syntrix_docs::registry::NamespaceRegistry>>,
+    registry: std::sync::Arc<std::sync::RwLock<NamespaceRegistry>>,
     secret: iroh::SecretKey,
     org_id: String,
 ) -> anyhow::Result<()> {
@@ -497,7 +495,7 @@ pub async fn sync_and_populate_org_members_impl(
                                     let mut id = [0u8; 32];
                                     let len = node_id_bytes.len().min(32);
                                     id[..len].copy_from_slice(&node_id_bytes[..len]);
-                                    reg.upsert_device(org_id.clone(), id, iroh_syntrix_docs::registry::Device {
+                                    reg.upsert_device(org_id.clone(), id, Device {
                                         node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
                                     });
                                 }

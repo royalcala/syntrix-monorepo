@@ -1,9 +1,9 @@
-use futures_util::StreamExt;
+
 use iroh_docs::api::protocol::{ShareMode, AddrInfoOptions};
 
-use crate::identity::{AppState, parse_device_addr};
+use crate::identity::AppState;
 use crate::{DeviceInfo, RoleInfo};
-pub use syntrix_core::{build_device_addr_string, start_heartbeat, start_heartbeat_with_resync, PeerStatus, SyncInfo, get_sync_info};
+pub use syntrix_core::{build_device_addr_string, start_heartbeat_with_resync, SyncInfo, get_sync_info};
 
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {

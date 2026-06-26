@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 // PeerStatus, SyncInfo, get_sync_info, start_heartbeat, start_heartbeat_with_resync
 // are shared with syntrix-admin — they live in syntrix-core.
-pub use syntrix_core::{PeerStatus, SyncInfo, get_sync_info, start_heartbeat, start_heartbeat_with_resync};
+pub use syntrix_core::{SyncInfo, get_sync_info, start_heartbeat_with_resync};
 
 #[derive(Debug, Deserialize)]
 pub struct SyncEventEncoded {
