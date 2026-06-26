@@ -66,7 +66,7 @@ El sistema cuenta con tres roles predeterminados parametrizados en el backend na
 
 ## 3. Autorización Activa a Nivel de Red (`accept_cb`)
 
-En Syntrix, la seguridad no se limita a ocultar botones en la interfaz gráfica del frontend. La seguridad se implementa de manera activa y criptográfica en la capa de transporte P2P en Rust a través de un callback de aceptación personalizado (`accept_cb`) en la librería `iroh-syntrix-docs`.
+En Syntrix, la seguridad no se limita a ocultar botones en la interfaz gráfica del frontend. La seguridad se implementa de manera activa y criptográfica en la capa de transporte P2P en Rust a través de un callback de aceptación personalizado (`accept_cb`) en el crate `syntrix-core`.
 
 Cuando un dispositivo externo (Peer) intenta conectarse e iniciar la sincronización de un namespace de datos:
 

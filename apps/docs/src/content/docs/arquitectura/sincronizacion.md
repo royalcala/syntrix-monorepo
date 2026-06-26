@@ -1,11 +1,11 @@
 ---
 title: "Sincronización P2P y Seguridad de Red (Iroh)"
-description: "Mecánica detallada de sincronización, topología descentralizada, reconciliación eventual y la lógica de autorización en red mediante iroh-syntrix-docs y syntrix-core."
+description: "Mecánica detallada de sincronización, topología descentralizada, reconciliación eventual y la lógica de autorización en red mediante syntrix-core."
 ---
 
 # Sincronización P2P y Seguridad de Red (Iroh)
 
-La arquitectura de comunicación colaborativa de Syntrix elimina la dependencia de un servidor central de base de datos. En su lugar, el sistema se apoya en el ecosistema descentralizado de **Iroh** (`iroh-docs`, `iroh-blobs` y `iroh-gossip`), estructurando la lógica de permisos, red y heartbeats a través de dos crates internos: `iroh-syntrix-docs` y `syntrix-core`.
+La arquitectura de comunicación colaborativa de Syntrix elimina la dependencia de un servidor central de base de datos. En su lugar, el sistema se apoya en el ecosistema descentralizado de **Iroh** (`iroh-docs`, `iroh-blobs` y `iroh-gossip`), estructurando la lógica de permisos, red y heartbeats en un único crate interno: `syntrix-core`.
 
 ---
 
@@ -16,29 +16,25 @@ El comportamiento de red de Syntrix está descentralizado en componentes especí
 ```mermaid
 graph TD
     A[Aplicación Tauri: Admin / Client] --> B[Crate: syntrix-core]
-    A --> C[Crate: iroh-syntrix-docs]
     
-    subgraph iroh-syntrix-docs: Seguridad y Autorización
-        C1[NamespaceRegistry] --> C2[accept_cb / Handshake Network]
-    end
-    
-    subgraph syntrix-core: Coordinación y Red
-        B1[Bucle de Heartbeats] --> B2[Resincronización Activa]
-        B3[Cálculo de Estado: SyncInfo]
+    subgraph syntrix-core
+        direction LR
+        B1[NamespaceRegistry] --> B2[accept_cb / Handshake Network]
+        B3[Bucle de Heartbeats] --> B4[Resincronización Activa]
+        B5[Cálculo de Estado: SyncInfo]
     end
 
-    C2 --> D[Red P2P - Iroh Docs]
-    B2 --> D
+    B2 --> C[Red P2P - Iroh Docs]
+    B4 --> C
 ```
 
-*   **`iroh-syntrix-docs`**: Se encarga estrictamente de la seguridad de la red. Determina **quién puede sincronizar** con nosotros y **qué namespaces está autorizado a abrir** un dispositivo remoto.
-*   **`syntrix-core`**: Centraliza las primitivas compartidas de sincronización. Maneja la resolución de direcciones físicas (`device_addr`), el bucle de latidos en segundo plano, la re-sincronización periódica y la agregación del estado de los peers para la UI.
+*   **`syntrix-core`**: Agrupa la seguridad de red, las primitivas compartidas de sincronización y la coordinación. Incluye el registro de autorización (`NamespaceRegistry`), el callback de aceptación de handshake (`accept_cb`), la resolución de direcciones físicas (`device_addr`), el bucle de latidos y re-sincronización periódica, y la agregación del estado de peers para la UI.
 
 ---
 
-## 2. Mecánica de Autorización y Permisos (`iroh-syntrix-docs`)
+## 2. Mecánica de Autorización y Permisos (`syntrix-core`)
 
-Iroh Docs no cuenta con un sistema de autorización multiusuario integrado por defecto. Para resolver esto, `iroh-syntrix-docs` actúa como un wrapper de autorización criptográfica a nivel de red mediante dos componentes:
+Iroh Docs no cuenta con un sistema de autorización multiusuario integrado por defecto. Para resolver esto, `syntrix-core` expone un wrapper de autorización criptográfica a nivel de red mediante dos componentes:
 
 ### A. El Registro de Namespaces (`NamespaceRegistry`)
 Es una estructura de datos en memoria que mantiene mapeada la topología de la organización. Como esta información es en memoria (volátil), cada vez que arranca la aplicación, el nodo lee el namespace de **Control** para reconstruir el registro:
@@ -68,7 +64,7 @@ Implementado en `accept.rs` por la función `make_accept_cb`, este callback se i
 
 ## 3. Coordinación y Estado de Presencia (`syntrix-core`)
 
-Mientras que `iroh-syntrix-docs` valida la seguridad, `syntrix-core` se asegura de que el canal de comunicación se mantenga óptimo y provee visibilidad a la interfaz de usuario.
+Además de la validación de seguridad, `syntrix-core` se asegura de que el canal de comunicación se mantenga óptimo y provee visibilidad a la interfaz de usuario.
 
 ### A. El Bucle de Heartbeats (`start_heartbeat_with_resync`)
 Para mantener informados a los peers sobre el estado de la red y forzar la sincronización en topologías NAT/Firewall cambiantes:
