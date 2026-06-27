@@ -40,6 +40,25 @@ Use the predefined tasks in the `justfile` for running/testing:
 - **`just test`**: Runs client/admin frontend test suites.
 - **`just test-rust`**: Runs all Rust tests via the bridge (`cargo test --workspace` on `server-1`).
 - **`just lint`**: Runs TypeScript/Eslint checks.
+- **`just kill-local`**: Kills all local Tauri apps, Vite dev servers, and bridge processes.
+- **`just kill-remote`**: Kills compilation processes on `server-1` and `server-2` via SSH.
+- **`just clean-remote-targets`**: Removes leftover `target-*` session directories on remote servers.
+- **`just kill-all`**: Runs `kill-local` + `kill-remote` + `clean-remote-targets`.
+
+### The Cargo Bridge — Lock & Session Isolation
+The bridge at `bin/cargo` includes two concurrency mechanisms to handle multiple AI sessions compiling simultaneously:
+
+1. **Global `flock` lock** (`/tmp/syntrix-bridge-sync.lock`): Serializes the `rsync --delete` of source code to the remote server. If two sessions sync at the same time, the second waits for the first to finish, preventing file deletion races.
+
+2. **Session-isolated target directories**: Each invocation generates a unique `SESSION_ID` (hash of PID + timestamp + cwd) and compiles remotely into `target-$SESSION_ID/` via `CARGO_TARGET_DIR`. This means two sessions never compete for Cargo's artifact lock and can compile in **full parallel**. After a successful build, the binary is downloaded to the local `target/` and the remote session target is deleted.
+
+Bridge log messages include the session identifier for debugging: `[Bridge:a1b2c3d4]`.
+
+### Server Disk Space
+`server-1` may run out of disk space (currently ~234GB, often at 100%), triggering nix auto-GC on every build. If compilations are slow or fail with derivation errors, run `just kill-remote clean-remote-targets` and then manually free space on the server:
+```bash
+ssh server-1 "nix store gc --extra-experimental-features 'nix-command flakes'"
+```
 
 ---
 
@@ -98,5 +117,9 @@ The crate `crates/syntrix-logging/` provides structured NDJSON logging with a qu
 - **AI diagnosis**: Use `query_logs` (filtered/paginated) and `summarize_logs` (digest) instead of reading raw log files.
 - **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,iroh=warn`) and `IROH_DEBUG=1` (iroh debug to separate file); no code changes needed.
 - **Ring buffer**: Default 5000 entries, tunable via `SYNTRIX_LOG_RING` env var.
+- **AI diagnosis**: Use `query_logs` (filtered/paginated) and `summarize_logs` (digest) instead of reading raw log files.
+- **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,iroh=warn`) and `IROH_DEBUG=1` (iroh debug to separate file); no code changes needed.
+- **Ring buffer**: Default 5000 entries, tunable via `SYNTRIX_LOG_RING` env var.
 - **New `#[tauri::command]`**: Wrap `*_impl` functions in both apps; new logging APIs follow the same convention.
 - **Tail**: The Tauri event `log_event` emits new records in ~250ms batches. UI subscribes via `listen("log_event", ...)`.
+- **No Tokio assumptions in `init_logging`**: `init_logging()` may be called before the Tauri runtime starts. Never `tokio::spawn` unconditionally — use `tokio::runtime::Handle::try_current()` to check for an active runtime first.

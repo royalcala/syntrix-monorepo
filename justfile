@@ -83,7 +83,41 @@ remote-client-2 server_ip="100.64.0.2":
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export SYNTRIX_DATA_DIR="$HOME/.local/share/syntrix-2"; export IROH_DATA_DIR="$HOME/.local/share/iroh-2"; cd apps/client/src-tauri; cargo tauri dev --config "{\"build\": {\"devUrl\": \"http://{{server_ip}}:1420\", \"beforeDevCommand\": \"\"}}"'
 
 # =========================================================================
-# 4. PRUEBAS, CALIDAD Y LIMPIEZA
+# 4. GESTIÓN DE PROCESOS
+# =========================================================================
+
+# Mata todas las apps Tauri y compilaciones locales (admin, client, vite)
+kill-local:
+    @echo "=== Matando procesos Tauri locales ==="
+    pkill -x syntrix-admin 2>/dev/null || true
+    pkill -x syntrix-client 2>/dev/null || true
+    pkill -f "[v]ite.*apps/admin" 2>/dev/null || true
+    pkill -f "[v]ite.*apps/client" 2>/dev/null || true
+    pkill -f "[b]in/cargo.*tauri" 2>/dev/null || true
+    @echo "✅ Procesos locales eliminados."
+
+# Mata compilaciones Rust y procesos Tauri en los servidores remotos
+kill-remote:
+    @echo "=== Matando procesos en server-1 ==="
+    ssh -o ConnectTimeout=3 server-1 "pkill -f 'cargo build| cargo check| cargo clippy| cargo run| cargo test| cargo doc| syntrix-admin| syntrix-client| nix.*shell.*cargo' 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
+    @echo "=== Matando procesos en server-2 ==="
+    ssh -o ConnectTimeout=3 server-2 "pkill -f 'cargo build| cargo check| cargo clippy| cargo run| cargo test| cargo doc| syntrix-admin| syntrix-client| nix.*shell.*cargo' 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
+    @echo "✅ Procesos remotos eliminados."
+
+# Limpia directorios target-* (sesiones) residuales en servidores remotos
+clean-remote-targets:
+    @echo "=== Limpiando targets de sesión en server-1 ==="
+    ssh -o ConnectTimeout=3 server-1 "rm -rf /root/remote-builds/syntrix-monorepo/target-* 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
+    @echo "=== Limpiando targets de sesión en server-2 ==="
+    ssh -o ConnectTimeout=3 server-2 "rm -rf /root/remote-builds/syntrix-monorepo/target-* 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
+    @echo "✅ Targets de sesión remotos eliminados."
+
+# Mata todo: local + servidores remotos
+kill-all: kill-local kill-remote clean-remote-targets
+    @echo "✅ Todos los procesos y targets de sesión han sido eliminados."
+
+# =========================================================================
+# 5. PRUEBAS, CALIDAD Y LIMPIEZA
 # =========================================================================
 
 # Corre todas las pruebas unitarias e integración de ambas aplicaciones
@@ -121,7 +155,7 @@ clean-data-all: clean-data-admin clean-data-client
     @echo "✅ Datos persistidos locales eliminados."
 
 # =========================================================================
-# 5. DOCUMENTACIÓN
+# 6. DOCUMENTACIÓN
 # =========================================================================
 
 # Levanta el servidor de desarrollo para la documentación de Astro Starlight
