@@ -50,18 +50,6 @@ if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ||
             fi
         fi
     fi
-    elif [[ "$REMOTE_HOST" == "server-1" ]]; then
-        # Si queremos usar server-1 pero está apagado/inaccesible o no resuelve, intentamos caer en server-2
-        if ! ping -c 1 -W 1 server-1 >/dev/null 2>&1; then
-            echo "=== [Bridge] server-1 está apagado, inaccesible o no resuelve. Intentando fallback a server-2... ==="
-            if ping -c 1 -W 1 server-2 >/dev/null 2>&1; then
-                REMOTE_HOST="server-2"
-            else
-                echo "=== [Bridge] ¡ADVERTENCIA! Ambos servidores están inaccesibles. Usando server-1 por defecto. ==="
-                REMOTE_HOST="server-1"
-            fi
-        fi
-    fi
 
     # Calcular la ruta relativa de la carpeta actual
     CURRENT_DIR=$(pwd)
@@ -88,8 +76,9 @@ if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ||
       "$REMOTE_HOST:$REMOTE_REPO_ROOT/"
 
     # Reemplazar rutas absolutas de la laptop a las del servidor en los argumentos
-    # Y si es "run", transformarlo a "build" para el servidor, quitando el "--" y argumentos subsiguientes
+    # Y si es "run" o "tauri dev", transformarlos a "build" para solo compilar en el servidor
     REMOTE_ARGS=()
+    IS_TAURI_DEV=0
     if [[ "$1" == "run" ]]; then
         REMOTE_ARGS+=("build")
         for arg in "${@:2}"; do
@@ -99,6 +88,10 @@ if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ||
             # Reemplazar ruta local por ruta remota
             REMOTE_ARGS+=("${arg//$REPO_ROOT/$REMOTE_REPO_ROOT}")
         done
+    elif [[ "$1" == "tauri" && "$2" == "dev" ]]; then
+        # "tauri dev" en el servidor: solo compilar (build), sin beforeDevCommand ni ejecución
+        IS_TAURI_DEV=1
+        REMOTE_ARGS+=("build")
     else
         for arg in "$@"; do
             # Reemplazar ruta local por ruta remota
@@ -118,6 +111,7 @@ DEPS="nixpkgs#glib.dev nixpkgs#gtk3.dev nixpkgs#webkitgtk_4_1.dev nixpkgs#libsou
 PKG_SETUP='export PKG_CONFIG_PATH=""; for d in /nix/store/*/lib/pkgconfig /nix/store/*/share/pkgconfig; do [ -d "$d" ] && ls "$d"/*.pc >/dev/null 2>&1 && PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$d"; done; export PKG_CONFIG_PATH'
 
 cd "$REMOTE_DIR" || exit 1
+
 nix --extra-experimental-features 'nix-command flakes' shell $DEPS --command bash -c "$PKG_SETUP && cargo $*"
 EOF
 
@@ -164,6 +158,55 @@ EOF
                 echo "=== [Bridge] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
                 exec "$REAL_CARGO" "$@"
             fi
+        fi
+
+        # Si era "tauri dev", compilamos en el servidor y ejecutamos localmente
+        if [[ "$IS_TAURI_DEV" == "1" ]]; then
+            BINARY_NAME=""
+            if [[ -f "Cargo.toml" ]]; then
+                BINARY_NAME=$(grep -m1 '^name = ' Cargo.toml | cut -d'"' -f2)
+            fi
+            BINARY_NAME="${BINARY_NAME:-syntrix-admin}"
+            BINARY_PATH="./target/debug/$BINARY_NAME"
+
+            if [[ ! -f "$BINARY_PATH" ]]; then
+                echo "=== [Bridge] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
+                exec "$REAL_CARGO" "$@"
+            fi
+
+            chmod +x "$BINARY_PATH"
+
+            # Calcular el directorio de la app (un nivel arriba de src-tauri)
+            APP_DIR="$(dirname "$CURRENT_DIR")"
+
+            echo "=== [Bridge] Iniciando beforeDevCommand (pnpm dev) en $APP_DIR... ==="
+            # Matar instancias previas de vite
+            pkill -f "vite" 2>/dev/null || true
+            # Iniciar pnpm dev en background (subshell para no afectar el directorio actual)
+            (cd "$APP_DIR" && pnpm dev) &
+            VITE_PID=$!
+            # Asegurar limpieza al salir (Ctrl+C, etc.)
+            cleanup_vite() { kill "$VITE_PID" 2>/dev/null || true; pkill -f "$APP_DIR.*vite" 2>/dev/null || true; }
+            trap cleanup_vite EXIT INT TERM
+
+            # Esperar a que Vite esté listo (buscar "ready" o "Local:" en la salida)
+            echo "=== [Bridge] Esperando a que Vite esté listo... ==="
+            for i in $(seq 1 30); do
+                if curl -s http://localhost:1421 >/dev/null 2>&1 || curl -s http://localhost:1420 >/dev/null 2>&1; then
+                    echo "=== [Bridge] Vite está listo ==="
+                    break
+                fi
+                sleep 1
+            done
+
+            echo "=== [Bridge] Iniciando $BINARY_PATH localmente... ==="
+            cd "$CURRENT_DIR"
+            "$BINARY_PATH"
+            BINARY_EXIT=$?
+            # Al salir el binario, matar pnpm dev
+            kill "$VITE_PID" 2>/dev/null || true
+            pkill -f "$APP_DIR.*vite" 2>/dev/null || true
+            exit $BINARY_EXIT
         fi
     fi
     exit $EXIT_CODE
