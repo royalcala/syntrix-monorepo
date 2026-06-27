@@ -104,13 +104,13 @@ kill-remote:
     ssh -o ConnectTimeout=3 server-2 "pkill -f 'cargo build| cargo check| cargo clippy| cargo run| cargo test| cargo doc| syntrix-admin| syntrix-client| nix.*shell.*cargo' 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
     @echo "✅ Procesos remotos eliminados."
 
-# Limpia directorios target-* (sesiones) residuales en servidores remotos
+# Limpia targets remotos (target-remote persistente + sesiones target-* residuales) en servidores remotos
 clean-remote-targets:
-    @echo "=== Limpiando targets de sesión en server-1 ==="
-    ssh -o ConnectTimeout=3 server-1 "rm -rf /root/remote-builds/syntrix-monorepo/target-* 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
-    @echo "=== Limpiando targets de sesión en server-2 ==="
-    ssh -o ConnectTimeout=3 server-2 "rm -rf /root/remote-builds/syntrix-monorepo/target-* 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
-    @echo "✅ Targets de sesión remotos eliminados."
+    @echo "=== Limpiando targets remotos en server-1 ==="
+    ssh -o ConnectTimeout=3 server-1 "rm -rf /root/remote-builds/syntrix-monorepo/target-remote /root/remote-builds/syntrix-monorepo/target-* 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
+    @echo "=== Limpiando targets remotos en server-2 ==="
+    ssh -o ConnectTimeout=3 server-2 "rm -rf /root/remote-builds/syntrix-monorepo/target-remote /root/remote-builds/syntrix-monorepo/target-* 2>/dev/null; echo 'ok'" 2>/dev/null || echo "inaccesible"
+    @echo "✅ Targets remotos eliminados (caché de compilación borrada)."
 
 # Mata todo: local + servidores remotos
 kill-all: kill-local kill-remote clean-remote-targets

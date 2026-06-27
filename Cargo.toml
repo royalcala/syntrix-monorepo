@@ -8,3 +8,10 @@ members = [
     "crates/syntrix-testkit",
     "crates/syntrix-logging",
 ]
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
