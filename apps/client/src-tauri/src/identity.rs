@@ -262,6 +262,7 @@ impl AppState {
                                 crate::sync::start_heartbeat_with_resync(
                                     ctrl_doc.clone(), cat_doc.clone(), op_doc.clone(), pay_doc.clone(),
                                     author, node_id_hex, store.clone().into(), secret.clone(),
+                                    registry.clone(),
                                 );
 
                                 // Start remote entry ingestion via doc subscriptions
@@ -444,6 +445,40 @@ pub async fn sync_and_populate_org_members_impl(
             }
         }
     }
+
+    // Also load roles from control doc so the registry has up-to-date grants.
+    // This ensures that check_read_access() (via openable_namespaces()) works
+    // for newly joined peers and after admin updates role permissions.
+    if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+        let mut entries = Box::pin(entries);
+        while let Some(res) = entries.next().await {
+            if let Ok(entry) = res {
+                if let Ok(key) = std::str::from_utf8(entry.key()) {
+                    let role_name = key.strip_prefix("roles/").unwrap_or(key).to_string();
+                    if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                            let can_open: Vec<String> = val["can_open"]
+                                .as_array()
+                                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                .unwrap_or_default();
+                            let can_write: Vec<String> = val["can_write"]
+                                .as_array()
+                                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                .unwrap_or_default();
+
+                            if let Ok(mut reg) = registry.write() {
+                                reg.upsert_role(org_id.clone(), role_name.clone(), RoleGrants {
+                                    can_open: can_open.clone(),
+                                    can_write: can_write.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

@@ -734,16 +734,20 @@ pub fn init_logging(app_name: &str, data_dir: PathBuf) -> LogHandle {
             .init();
     }
 
-    // Spawn periodic cleanup
-    let cleanup_data_dir = data_dir.clone();
-    let cleanup_app_name = app_name.to_string();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(3600));
-        loop {
-            interval.tick().await;
-            cleanup_old_logs(&cleanup_data_dir, &cleanup_app_name);
-        }
-    });
+    // Spawn periodic cleanup (only if a tokio runtime is active — init_logging may
+    // be called before the Tauri/async runtime starts; cleanup runs on every launch
+    // anyway, so skipping is safe during early init).
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        let cleanup_data_dir = data_dir.clone();
+        let cleanup_app_name = app_name.to_string();
+        runtime.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                cleanup_old_logs(&cleanup_data_dir, &cleanup_app_name);
+            }
+        });
+    }
 
     LogHandle {
         inner,

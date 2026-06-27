@@ -149,6 +149,9 @@ export default function App() {
       }
     },
     enabled: !!activeOrg && !!role,
+    // Re-query every 15 seconds to catch role changes that arrived via sync
+    // (sync may not complete before the initial render, especially for 2nd+ peers)
+    refetchInterval: 15_000,
   });
 
   const filteredNavItems = navItems.filter((item) => {

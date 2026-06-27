@@ -368,6 +368,7 @@ pub fn join_org_state_impl(
         hex::encode(state.node_id()),
         state.store().clone(),
         state.secret().clone(),
+        state.registry().clone(),
     );
 
     identity::start_doc_subscriptions(

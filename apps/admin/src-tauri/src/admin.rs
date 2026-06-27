@@ -59,7 +59,7 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     let secret = state.secret().clone();
     start_heartbeat_with_resync(
         control_doc.clone(), catalogs_doc.clone(), operational_doc.clone(), payroll_doc.clone(),
-        author, node_id_hex, store, secret,
+        author, node_id_hex, store, secret, state.registry().clone(),
     );
 
     Ok(())
