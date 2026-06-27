@@ -26,21 +26,34 @@ if [ -z "$REAL_CARGO" ]; then
 fi
 
 # Si es una compilación o ejecución, la delegamos al servidor
-if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" || "$1" == "doc" || "$1" == "test" ]]; then
+if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" || "$1" == "doc" || "$1" == "test" || "$1" == "tauri" ]]; then
     # Servidor remoto por defecto (se puede sobreescribir con la variable de entorno REMOTE_HOST)
     REMOTE_HOST="${REMOTE_HOST:-server-1}"
 
     # Comprobación de disponibilidad y failover automático
     if [[ "$REMOTE_HOST" == "server-2" ]]; then
         # Si queremos usar server-2 pero está apagado/inaccesible, caemos en server-1
-        if ! ping -c 1 -W 1 server-2 >/dev/null 2>&1; then
-            echo "=== [Bridge] server-2 está apagado o inaccesible. Redirigiendo compilación a server-1... ==="
+        # Usamos SSH en lugar de ping porque algunos servidores bloquean ICMP
+        if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "$REMOTE_HOST" "echo ok" >/dev/null 2>&1; then
+            echo "=== [Bridge] server-2 está apagado o inaccesible (SSH falló). Redirigiendo compilación a server-1... ==="
             REMOTE_HOST="server-1"
         fi
     elif [[ "$REMOTE_HOST" == "server-1" ]]; then
         # Si queremos usar server-1 pero está apagado/inaccesible, intentamos caer en server-2
+        if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "$REMOTE_HOST" "echo ok" >/dev/null 2>&1; then
+            echo "=== [Bridge] server-1 está apagado o inaccesible (SSH falló). Intentando fallback a server-2... ==="
+            if ssh -o ConnectTimeout=3 -o BatchMode=yes server-2 "echo ok" >/dev/null 2>&1; then
+                REMOTE_HOST="server-2"
+            else
+                echo "=== [Bridge] ¡ADVERTENCIA! Ambos servidores están inaccesibles. Usando server-1 por defecto. ==="
+                REMOTE_HOST="server-1"
+            fi
+        fi
+    fi
+    elif [[ "$REMOTE_HOST" == "server-1" ]]; then
+        # Si queremos usar server-1 pero está apagado/inaccesible o no resuelve, intentamos caer en server-2
         if ! ping -c 1 -W 1 server-1 >/dev/null 2>&1; then
-            echo "=== [Bridge] server-1 está apagado o inaccesible. Redirigiendo compilación a server-2... ==="
+            echo "=== [Bridge] server-1 está apagado, inaccesible o no resuelve. Intentando fallback a server-2... ==="
             if ping -c 1 -W 1 server-2 >/dev/null 2>&1; then
                 REMOTE_HOST="server-2"
             else

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+# Wrapper para cargo-tauri que intercepta las llamadas de compilación
+
+# Evitar loops recursivos
+export IN_CARGO_TAURI_BRIDGE=1
+
+# Determinar rutas relativas de forma dinámica basadas en la ubicación del script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Buscar cargo-tauri real en el PATH (evitando nuestra propia carpeta bin)
+REAL_CARGO_TAURI=""
+IFS=':' read -r -a array <<< "$PATH"
+for element in "${array[@]}"; do
+    if [[ "$element" == *"/syntrix-monorepo/bin" ]]; then
+        continue
+    fi
+    if [ -x "$element/cargo-tauri" ]; then
+        REAL_CARGO_TAURI="$element/cargo-tauri"
+        break
+    fi
+done
+
+if [ -z "$REAL_CARGO_TAURI" ]; then
+    REAL_CARGO_TAURI="/run/current-system/sw/bin/cargo-tauri"
+fi
+
+# Si es "tauri dev" o "tauri build", necesitamos interceptar
+if [[ "$1" == "tauri" ]]; then
+    # Servidor remoto por defecto
+    REMOTE_HOST="${REMOTE_HOST:-server-1}"
+
+    # Comprobación de disponibilidad y failover automático
+    if [[ "$REMOTE_HOST" == "server-2" ]]; then
+        # Usamos SSH en lugar de ping porque algunos servidores bloquean ICMP
+        if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "$REMOTE_HOST" "echo ok" >/dev/null 2>&1; then
+            echo "=== [Tauri Bridge] server-2 está apagado o inaccesible (SSH falló). Redirigiendo a server-1... ==="
+            REMOTE_HOST="server-1"
+        fi
+    elif [[ "$REMOTE_HOST" == "server-1" ]]; then
+        if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "$REMOTE_HOST" "echo ok" >/dev/null 2>&1; then
+            echo "=== [Tauri Bridge] server-1 está apagado o inaccesible (SSH falló). Intentando fallback a server-2... ==="
+            if ssh -o ConnectTimeout=3 -o BatchMode=yes server-2 "echo ok" >/dev/null 2>&1; then
+                REMOTE_HOST="server-2"
+            else
+                echo "=== [Tauri Bridge] ¡ADVERTENCIA! Ambos servidores están inaccesibles. Usando server-1 por defecto. ==="
+                REMOTE_HOST="server-1"
+            fi
+        fi
+    fi
+
+    # Para "tauri dev" y "tauri build", la compilación se hace via cargo
+    # El bridge de cargo ya intercepta esas llamadas, así que solo necesitamos
+    # pasar el control al cargo-tauri real
+    echo "=== [Tauri Bridge] Ejecutando cargo-tauri con REMOTE_HOST=$REMOTE_HOST ==="
+    exec "$REAL_CARGO_TAURI" "$@"
+else
+    # Ejecutar localmente cualquier otro comando
+    exec "$REAL_CARGO_TAURI" "$@"
+fi
