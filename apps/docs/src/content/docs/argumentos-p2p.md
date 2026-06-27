@@ -14,12 +14,12 @@ En Syntrix, utilizamos una arquitectura **Peer-to-Peer (P2P)**:
 
 ```mermaid
 graph TD
-    subgraph Cliente-Servidor (SaaS Tradicional)
+    subgraph "Cliente-Servidor (SaaS Tradicional)"
         A[Dispositivo 1] --> S((Servidor Central / AWS))
         B[Dispositivo 2] --> S
     end
 
-    subgraph Peer-to-Peer (Syntrix + Iroh)
+    subgraph "Peer-to-Peer (Syntrix + Iroh)"
         P1((Dispositivo 1)) <--> P2((Dispositivo 2))
         P2((Dispositivo 2)) <--> P3((Dispositivo 3))
         P3((Dispositivo 3)) <--> P1((Dispositivo 1))
