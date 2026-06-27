@@ -1,0 +1,15 @@
+[package]
+name = "syntrix-logging"
+version = "0.1.0"
+edition = "2021"
+description = "AI-first structured logging for Syntrix P2P — NDJSON, ring buffer, query, span taxonomy"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }

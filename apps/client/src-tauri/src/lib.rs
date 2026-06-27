@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, Emitter};
-use tracing_subscriber::{Layer, prelude::*};
+use tauri::{Emitter, Manager};
+use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
 
 pub mod identity;
 pub mod events;
@@ -436,21 +436,21 @@ fn audit_query(
 }
 
 #[tauri::command]
-fn get_logs() -> Result<String, String> {
-    let log_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-        std::path::PathBuf::from(custom_path).join("logs")
-    } else {
-        dirs_next::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("syntrix")
-            .join("logs")
-    };
-    let log_file = log_dir.join("syntrix-client.log");
-    if log_file.exists() {
-        std::fs::read_to_string(log_file).map_err(|e| e.to_string())
-    } else {
-        Ok("No logs yet.".into())
-    }
+fn query_logs(handle: tauri::State<'_, LogHandle>, query: LogQuery) -> Result<Vec<LogRecord>, String> {
+    Ok(syntrix_logging::query_logs_impl(&handle, &query))
+}
+
+#[tauri::command]
+fn summarize_logs(handle: tauri::State<'_, LogHandle>, window_secs: u64) -> Result<LogSummary, String> {
+    Ok(syntrix_logging::summarize_logs_impl(
+        &handle,
+        std::time::Duration::from_secs(window_secs),
+    ))
+}
+
+#[tauri::command]
+fn start_tail_logs(_app: tauri::AppHandle, _handle: tauri::State<'_, LogHandle>) -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]
@@ -461,32 +461,17 @@ fn seed_dev_data(state: tauri::State<'_, Mutex<AppState>>) -> Result<usize, Stri
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // File logging (rotating daily)
-    let log_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-        std::path::PathBuf::from(custom_path).join("logs")
+    // Data directory for logs
+    let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+        std::path::PathBuf::from(custom_path)
     } else {
         dirs_next::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("syntrix")
-            .join("logs")
     };
-    std::fs::create_dir_all(&log_dir).ok();
-    
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "syntrix-client.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-    
-    let console_layer = tracing_subscriber::fmt::layer()
-        .with_filter(tracing_subscriber::EnvFilter::new("iroh=debug,syntrix=info"));
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
-        .with_ansi(false)
-        .with_filter(tracing_subscriber::EnvFilter::new("iroh=debug,syntrix=debug"));
-    
-    tracing_subscriber::registry()
-        .with(console_layer)
-        .with(file_layer)
-        .init();
-    std::mem::forget(_guard);
+
+    // Initialize structured logging (AI-first: NDJSON + ring buffer + query API)
+    let log_handle = syntrix_logging::init_logging("client", data_dir.clone());
 
     let app_state = tauri::async_runtime::block_on(async {
         AppState::new().await.expect("failed to initialize iroh")
@@ -495,6 +480,36 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Start tail log events
+            let handle = app.state::<LogHandle>();
+            let rx = handle.subscribe_tail();
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use std::time::Duration;
+                let mut batch: Vec<LogRecord> = Vec::new();
+                loop {
+                    match rx.recv_timeout(Duration::from_millis(250)) {
+                        Ok(record) => {
+                            batch.push(record);
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if !batch.is_empty() {
+                                for record in batch.drain(..) {
+                                    let _ = app_handle.emit("log_event", &record);
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                    if batch.len() >= 50 {
+                        for record in batch.drain(..) {
+                            let _ = app_handle.emit("log_event", &record);
+                        }
+                    }
+                }
+            });
+
+            // Invite listener
             let state = app.state::<Mutex<AppState>>();
             let s = state.lock().unwrap();
             if let Some(rx) = s.invite_rx.lock().unwrap().take() {
@@ -511,11 +526,13 @@ pub fn run() {
             Ok(())
         })
         .manage(Mutex::new(app_state))
+        .manage(log_handle)
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
             commit_event, sync_status, sync_push, sync_pull, sync_ping,
-            query_entity, query_entity_advanced, search_entity, seed_dev_data, get_logs, get_sync_info,
+            query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
             get_schema_registry, audit_query,
+            query_logs, summarize_logs, start_tail_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

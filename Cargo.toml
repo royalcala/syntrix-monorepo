@@ -6,4 +6,5 @@ members = [
     "crates/syntrix-core",
     "crates/syntrix-schema",
     "crates/syntrix-testkit",
+    "crates/syntrix-logging",
 ]

@@ -80,3 +80,23 @@ Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. 
 
 ### Approval gate
 Do not approve a backend feature without a green `just test-rust`.
+
+---
+
+## AI-First Logging (syntrix-logging)
+
+The crate `crates/syntrix-logging/` provides structured NDJSON logging with a query API designed for AI consumption.
+
+### Conventions
+- **Log format**: Every event is a `LogRecord` with `{ts, level, target, span_path, corr_id, message, fields}` — written as NDJSON (`logs/syntrix-<app>.ndjson`) and retained in a 5000-entry ring buffer.
+- **Canonical operations must use `syntrix_span!`**:
+  ```rust
+  let (_guard, _entered) = syntrix_span!(org, op, step);
+  ```
+  Available operations: `create_org`, `send_invite`, `join_org`, `commit_event`, `sync_push`, `sync_pull`, `heartbeat`, `subscribe_ingest`. Each macro creates a tracing span with `org`, `op`, `step`, and auto-generated `corr_id` (UUID). Event fields inherit the span context.
+- **Zero secrets in logs**: Sensitive fields (`secret_*`, `keypair`, `doc_ticket`, `ticket`) are auto-redacted. Never log keypairs or invite tickets directly.
+- **AI diagnosis**: Use `query_logs` (filtered/paginated) and `summarize_logs` (digest) instead of reading raw log files.
+- **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,iroh=warn`) and `IROH_DEBUG=1` (iroh debug to separate file); no code changes needed.
+- **Ring buffer**: Default 5000 entries, tunable via `SYNTRIX_LOG_RING` env var.
+- **New `#[tauri::command]`**: Wrap `*_impl` functions in both apps; new logging APIs follow the same convention.
+- **Tail**: The Tauri event `log_event` emits new records in ~250ms batches. UI subscribes via `listen("log_event", ...)`.
