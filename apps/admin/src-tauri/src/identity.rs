@@ -459,7 +459,7 @@ impl AppState {
 
 fn default_role_grants(role: &str) -> RoleGrants {
     match role {
-        "admin" => RoleGrants { can_open: vec!["customers".into(),"suppliers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"suppliers".into(),"products".into(),"invoices".into(),"orders".into()] },
+        "admin" => RoleGrants { can_open: vec!["*".into()], can_write: vec!["*".into()] },
         "sales" => RoleGrants { can_open: vec!["customers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"invoices".into(),"orders".into()] },
         "contabilidad" => RoleGrants { can_open: vec!["invoices".into(),"customers".into()], can_write: vec![] },
         _ => RoleGrants { can_open: vec![], can_write: vec![] },

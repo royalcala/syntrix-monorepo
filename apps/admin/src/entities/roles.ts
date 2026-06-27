@@ -18,7 +18,10 @@ export const rolesEntity: EntityDefinition = {
       options: [
         { label: "Clientes", value: "customers" },
         { label: "Proveedores", value: "suppliers" },
-        { label: "Productos", value: "products" }
+        { label: "Productos", value: "products" },
+        { label: "Facturas", value: "invoices" },
+        { label: "Órdenes", value: "orders" },
+        { label: "Nómina", value: "payroll" }
       ]
     },
     { 
@@ -31,7 +34,10 @@ export const rolesEntity: EntityDefinition = {
       options: [
         { label: "Clientes", value: "customers" },
         { label: "Proveedores", value: "suppliers" },
-        { label: "Productos", value: "products" }
+        { label: "Productos", value: "products" },
+        { label: "Facturas", value: "invoices" },
+        { label: "Órdenes", value: "orders" },
+        { label: "Nómina", value: "payroll" }
       ]
     },
   ],

@@ -1,9 +1,11 @@
 
+use std::collections::HashSet;
 use iroh_docs::api::protocol::{ShareMode, AddrInfoOptions};
 
 use crate::identity::AppState;
 use crate::{DeviceInfo, RoleInfo};
 pub use syntrix_core::{build_device_addr_string, start_heartbeat_with_resync, SyncInfo, get_sync_info};
+use syntrix_schema::build_registry;
 
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
@@ -30,7 +32,7 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
         serde_json::to_vec(&device_json)?,
     ).await?;
 
-    let admin_role = serde_json::json!({"can_open": ["control","catalogs","operational","payroll"], "can_write": ["catalogs","operational","payroll"]});
+    let admin_role = serde_json::json!({"can_open": ["*"], "can_write": ["*"]});
     control_doc.set_bytes(author, b"roles/admin".to_vec(), serde_json::to_vec(&admin_role)?).await?;
 
     let org_json = serde_json::json!({"name": name, "created_at": chrono::Utc::now().to_rfc3339()});
@@ -95,7 +97,7 @@ pub async fn add_device(
 
 fn default_role_grants(role: &str) -> serde_json::Value {
     match role {
-        "admin" => serde_json::json!({"can_open": ["customers","suppliers","products","invoices","orders"], "can_write": ["customers","suppliers","products","invoices","orders"]}),
+        "admin" => serde_json::json!({"can_open": ["*"], "can_write": ["*"]}),
         "sales" => serde_json::json!({"can_open": ["customers","products","invoices","orders"], "can_write": ["customers","invoices","orders"]}),
         "contabilidad" => serde_json::json!({"can_open": ["invoices","customers"], "can_write": []}),
         _ => serde_json::json!({"can_open": [], "can_write": []}),
@@ -216,31 +218,42 @@ pub async fn send_invite(
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
     let operational_ticket = operational_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let _payroll_ticket = payroll_doc
+    let payroll_ticket = payroll_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
-    // Build selective ticket list based on business modules -> namespaces mapping
+    // Determine which namespace tickets to share based on role's can_open
     let grants = default_role_grants(role);
-    let can_open: Vec<&str> = grants["can_open"].as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+    let can_open: Vec<String> = grants["can_open"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
-    let needs_control = true; // Everyone needs control docs
-    let mut needs_catalogs = false;
-    let mut needs_operational = false;
+    let registry = build_registry();
+    let mut needed_ns: HashSet<&'static str> = HashSet::new();
 
-    for perm in &can_open {
-        match *perm {
-            "products" | "suppliers" => needs_catalogs = true,
-            "customers" | "invoices" | "orders" => needs_operational = true,
-            _ => {}
+    if can_open.iter().any(|e| e == "*") {
+        // All entities → all namespace tickets
+        needed_ns.insert("catalogs");
+        needed_ns.insert("operational");
+        needed_ns.insert("payroll");
+    } else {
+        for entity in &can_open {
+            if let Some(ns) = registry.namespace_of(entity) {
+                needed_ns.insert(ns.as_str());
+            }
         }
     }
 
     let mut tickets: Vec<serde_json::Value> = vec![];
-    if needs_control { tickets.push(serde_json::json!({"ns": "control", "ticket": control_ticket.to_string()})); }
-    if needs_catalogs { tickets.push(serde_json::json!({"ns": "catalogs", "ticket": catalogs_ticket.to_string()})); }
-    if needs_operational { tickets.push(serde_json::json!({"ns": "operational", "ticket": operational_ticket.to_string()})); }
+    tickets.push(serde_json::json!({"ns": "control", "ticket": control_ticket.to_string()}));
+    if needed_ns.contains("catalogs") {
+        tickets.push(serde_json::json!({"ns": "catalogs", "ticket": catalogs_ticket.to_string()}));
+    }
+    if needed_ns.contains("operational") {
+        tickets.push(serde_json::json!({"ns": "operational", "ticket": operational_ticket.to_string()}));
+    }
+    if needed_ns.contains("payroll") {
+        tickets.push(serde_json::json!({"ns": "payroll", "ticket": payroll_ticket.to_string()}));
+    }
 
     let payload = serde_json::json!({
         "org_name": org,
@@ -267,9 +280,23 @@ pub async fn send_invite(
     Ok((node_id_hex, device_addr_str))
 }
 
+/// Validate that every string in a permission list is a known entity name or "*".
+fn validate_permissions(perms: &[String]) -> Result<(), String> {
+    let registry = build_registry();
+    for p in perms {
+        if p == "*" { continue; }
+        if registry.get(p).is_some() { continue; }
+        return Err(format!("Permiso inválido: '{}' no es una entidad conocida ni '*'", p));
+    }
+    Ok(())
+}
+
 pub async fn create_role(
     state: &mut AppState, org: &str, name: &str, can_open: Vec<String>, can_write: Vec<String>,
 ) -> anyhow::Result<()> {
+    validate_permissions(&can_open).map_err(|e| anyhow::anyhow!("{}", e))?;
+    validate_permissions(&can_write).map_err(|e| anyhow::anyhow!("{}", e))?;
+
     let org_state = state.get_org(org).ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
     let doc = &org_state.control_doc;
     let author = state.author();

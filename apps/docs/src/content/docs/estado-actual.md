@@ -20,12 +20,16 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 ### 1.2 Capa Relacional (Local Engine)
 - **Tecnología:** `redb` (Embebido en Rust)
 - **Función:** Proveer consultas eficientes y lookups O(1).
-- **Cómo funciona:** `indexes.rs` actúa como un indexador en segundo plano. Al recibir un evento de iroh, extrae el JSON y crea índices secundarios vacíos en redb (`idx:{org}:{entity}:{field}:{value}:{doc_id}`) para escaneos de prefijo ultra-rápidos.
+- **Schema-Driven:** Los índices se generan exclusivamente para campos marcados como `#[indexed]` en el [Registry de Esquemas](/referencia/esquemas/) (`crates/syntrix-schema/`).
+- **Índices compuestos:** Soportados mediante tabla `COMPOSITE` con formato `compidx:{org}:{entity}:{name}:{v1}:{v2}:...:{doc_id}`.
+- **Codificación sortable:** Números codificados como big-endian hex con inversión de signo para rangos correctos (`2 < 10`).
+- **Paginación server-side:** `query_entity_advanced` acepta `filters`, `sort`, `limit`, `offset`.
 
 ### 1.3 Capa de Búsqueda (Completada e Integrada)
 - **Tecnología:** `Tantivy` (Motor Full-Text embebido en Rust)
 - **Función:** Búsqueda difusa (fuzzy search), BM25 ranking y snippets.
-- **Cómo funciona:** Índice paralelo a redb. Se actualiza automáticamente desde `upsert_document` después de realizar la confirmación transaccional. El frontend consume esto mediante la query reactiva que invoca a `search_entity` por IPC para búsqueda en el grid y para búsqueda global en el Command Palette (Ctrl+K) con snippets resaltados en HTML.
+- **Schema-Driven:** Solo indexa campos declarados como `#[searchable]` en el Registry de Esquemas (no todo el JSON a ciegas).
+- **Cómo funciona:** Índice paralelo a redb. Se actualiza automáticamente desde `upsert_document` después de realizar la confirmación transaccional indexando únicamente los campos relevantes para búsqueda de texto. El frontend consume esto mediante la query reactiva que invoca a `search_entity` por IPC para búsqueda en el grid y para búsqueda global en el Command Palette (Ctrl+K) con snippets resaltados en HTML.
 
 ---
 
@@ -47,8 +51,12 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 
 ### ✅ Completado y en Producción
 - **Infraestructura Core:** Admin crea organización con 4 namespaces, agrega dispositivos y comparte tickets selectivos por rol.
-- **Motor Relacional:** `indexes.rs` generando índices en redb.
-- **Tauri Bridge:** Comandos `query_entity` y `commit_event` funcionales.
+- **Registry de Esquemas (`crates/syntrix-schema/`):** Definición centralizada de entidades, campos, tipos, índices, relaciones y versiones. Exportable a JSON para frontend.
+- **Motor Relacional Schema-Driven:** `indexes.rs` genera índices solo para campos `#[indexed]`, con codificación sortable de números (big-endian hex), índices compuestos y paginación server-side.
+- **Tantivy Schema-Driven:** Solo indexa campos `#[searchable]` del Registry.
+- **Upcasters y Migraciones:** Eventos con `schema_version`, cadena de upcasters deterministas. Ejemplo: CustomerV1ToV2 (address string → struct).
+- **Auditoría:** Comando `audit_query` que lee directo del log de eventos iroh-docs con filtros por entidad, tipo, nodo y rango de tiempo.
+- **Tauri Bridge:** Comandos `query_entity`, `query_entity_advanced`, `commit_event`, `audit_query`, `get_schema_registry` funcionales.
 - **Permisos P2P:** Aislamiento real entre roles (Sales no lee Payroll).
 - **Workspace UI Core:** `EntityGrid` y `DetailPanel` renderizando dinámicamente según la entidad.
 - **Reactividad de UI:** Edición de celdas/formularios actualiza la UI y sincroniza a otros peers.
@@ -58,6 +66,8 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Búsqueda Global y Command Palette (Ctrl+K):** Cross-entity search en `App.tsx` conectado a Tantivy, mostrando snippets de coincidencia.
 - **Navegación e Interacción Integrada (Deep Linking):** Seleccionar un resultado del Command Palette redirige a la vista de la entidad, selecciona la fila y abre el panel de detalles automáticamente usando `useSearchParams`.
 - **Detail Panel Responsivo:** Bottom sheet para móviles y panel lateral para desktop implementado.
+- **Explorador de Esquemas (`/schemas`):** Vista en Admin Console de entidades, campos, índices y relaciones desde el Registry.
+- **Auditoría de Eventos (`/audit`):** Feed cronológico con filtros en Admin Console.
 
 ### ⚠️ En Progreso / Parcial
 - **Detail Panel Avanzado:** Falta resize handle y sub-grids funcionales (ej. Ver facturas dentro del cliente).
@@ -68,13 +78,12 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 ### 🔜 Próximas Prioridades Técnicas (El Backlog Inmediato)
 1. **Persistencia de Membresía e Identidades P2P:** Reemplazar `MemStore` y claves efímeras en `identity.rs` por almacenamiento persistente para que la membresía y sync sobreviva a reinicios.
 2. **Sistema de Presencia (Heartbeat):** Implementar protocolo de latido escribiendo un timestamp en `control_doc` cada 30s para identificar clientes offline y online con exactitud real, con vista en el Admin Dashboard de Sync.
-3. **Paginación Server-Side:** Soporte para `limit` y `offset` en `query_entity` para no colapsar la RAM al tener >10k registros.
-4. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
-5. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
+3. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
+4. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
+5. **Codegen Zod desde Registry:** Generar tipos TypeScript y esquemas Zod automáticamente desde `get_schema_registry()`.
 
 ### 🛠️ Pendiente (Herramientas de Consola Admin)
 - **Data Explorer (Visor JSON Crudo):** Vista especializada para diagnosticar la base de datos P2P. Muestra metadatos puros de `iroh-docs` (Doc Hash, HLC, Autor) y el JSON crudo. Permite identificar datos corruptos, visualizar estado local de índices y emitir eventos correctivos a la red.
-- **Audit Trail (Log de Eventos):** Feed cronológico inmutable de todas las mutaciones P2P (INSERT, UPDATE, DELETE, SYNC). Permite auditar qué nodo/dispositivo modificó qué documento y en qué milisegundo exacto (HLC), crucial para compliance, seguridad y diagnóstico de sincronización P2P.
 
 ### ❌ Pendiente (Features de Negocio)
 - Workflow de facturas (draft → open → paid).

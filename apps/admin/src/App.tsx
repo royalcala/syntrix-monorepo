@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Users, Shield, Building2, Terminal, Plus } from "lucide-react";
+import { Users, Shield, Building2, Terminal, Database, ScrollText, Plus } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
@@ -13,6 +13,8 @@ import { ShareDialog } from "./screens/ShareDialog";
 import { DevicesGridPage } from "./screens/DevicesGridPage";
 import { RolesGridPage } from "./screens/RolesGridPage";
 import { OrgsGridPage } from "./screens/OrgsGridPage";
+import { SchemaExplorer } from "./screens/SchemaExplorer";
+import { AuditTrail } from "./screens/AuditTrail";
 
 type OrgInfo = { name: string };
 
@@ -20,6 +22,8 @@ const navItems: NavItem[] = [
   { href: "/devices", label: "Dispositivos", icon: Users },
   { href: "/roles", label: "Roles", icon: Shield },
   { href: "/orgs", label: "Organizaciones", icon: Building2 },
+  { href: "/schemas", label: "Esquemas", icon: Database },
+  { href: "/audit", label: "Auditoría", icon: ScrollText },
   { href: "/logs", label: "Logs", icon: Terminal },
 ];
 
@@ -94,6 +98,26 @@ export default function App() {
                 }
               >
                 <OrgsGridPage />
+              </PageLayout>
+            } />
+            <Route path="/schemas" element={
+              <PageLayout
+                title="Explorador de Esquemas"
+                description="Visualiza la definición de entidades, campos, índices y relaciones del registry de esquemas."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0"
+              >
+                <SchemaExplorer />
+              </PageLayout>
+            } />
+            <Route path="/audit" element={
+              <PageLayout
+                title="Auditoría de Eventos"
+                description="Feed cronológico de todas las mutaciones P2P registradas en el log de eventos."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0 flex flex-col"
+              >
+                <AuditTrail org={activeOrg} />
               </PageLayout>
             } />
             <Route path="/logs" element={<Logs />} />

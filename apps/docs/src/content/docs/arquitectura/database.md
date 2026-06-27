@@ -42,11 +42,14 @@ graph TD
 ### Capa 2: La Proyección Relacional (Redb - Almacenamiento Embebido)
 - **Redb**: Una base de datos embebida escrita en Rust, altamente transaccional e in-process, que almacena el "estado proyectado" consolidado de los datos.
 - **Tabla `DOCUMENTS`**: Mapea `doc:{org_id}:{entity}:{doc_id}` -> `Payload JSON (bytes)`. Permite lecturas de documentos consolidados a O(1).
-- **Tabla `INDEXES`**: Almacena índices secundarios lexicográficos usando el formato `idx:{org_id}:{entity}:{field}:{value}:{doc_id}` -> `[]`. Esto permite resolver búsquedas y filtros ordenados a O(log N) sin realizar escaneos completos.
+- **Tabla `INDEXES`**: Almacena índices secundarios por campo, con formato `idx:{org_id}:{entity}:{field}:{encoded_value}:{doc_id}` -> `[]`. La indexación es **schema-driven**: solo se indexan los campos marcados como `#[indexed]` en el [Registry de Esquemas](/referencia/esquemas/). Los valores se codifican con orden lexicográfico preservado (números como big-endian hex con signo invertido).
+- **Tabla `COMPOSITE`**: Almacena índices compuestos (multi-campo) con formato `compidx:{org_id}:{entity}:{name}:{v1_enc}:{v2_enc}:...:{doc_id}`. Definidos en el registry.
+- La consulta soporta filtros múltiples (intersección de índices), ordenamiento por campo y paginación server-side (`limit`/`offset`).
 
 ### Capa 3: Búsqueda de Texto Completo (Tantivy)
-- **Índice Invertido Local**: Cada vez que se actualiza o inserta un documento, se indexa en **Tantivy** (un motor de búsqueda rápida de texto completo en Rust).
+- **Índice Invertido Local**: Cada vez que se actualiza o inserta un documento, se indexa en **Tantivy** con un schema derivado del Registry de Esquemas: solo los campos `#[searchable]` son indexados para búsqueda full-text.
 - Permite al frontend realizar búsquedas de lenguaje natural, términos difusos (*fuzzy search*) y obtener fragmentos de coincidencia destacados (*highlighted snippets*) en microsegundos directamente desde la máquina del usuario.
+- Tantivy actúa únicamente como índice de búsqueda; la fuente de verdad sigue siendo redb.
 
 ---
 
@@ -77,6 +80,7 @@ El almacenamiento distribuido de Iroh Docs opera bajo **Event Sourcing**. Los da
   {
     "type": "customer.upsert",
     "hlc": { "ts": 1719414545000, "count": 2, "node": "f8a4b27a..." },
+    "schema_version": 1,
     "payload": {
       "id": "cust_1234",
       "name": "Juan Perez",
@@ -110,21 +114,39 @@ Para evitar que el frontend tenga que leer secuencialmente el log histórico de 
 
 ## 4. Manejo de Índices y Esquemas en Redb
 
-### Estructura de las Claves de Índices en Redb
-El motor relacional indexa automáticamente cada campo de primer nivel del JSON (que sea de tipo string, número o boolean) convirtiendo el valor a minúsculas para búsquedas insensibles a mayúsculas:
+### Registry de Esquemas (Schema-Driven)
+Los esquemas de entidades se definen en el crate `syntrix-schema` (Rust, compilado). Cada entidad declara:
+- Campos con tipo (`String`, `Number`, `Boolean`, `Date`, `Relation`).
+- Qué campos tienen índice secundario (`#[indexed]`).
+- Qué campos son buscables en Tantivy (`#[searchable]`).
+- Relaciones foráneas (`#[relation(target = "...", field = "...")]`).
+- Índices compuestos.
+- Versión de esquema (`schema_version`) para migraciones.
 
+### Codificación de Valores en Claves de Índice
+Los valores en las claves de índice se codifican de forma que preserven el orden lexicográfico correcto para su tipo:
+- **Números enteros (i64)**: big-endian hex de 16 caracteres con inversión de bit de signo.
+- **Números flotantes (f64)**: IEEE 754 con inversión de bit de signo.
+- **Strings**: lowercase, sin caracteres de control.
+- **Booleanos**: `"0"` para false, `"1"` para true.
+
+Esto garantiza que `2 < 10` (a diferencia de strings lexicográficos) y que las consultas de rango numérico funcionen correctamente.
+
+### Consultas y Paginación
+El comando `query_entity_advanced` acepta:
+- `filters`: lista de pares `(field, value)` — intersección automática.
+- `sort`: nombre del campo para ordenamiento (actualmente en memoria).
+- `limit` / `offset`: paginación server-side.
 
 ```rust
-// Inserción de un índice secundario para buscar facturas pendientes
-let idx_key = format!("idx:{}:{}:{}:{}:{}", org_id, "invoices", "status", "pending", doc_id);
-idx_table.insert(idx_key.as_str(), &[] as &[u8])?;
+let options = QueryOptions {
+    filters: vec![QueryFilter { field: "status".into(), value: encode_value(&json!("pending")) }],
+    sort: Some("date".into()),
+    limit: Some(50),
+    offset: Some(0),
+};
+let results = engine.query(&org_id, "invoices", &options)?;
 ```
-
-Cuando el frontend solicita listar facturas pendientes, el motor realiza una consulta de rango:
-1. Genera el prefijo de búsqueda: `idx:{org_id}:invoices:status:pending:`.
-2. Lee las claves coincidentes en la tabla `INDEXES`.
-3. Extrae el `doc_id` del final de cada clave recuperada.
-4. Consulta de forma directa en la tabla `DOCUMENTS` la clave `doc:{org_id}:invoices:{doc_id}` para obtener el JSON completo.
 
 ---
 
@@ -140,7 +162,27 @@ Si el archivo de índices se corrompe o se elimina:
 3. Se vuelve a procesar cada evento invocando `upsert_document`, recuperando el estado completo de la base de datos en cuestión de segundos.
 
 ### B. Versionamiento y Migraciones de Esquema (Upcasting)
-Al no existir un motor SQL rígido, las modificaciones de estructura en el tiempo (por ejemplo, cambiar un campo de dirección simple a un objeto estructurado) se manejan en la capa de serialización (Rust Serde) mediante transformaciones activas (Upcasters):
-- Los eventos antiguos persisten intactos en el log de Iroh Docs (preservando la integridad del historial).
-- Cuando el indexador procesa un evento con versión antigua, la función de proyección lo transforma dinámicamente al esquema más reciente antes de guardarlo en `Redb` y `Tantivy`.
+Cada evento lleva un campo `schema_version` que indica la versión del esquema con que fue escrito:
+
+```json
+{
+  "type": "customer.upsert",
+  "hlc": { "ts": 1719414545000, "count": 2, "node": "f8a4b27a..." },
+  "schema_version": 1,
+  "payload": { "id": "cust_1234", "name": "Juan Perez" }
+}
+```
+
+Cuando el indexador procesa un evento cuya `schema_version` es menor que la versión actual del binario, aplica una cadena de funciones **Upcaster** deterministas (definidas en el crate `syntrix-schema`):
+
+```
+Evento v1 → CustomerV1ToV2 → CustomerV2ToV3 → … → Payload vCurrent
+```
+
+Características:
+- Los eventos antiguos persisten intactos en el log de Iroh Docs.
+- Los upcasters son funciones puras (sin side effects, sin red, deterministas).
+- El payload upcasteado se proyecta en redb y Tantivy.
+- Si no hay upcaster para una versión, el payload se usa tal cual.
+- Ejemplo: `CustomerV1ToV2` convierte `address: "Calle 123, CDMX, 06600"` en `address: { street, city, zip }`.
 

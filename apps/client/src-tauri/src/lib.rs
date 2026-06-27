@@ -8,8 +8,25 @@ mod events;
 mod sync;
 mod invite;
 mod seed;
+pub mod audit;
 pub mod indexes;
 pub mod search;
+
+use syntrix_schema::build_registry;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SchemaFilter {
+    pub field: String,
+    pub value: String,
+}
+
+/// Serializable query options for the Tauri IPC boundary.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SchemaQuery {
+    pub filters: Option<Vec<SchemaFilter>>,
+    pub sort: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
 
 
 pub use identity::AppState;
@@ -205,6 +222,22 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
     }).to_string())
 }
 
+/// Check if the current device has read access to the given entity.
+fn check_read_access(state: &AppState, org_id: &str, entity: &str) -> Result<(), String> {
+    if entity == "roles" { return Ok(()); }
+    let node_id = state.node_id();
+    let reg = state.registry().read().map_err(|e| e.to_string())?;
+    let openable: std::collections::HashSet<String> = reg.openable_namespaces(
+        &org_id.to_string(),
+        &node_id,
+    );
+    let schema_reg = syntrix_schema::build_registry();
+    match schema_reg.namespace_of(entity) {
+        Some(ns) if openable.contains(ns.as_str()) => Ok(()),
+        _ => Err(format!("Access denied: role cannot read {}", entity)),
+    }
+}
+
 #[tauri::command]
 fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
     let (_oid, doc, store) = {
@@ -213,7 +246,18 @@ fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>
         if resolved_org_id.is_empty() { return Ok(vec![]); }
 
         if entity != "roles" {
-            return s.indexer.query(&resolved_org_id, &entity, filter_field.as_deref(), filter_value.as_deref()).map_err(|e| e.to_string());
+            check_read_access(&s, &resolved_org_id, &entity)?;
+            let mut filters = vec![];
+            if let (Some(field), Some(value)) = (filter_field, filter_value) {
+                filters.push(indexes::QueryFilter { field, value });
+            }
+            let options = indexes::QueryOptions {
+                filters,
+                sort: None,
+                limit: None,
+                offset: None,
+            };
+            return s.indexer.query(&resolved_org_id, &entity, &options).map_err(|e| e.to_string());
         }
 
         let org_state = s.get_org_docs(&resolved_org_id).ok_or_else(|| "Org docs not found".to_string())?;
@@ -246,6 +290,29 @@ fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>
 }
 
 #[tauri::command]
+fn query_entity_advanced(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org_id: Option<String>,
+    entity: String,
+    query: Option<SchemaQuery>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let q = query.unwrap_or_default();
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
+    if resolved_org_id.is_empty() { return Ok(vec![]); }
+
+    check_read_access(&s, &resolved_org_id, &entity)?;
+
+    let options = indexes::QueryOptions {
+        filters: q.filters.unwrap_or_default().into_iter().map(|f| indexes::QueryFilter { field: f.field, value: f.value }).collect(),
+        sort: q.sort,
+        limit: q.limit,
+        offset: q.offset,
+    };
+    s.indexer.query(&resolved_org_id, &entity, &options).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn search_entity(
     state: tauri::State<'_, Mutex<AppState>>,
     org_id: Option<String>,
@@ -262,6 +329,26 @@ fn search_entity(
         .search_engine
         .search(&resolved_org_id, &query, entities, limit_val)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_schema_registry() -> Result<serde_json::Value, String> {
+    let registry = build_registry();
+    Ok(registry.export_json())
+}
+
+#[tauri::command]
+fn audit_query(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org_id: String,
+    filter: Option<audit::AuditFilter>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<audit::AuditEntry>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let f = filter.unwrap_or_default();
+    let entries = audit::audit_query(&s, &org_id, &f, limit.unwrap_or(50), offset.unwrap_or(0));
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -343,7 +430,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
             commit_event, sync_status, sync_push, sync_pull, sync_ping,
-            query_entity, search_entity, seed_dev_data, get_logs, get_sync_info,
+            query_entity, query_entity_advanced, search_entity, seed_dev_data, get_logs, get_sync_info,
+            get_schema_registry, audit_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

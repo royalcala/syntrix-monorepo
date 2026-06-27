@@ -12,7 +12,10 @@ pub struct SyncEventEncoded {
     #[serde(rename = "parentSeqNum")] pub parent_seq_num: u64,
     #[serde(rename = "clientId")] pub client_id: String,
     #[serde(rename = "sessionId")] pub session_id: String,
+    #[serde(rename = "schemaVersion", default = "default_schema_version")] pub schema_version: u32,
 }
+
+fn default_schema_version() -> u32 { 1 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct SyncEntry {
@@ -45,17 +48,21 @@ pub fn sync_push(state: &mut AppState, org_id: &str, batch: Vec<SyncEventEncoded
         let key = format!("evt:{:020}:{:08}:{}", ts, count, &node_hex[..16]);
         let value = serde_json::json!({
             "type": event.name, "hlc": {"ts":ts,"count":count,"node":&node_hex[..16]},
+            "schema_version": event.schema_version,
             "payload": &event.args, "seqNum": event.seq_num, "parentSeqNum": event.parent_seq_num,
             "clientId": event.client_id, "sessionId": event.session_id,
         });
         tauri::async_runtime::block_on(doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value)?))?;
-        
+
         let entity = event.name.split('.').next().unwrap_or(&event.name);
         let doc_id = event.args.get("id")
             .and_then(|v| v.as_str())
             .or_else(|| event.args.get("node_id").and_then(|v| v.as_str()))
             .unwrap_or(&key);
-        let _ = state.indexer.upsert_document(org_id, entity, doc_id, &event.args);
+
+        // Apply upcasters if the event was written with an older schema version
+        let upcasted = crate::events::upcast_payload(entity, event.args.clone(), event.schema_version);
+        let _ = state.indexer.upsert_document(org_id, entity, doc_id, &upcasted);
     }
     // Record after loop to avoid borrow conflict
     for event in batch {

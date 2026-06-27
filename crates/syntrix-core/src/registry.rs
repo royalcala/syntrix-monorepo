@@ -94,36 +94,32 @@ impl NamespaceRegistry {
 
     // ── Queries for namespace opening ──
 
-    /// Get all namespaces this device should open (resolved from role + wildcards).
+    /// Get all namespaces this device should open, derived from the role's can_open.
+    /// can_open contains entity names (or "*"), so we map them to their namespaces.
     pub fn openable_namespaces(&self, org_id: &OrgId, node_id: &NodeId) -> HashSet<String> {
         let role = match self.device_role(org_id, node_id) {
             Some(r) => r,
             None => return HashSet::new(),
         };
 
-        let patterns = self
+        let can_open = self
             .grants
             .get(org_id)
             .and_then(|g| g.get(&role))
             .map(|g| g.can_open.clone())
             .unwrap_or_default();
 
-        let known = self.known_namespaces.get(org_id);
-
         let mut result = HashSet::new();
-        for pattern in &patterns {
-            if pattern.contains('*') {
-                // Wildcard: match against known namespaces
-                if let Some(known) = known {
-                    let prefix = pattern.trim_end_matches('*');
-                    for ns in known {
-                        if ns.starts_with(prefix) {
-                            result.insert(ns.clone());
-                        }
-                    }
-                }
-            } else {
-                result.insert(pattern.clone());
+        let registry = syntrix_schema::build_registry();
+
+        for entry in &can_open {
+            if entry == "*" {
+                // All namespaces
+                result.insert("catalogs".to_string());
+                result.insert("operational".to_string());
+                result.insert("payroll".to_string());
+            } else if let Some(ns) = registry.namespace_of(entry) {
+                result.insert(ns.as_str().to_string());
             }
         }
         result
@@ -140,57 +136,31 @@ impl NamespaceRegistry {
     // ── Write validation ──
 
     /// Check if a device can write to the given namespace in this org.
+    /// The role's `can_write` contains entity names (or `"*"`), so we check
+    /// if any entity in that namespace is in the role's permission list.
     pub fn can_write(&self, org_id: &OrgId, node_id: &NodeId, namespace: &str) -> bool {
         let role = match self.device_role(org_id, node_id) {
             Some(r) => r,
             None => return false,
         };
 
-        if let Some(can_write) = self
+        let can_write = match self
             .grants
             .get(org_id)
             .and_then(|g| g.get(&role))
             .map(|g| &g.can_write)
         {
-            // "*" means write to everything
-            if can_write.iter().any(|n| n == "*") {
-                return true;
-            }
+            Some(cw) => cw,
+            None => return false,
+        };
 
-            // Direct match (for backward compatibility)
-            if can_write.iter().any(|n| n == namespace) {
-                return true;
-            }
-
-            // Wildcard match
-            if can_write.iter().any(|pattern| {
-                pattern.contains('*') && namespace.starts_with(pattern.trim_end_matches('*'))
-            }) {
-                return true;
-            }
-
-            // Map business modules to technical namespaces for network sync validation
-            match namespace {
-                "catalogs" => {
-                    if can_write.iter().any(|n| ["customers", "products", "suppliers", "chart_of_accounts"].contains(&n.as_str())) {
-                        return true;
-                    }
-                }
-                "operational" => {
-                    if can_write.iter().any(|n| ["invoices", "orders", "sales_note"].contains(&n.as_str())) {
-                        return true;
-                    }
-                }
-                "payroll" => {
-                    if can_write.iter().any(|n| n == "payroll") {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
+        if can_write.iter().any(|n| n == "*") {
+            return true;
         }
 
-        false
+        let registry = syntrix_schema::build_registry();
+        let entities = registry.entities_in_namespace_by_str(namespace);
+        entities.iter().any(|e| can_write.iter().any(|n| n == e))
     }
 
     // ── Multi-org ──
@@ -244,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn test_openable_namespaces_with_wildcard() {
+    fn test_openable_namespaces_via_entities() {
         let mut reg = NamespaceRegistry::new();
         let alice = make_node_id(1);
 
@@ -254,7 +224,7 @@ mod tests {
             Device {
                 node_id: alice,
                 active: true,
-                role: "contabilidad".into(),
+                role: "sales".into(),
                 person: "alice".into(),
                 name: "Alice (pc)".into(),
             },
@@ -262,27 +232,18 @@ mod tests {
 
         reg.upsert_role(
             "acme".into(),
-            "contabilidad".into(),
+            "sales".into(),
             RoleGrants {
-                can_open: vec!["org_facturas_*".into(), "org_public".into()],
+                can_open: vec!["customers".into(), "invoices".into()],
                 can_write: vec![],
             },
         );
 
-        let mut known = HashSet::new();
-        known.insert("org_facturas_alice".into());
-        known.insert("org_facturas_bob".into());
-        known.insert("org_facturas_carlos".into());
-        known.insert("org_public".into());
-        known.insert("org_private".into());
-        reg.set_known_namespaces("acme".into(), known);
-
         let openable = reg.openable_namespaces(&"acme".into(), &alice);
-        assert!(openable.contains("org_facturas_alice"));
-        assert!(openable.contains("org_facturas_bob"));
-        assert!(openable.contains("org_facturas_carlos"));
-        assert!(openable.contains("org_public"));
-        assert!(!openable.contains("org_private"));
+        // customers → catalogs, invoices → operational
+        assert!(openable.contains("catalogs"));
+        assert!(openable.contains("operational"));
+        assert!(!openable.contains("payroll"));
     }
 
     #[test]
@@ -307,13 +268,14 @@ mod tests {
             "sales".into(),
             RoleGrants {
                 can_open: vec![],
-                can_write: vec!["org_data".into(), "org_facturas_bob".into()],
+                can_write: vec!["customers".into(), "invoices".into()],
             },
         );
 
-        assert!(reg.can_write(&"acme".into(), &bob, "org_data"));
-        assert!(reg.can_write(&"acme".into(), &bob, "org_facturas_bob"));
-        assert!(!reg.can_write(&"acme".into(), &bob, "org_private"));
+        // customers → catalogs, invoices → operational
+        assert!(reg.can_write(&"acme".into(), &bob, "catalogs"));
+        assert!(reg.can_write(&"acme".into(), &bob, "operational"));
+        assert!(!reg.can_write(&"acme".into(), &bob, "payroll"));
     }
 
     #[test]

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 mod identity;
 mod admin;
 
+use syntrix_schema::build_registry;
+
 pub use identity::AppState;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -207,6 +209,12 @@ fn get_logs() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_schema_registry() -> Result<serde_json::Value, String> {
+    let registry = build_registry();
+    Ok(registry.export_json())
+}
+
+#[tauri::command]
 fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     let addr = s.endpoint().addr();
@@ -262,7 +270,7 @@ pub fn run() {
             get_node_id, list_orgs, create_org,
             add_device, update_device, list_devices, list_roles, network_status,
             share_org, send_invite, get_logs, get_endpoint_addr,
-            create_role, update_role, get_sync_info,
+            create_role, update_role, get_sync_info, get_schema_registry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-admin");
