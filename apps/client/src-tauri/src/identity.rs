@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicU64;
 
@@ -40,7 +41,8 @@ pub struct AppState {
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
     active_org: Option<String>,
-    pub indexer: crate::indexes::RelationalEngine,
+    data_dir: PathBuf,
+    pub indexer: Arc<crate::indexes::RelationalEngine>,
     /// In-memory event buffer: org_id → (seqNum → entry), for pull.
     events: HashMap<String, Vec<SyncEntry>>,
     /// Invite protocol handler (receives org invitations from admin).
@@ -61,10 +63,14 @@ pub struct OrgState {
 impl AppState {
     pub async fn new() -> anyhow::Result<Self> {
         let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-            std::path::PathBuf::from(custom_path)
+            PathBuf::from(custom_path)
         } else {
-            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix")
+            dirs_next::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("syntrix")
         };
+        Self::new_with_data_dir(data_dir).await
+    }
+
+    pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&data_dir).ok();
 
         let key_path = data_dir.join("keypair.bytes");
@@ -135,7 +141,7 @@ impl AppState {
             aut
         };
         
-        let indexer = crate::indexes::RelationalEngine::new(data_dir.clone())?;
+        let indexer = Arc::new(crate::indexes::RelationalEngine::new(data_dir.clone())?);
 
         let mut orgs = HashMap::new();
         let orgs_config_path = data_dir.join("orgs.json");
@@ -254,8 +260,14 @@ impl AppState {
                                 // Start heartbeat + periodic re-sync automatically
                                 let node_id_hex = hex::encode(*secret.public().as_bytes());
                                 crate::sync::start_heartbeat_with_resync(
-                                    ctrl_doc, cat_doc, op_doc, pay_doc,
+                                    ctrl_doc.clone(), cat_doc.clone(), op_doc.clone(), pay_doc.clone(),
                                     author, node_id_hex, store.clone().into(), secret.clone(),
+                                );
+
+                                // Start remote entry ingestion via doc subscriptions
+                                start_doc_subscriptions(
+                                    ctrl_doc.clone(), cat_doc.clone(), op_doc.clone(), pay_doc.clone(),
+                                    author, store.clone().into(), indexer.clone(), org_id.clone(),
                                 );
                             }
                         }
@@ -268,6 +280,7 @@ impl AppState {
             secret, _endpoint: ep, _gossip: gossip, _store: store.clone().into(), _router: router,
             docs_api: api, author, hlc_counter: AtomicU64::new(0), registry,
             orgs, active_org: None,
+            data_dir,
             indexer,
             events: HashMap::new(),
             invite_handler,
@@ -283,6 +296,8 @@ impl AppState {
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn store(&self) -> &iroh_blobs::api::Store { &self._store }
+    pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
+    pub fn indexer(&self) -> Arc<crate::indexes::RelationalEngine> { self.indexer.clone() }
 
     pub fn list_orgs(&self) -> Vec<OrgInfo> {
         self.orgs.iter().map(|(id, o)| OrgInfo {
@@ -324,12 +339,7 @@ impl AppState {
     }
 
     pub fn save_org_config(&self, cfg: ClientOrgConfig) -> anyhow::Result<()> {
-        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-            std::path::PathBuf::from(custom_path)
-        } else {
-            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix")
-        };
-        let orgs_config_path = data_dir.join("orgs.json");
+        let orgs_config_path = self.data_dir.join("orgs.json");
 
         let mut configs = Vec::new();
         if orgs_config_path.exists() {
@@ -435,5 +445,127 @@ pub async fn sync_and_populate_org_members_impl(
         }
     }
     Ok(())
+}
+
+/// Start background document subscriptions for remote entry ingestion.
+///
+/// For each doc (control, catalogs, operational, payroll), spawns a task that:
+/// 1. Scans existing `evt:` entries (catch-up for entries that arrived before subscribe)
+/// 2. Subscribes to live events for ongoing remote entry indexing
+///
+/// Filters out entries authored by self to avoid redundant work.
+pub fn start_doc_subscriptions(
+    ctrl_doc: Doc,
+    cat_doc: Doc,
+    op_doc: Doc,
+    pay_doc: Doc,
+    author: iroh_docs::AuthorId,
+    store: iroh_blobs::api::Store,
+    indexer: Arc<crate::indexes::RelationalEngine>,
+    org_id: String,
+) {
+    let docs = vec![
+        ("control", ctrl_doc),
+        ("catalogs", cat_doc),
+        ("operational", op_doc),
+        ("payroll", pay_doc),
+    ];
+
+    for (ns_name, doc) in docs {
+        let store_clone = store.clone();
+        let indexer_clone = indexer.clone();
+        let author_clone = author;
+        let org_id_clone = org_id.clone();
+        let _ns = ns_name.to_string();
+
+        tokio::spawn(async move {
+            // Phase 1: initial scan of existing evt: entries
+            if let Ok(stream) = doc.get_many(iroh_docs::store::Query::key_prefix("evt:")).await {
+                let mut pinned = Box::pin(stream);
+                while let Some(Ok(entry)) = pinned.next().await {
+                    if entry.author() == author_clone { continue; }
+                    process_and_index_entry(&entry, &store_clone, &*indexer_clone, &org_id_clone).await;
+                }
+            }
+
+            // Phase 2: subscribe to live events
+            if let Ok(mut live_stream) = doc.subscribe().await {
+                use futures_util::StreamExt;
+                while let Some(Ok(event)) = live_stream.next().await {
+                    match event {
+                        iroh_docs::engine::LiveEvent::InsertRemote { entry, .. } => {
+                            if entry.author() == author_clone { continue; }
+                            process_and_index_entry(&entry, &store_clone, &*indexer_clone, &org_id_clone).await;
+                        }
+                        iroh_docs::engine::LiveEvent::ContentReady { hash } => {
+                            // Entries whose content was previously unavailable can be
+                            // re-processed, but we don't maintain a stash yet.
+                            let _ = hash;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Decode an iroh-docs entry, extract HLC + payload, and index it.
+async fn process_and_index_entry(
+    entry: &iroh_docs::Entry,
+    store: &iroh_blobs::api::Store,
+    indexer: &crate::indexes::RelationalEngine,
+    org_id: &str,
+) {
+    let hash = entry.content_hash();
+    let key_str = match std::str::from_utf8(entry.key()) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    if !key_str.starts_with("evt:") { return; }
+
+    let content_bytes = match store.blobs().get_bytes(hash).await {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    let content: serde_json::Value = match serde_json::from_slice(content_bytes.as_ref()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let event_type = match content.get("type").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let entity = crate::events::entity_from_event_type(event_type);
+    let payload = match content.get("payload") {
+        Some(p) => p.clone(),
+        None => return,
+    };
+
+    let schema_version = content.get("schema_version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let doc_id = payload.get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| payload.get("node_id").and_then(|v| v.as_str()))
+        .unwrap_or(&key_str)
+        .to_string();
+
+    // Apply upcasters
+    let upcasted = crate::events::upcast_payload(entity, payload, schema_version);
+
+    // Extract HLC for LWW conflict resolution
+    if let Some(hlc_val) = content.get("hlc") {
+        let hlc = crate::indexes::HlcTimestamp {
+            ts: hlc_val.get("ts").and_then(|v| v.as_u64()).unwrap_or(0),
+            count: hlc_val.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            node: hlc_val.get("node").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        };
+        let _ = indexer.upsert_document_with_hlc(org_id, entity, &doc_id, &upcasted, &hlc);
+    } else {
+        let _ = indexer.upsert_document(org_id, entity, &doc_id, &upcasted);
+    }
 }
 

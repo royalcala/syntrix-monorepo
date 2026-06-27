@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use iroh::{Endpoint, SecretKey};
@@ -39,6 +40,7 @@ pub struct AppState {
     orgs: HashMap<String, OrgState>,
     devices: HashMap<String, HashMap<String, DeviceInfo>>,
     roles: HashMap<String, HashMap<String, RoleInfo>>,
+    data_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -53,10 +55,14 @@ pub struct OrgState {
 impl AppState {
     pub async fn new() -> anyhow::Result<Self> {
         let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-            std::path::PathBuf::from(custom_path)
+            PathBuf::from(custom_path)
         } else {
-            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix-admin")
+            dirs_next::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("syntrix-admin")
         };
+        Self::new_with_data_dir(data_dir).await
+    }
+
+    pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&data_dir).ok();
 
         let key_path = data_dir.join("keypair.bytes");
@@ -291,6 +297,7 @@ impl AppState {
             orgs,
             devices,
             roles,
+            data_dir,
         })
     }
 
@@ -301,6 +308,7 @@ impl AppState {
     pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
     pub fn store(&self) -> &iroh_blobs::api::Store { &self._store }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
+    pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
     pub fn list_orgs(&self) -> Vec<String> { self.orgs.keys().cloned().collect() }
 
     pub fn add_org(&mut self, name: &str, control_doc: Doc, catalogs_doc: Doc, operational_doc: Doc, payroll_doc: Doc) {
@@ -310,12 +318,7 @@ impl AppState {
     }
 
     pub fn save_org_config(&self, name: &str, ctrl: &str, cat: &str, op: &str, pay: &str) -> anyhow::Result<()> {
-        let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
-            std::path::PathBuf::from(custom_path)
-        } else {
-            dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("syntrix-admin")
-        };
-        let orgs_config_path = data_dir.join("orgs.json");
+        let orgs_config_path = self.data_dir.join("orgs.json");
         
         let mut configs = Vec::new();
         if orgs_config_path.exists() {

@@ -37,7 +37,8 @@ The monorepo contains a custom compiler bridge script at `bin/cargo`. It interce
 Use the predefined tasks in the `justfile` for running/testing:
 - **`just remote-compile-admin`**: Compiles the admin Tauri app on `server-1` and runs the UI shell locally.
 - **`just remote-compile-client`**: Compiles the client Tauri app on `server-2` and runs the UI shell locally.
-- **`just test`**: Runs client/admin test suites.
+- **`just test`**: Runs client/admin frontend test suites.
+- **`just test-rust`**: Runs all Rust tests via the bridge (`cargo test --workspace` on `server-1`).
 - **`just lint`**: Runs TypeScript/Eslint checks.
 
 ---
@@ -56,3 +57,26 @@ Use the predefined tasks in the `justfile` for running/testing:
 1. **Shared UI**: Reusable UI components, pages (like `SyncDetailsPage`), and styling should be added to `packages/syntrix-ui/` to ensure parity and consistency between both Admin and Client apps.
 2. **Imports**: Apps map `@syntrix/ui/*` directly to the shared package src files in their `tsconfig.json`. Ensure path mappings are updated if you add subfolders.
 3. **TypeScript Strictness**: The projects compile with `strict` and `noUnusedLocals` enabled. Ensure function parameters not actively used are prefixed with an underscore (e.g. `_args`) and unused imports are cleaned up before calling the task finished.
+
+---
+
+## Headless Testability (Rust backends)
+
+Every `#[tauri::command]` **must** be a thin wrapper around a public `*_impl(state: &AppState | &mut AppState, ...) -> Result<T, anyhow::Error>` function with no Tauri types. This enables headless testing via `cargo test` without a GUI.
+
+### Convention
+- **New `#[tauri::command]`** → expose a pure `*_impl` function + integration test.
+- **New entity→namespace mapping** → covered by a multi-node propagation test.
+- **New `#[indexed]`/`#[searchable]` field** → covered by query/search tests.
+
+### Running tests
+Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. Do **not** run `cargo test` locally (laptop CPU restriction).
+
+### Test utility crate
+`crates/syntrix-testkit/` provides:
+- `temp_node_dir()` — isolated temp directories for per-test state.
+- `poll_until()` — async polling with exponential backoff for net-dependent assertions.
+- `make_invite_ticket()` — generate invite tickets without the admin crate.
+
+### Approval gate
+Do not approve a backend feature without a green `just test-rust`.

@@ -3,8 +3,8 @@ use tracing_subscriber::{Layer, prelude::*};
 
 use serde::{Deserialize, Serialize};
 
-mod identity;
-mod admin;
+pub mod identity;
+pub mod admin;
 
 use syntrix_schema::build_registry;
 

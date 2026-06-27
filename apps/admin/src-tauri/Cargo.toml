@@ -31,6 +31,9 @@ tracing-appender = "0.2"
 dirs-next = "2"
 futures-util = "0.3"
 
+[dev-dependencies]
+syntrix-testkit = { path = "../../../crates/syntrix-testkit" }
+
 [profile.dev]
 debug = "line-tables-only"
 

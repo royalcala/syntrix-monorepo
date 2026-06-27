@@ -5,6 +5,10 @@ use std::sync::Arc;
 use crate::search::SearchEngine;
 use syntrix_schema::{build_registry, SchemaRegistry, FieldType, encoded::encode_value};
 
+/// HLC tracker for LWW conflict resolution.
+/// Key = `hlc:{org_id}:{entity}:{doc_id}` → JSON of Hlc { ts, count, node }
+const HLC_TRACKER: TableDefinition<&str, &[u8]> = TableDefinition::new("hlc_tracker");
+
 /// Secondary (single-field) index.
 /// Key = `idx:{org_id}:{entity}:{field}:{encoded_value}:{doc_id}` → empty
 const INDEXES: TableDefinition<&str, &[u8]> = TableDefinition::new("indexes");
@@ -40,6 +44,28 @@ impl Default for QueryOptions {
     }
 }
 
+/// HLC timestamp for LWW conflict resolution (mirrors events::Hlc without importing it).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct HlcTimestamp {
+    pub ts: u64,
+    pub count: u32,
+    pub node: String,
+}
+
+impl PartialOrd for HlcTimestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HlcTimestamp {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.ts.cmp(&other.ts)
+            .then(self.count.cmp(&other.count))
+            .then(self.node.cmp(&other.node))
+    }
+}
+
 pub struct RelationalEngine {
     db: Arc<Database>,
     pub search_engine: SearchEngine,
@@ -57,6 +83,7 @@ impl RelationalEngine {
             let _ = write_txn.open_table(DOCUMENTS)?;
             let _ = write_txn.open_table(INDEXES)?;
             let _ = write_txn.open_table(COMPOSITE)?;
+            let _ = write_txn.open_table(HLC_TRACKER)?;
         }
         write_txn.commit()?;
 
@@ -66,9 +93,8 @@ impl RelationalEngine {
         Ok(Self { db: Arc::new(db), search_engine, schema_registry })
     }
 
-    /// Upsert a document with explicit schema_version for upcaster support.
-    /// Callers from commit_event / sync_push should provide the version;
-    /// fallback to 1 if unknown (legacy events).
+    /// Upsert a document (legacy: no HLC conflict resolution).
+    /// New callers should prefer `upsert_document_with_hlc`.
     pub fn upsert_document(
         &self,
         org_id: &str,
@@ -76,20 +102,46 @@ impl RelationalEngine {
         doc_id: &str,
         json_payload: &Value,
     ) -> anyhow::Result<()> {
-        // Legacy path — no schema_version means either legacy event or
-        // we treat the payload as current-version.
-        // Upcaster application is handled by the caller if needed.
-        self.upsert_document_internal(org_id, entity, doc_id, json_payload)
+        self.upsert_document_internal(org_id, entity, doc_id, json_payload, None)
+    }
+
+    /// Upsert a document with HLC-based conflict resolution (LWW).
+    /// If the incoming HLC is not greater than the stored HLC for the same
+    /// (org, entity, doc_id), the write is skipped.
+    pub fn upsert_document_with_hlc(
+        &self,
+        org_id: &str,
+        entity: &str,
+        doc_id: &str,
+        json_payload: &Value,
+        hlc: &HlcTimestamp,
+    ) -> anyhow::Result<()> {
+        let hlc_key = format!("hlc:{}:{}:{}", org_id, entity, doc_id);
+        // Check existing HLC — skip if incoming is not strictly greater
+        if let Ok(read_txn) = self.db.begin_read() {
+            if let Ok(hlc_table) = read_txn.open_table(HLC_TRACKER) {
+                if let Ok(Some(existing)) = hlc_table.get(hlc_key.as_str()) {
+                    if let Ok(stored) = serde_json::from_slice::<HlcTimestamp>(existing.value()) {
+                        if hlc <= &stored {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        self.upsert_document_internal(org_id, entity, doc_id, json_payload, Some(hlc))
     }
 
     /// Internal upsert: writes DOCUMENTS + INDEXES + COMPOSITE + Tantivy
     /// using the schema registry to determine which fields to index.
+    /// When `hlc` is `Some`, persists the HLC for LWW conflict resolution.
     fn upsert_document_internal(
         &self,
         org_id: &str,
         entity: &str,
         doc_id: &str,
         json_payload: &Value,
+        hlc: Option<&HlcTimestamp>,
     ) -> anyhow::Result<()> {
         let doc_key = format!("doc:{}:{}:{}", org_id, entity, doc_id);
         let schema = self.schema_registry.get(entity);
@@ -99,6 +151,7 @@ impl RelationalEngine {
             let mut docs = write_txn.open_table(DOCUMENTS)?;
             let mut idx = write_txn.open_table(INDEXES)?;
             let mut comp = write_txn.open_table(COMPOSITE)?;
+            let mut hlc_table = write_txn.open_table(HLC_TRACKER)?;
 
             // 1. Remove old indices if the document existed
             if let Some(old_bytes) = docs.get(doc_key.as_str())? {
@@ -152,10 +205,15 @@ impl RelationalEngine {
                     }
                 }
             }
+            // 5. Persist HLC for LWW tracking (if provided)
+            if let Some(hlc_val) = hlc {
+                let hlc_key = format!("hlc:{}:{}:{}", org_id, entity, doc_id);
+                let _ = hlc_table.insert(hlc_key.as_str(), serde_json::to_vec(hlc_val)?.as_slice());
+            }
         }
         write_txn.commit()?;
 
-        // 5. Tantivy indexing: only #[searchable] fields
+        // 6. Tantivy indexing: only #[searchable] fields
         if let Some(s) = schema {
             let searchable: Vec<&syntrix_schema::FieldSchema> = s.fields.iter().filter(|f| f.searchable).collect();
             let mut title = doc_id.to_string();
@@ -286,11 +344,23 @@ impl RelationalEngine {
 
         // Sort in-memory if sort field is specified
         if let Some(ref sort_field) = options.sort {
-            results.sort_by(|a, b| {
-                let a_val = a.get(sort_field).and_then(|v| v.as_str()).unwrap_or("");
-                let b_val = b.get(sort_field).and_then(|v| v.as_str()).unwrap_or("");
-                a_val.cmp(b_val)
-            });
+            let is_numeric = self.schema_registry.get(entity)
+                .and_then(|s| s.field(sort_field))
+                .map(|f| f.field_type == FieldType::Number)
+                .unwrap_or(false);
+            if is_numeric {
+                results.sort_by(|a, b| {
+                    let a_val = a.get(sort_field).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let b_val = b.get(sort_field).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    a_val.total_cmp(&b_val)
+                });
+            } else {
+                results.sort_by(|a, b| {
+                    let a_val = a.get(sort_field).and_then(|v| v.as_str()).unwrap_or("");
+                    let b_val = b.get(sort_field).and_then(|v| v.as_str()).unwrap_or("");
+                    a_val.cmp(b_val)
+                });
+            }
         }
 
         // Pagination
@@ -307,12 +377,14 @@ impl RelationalEngine {
     }
 
     /// Check if the filters match a composite index; returns the index name if so.
+    /// Order-insensitive: matches when filter fields are the same set as index fields.
     fn try_composite_index(&self, _org_id: &str, entity: &str, filters: &[QueryFilter]) -> Option<String> {
         let schema = self.schema_registry.get(entity)?;
+        let filter_fields: std::collections::HashSet<&str> = filters.iter().map(|f| f.field.as_str()).collect();
         for index_def in &schema.indexes {
-            if index_def.fields.len() == filters.len()
-                && index_def.fields.iter().zip(filters.iter()).all(|(idx_f, f)| idx_f == &f.field)
-            {
+            if index_def.fields.len() != filters.len() { continue; }
+            let index_fields: std::collections::HashSet<&str> = index_def.fields.iter().map(|f| f.as_str()).collect();
+            if filter_fields == index_fields {
                 return Some(index_def.name.clone());
             }
         }

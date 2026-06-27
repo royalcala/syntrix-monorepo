@@ -3,16 +3,17 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, Emitter};
 use tracing_subscriber::{Layer, prelude::*};
 
-mod identity;
-mod events;
-mod sync;
-mod invite;
+pub mod identity;
+pub mod events;
+pub mod sync;
+pub mod invite;
 mod seed;
 pub mod audit;
 pub mod indexes;
 pub mod search;
 
 use syntrix_schema::build_registry;
+use iroh_docs::api::Doc;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SchemaFilter {
     pub field: String,
@@ -64,9 +65,8 @@ fn set_active_org(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> R
 #[tauri::command]
 fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, event_type: String, payload: String) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    let res = events::commit_event(&s, &event_type, &payload).map_err(|e| e.to_string());
+    let res = commit_event_impl(&s, &event_type, &payload);
     if res.is_ok() {
-        use tauri::Emitter;
         let _ = app.emit("entity_changed", ());
     }
     res
@@ -106,34 +106,14 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     let (ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret) = {
         let mut s = state.lock().map_err(|e| e.to_string())?;
 
+        let mut doc_imports = Vec::new();
         for (ns, doc) in docs {
-            s.add_org_docs(&ns, &final_org_id, &name, &role, doc);
+            doc_imports.push((ns.clone(), doc.clone()));
         }
 
+        let _result = join_org_state_impl(&mut s, &final_org_id, &name, &role, doc_imports)?;
+
         let org_state = s.get_org_docs(&final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
-        
-        let cfg = identity::ClientOrgConfig {
-            org_id: final_org_id.clone(),
-            name: name.clone(),
-            role: role.clone(),
-            control_id: org_state.control_doc.id().to_string(),
-            catalogs_id: org_state.catalogs_doc.id().to_string(),
-            operational_id: org_state.operational_doc.id().to_string(),
-            payroll_id: org_state.payroll_doc.id().to_string(),
-        };
-        let _ = s.save_org_config(cfg);
-        
-        sync::start_heartbeat_with_resync(
-            org_state.control_doc.clone(),
-            org_state.catalogs_doc.clone(),
-            org_state.operational_doc.clone(),
-            org_state.payroll_doc.clone(),
-            s.author(),
-            hex::encode(s.node_id()),
-            s.store().clone(),
-            s.secret().clone(),
-        );
-        
         (
             org_state.control_doc.clone(),
             org_state.catalogs_doc.clone(),
@@ -162,9 +142,8 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
 #[tauri::command]
 fn sync_push(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, org_id: String, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    let res = sync::sync_push(&mut s, &org_id, batch).map_err(|e| e.to_string());
+    let res = sync_push_impl(&mut s, &org_id, batch);
     if res.is_ok() {
-        use tauri::Emitter;
         let _ = app.emit("entity_changed", ());
     }
     res
@@ -173,35 +152,31 @@ fn sync_push(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, or
 #[tauri::command]
 fn sync_pull(state: tauri::State<'_, Mutex<AppState>>, org_id: String, cursor: Option<sync::HlcCursor>) -> Result<sync::SyncPullResult, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(sync::sync_pull(&s, &org_id, cursor))
+    Ok(sync_pull_impl(&s, &org_id, cursor))
 }
 
 #[tauri::command]
 fn sync_ping(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> Result<sync::ConnectionState, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    sync::sync_ping(&s, &org_id).map_err(|e| e.to_string())
+    sync_ping_impl(&s, &org_id)
 }
 
 #[tauri::command]
 fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(sync::sync_status(&s))
+    Ok(sync_status_impl(&s))
 }
 
 #[tauri::command]
 fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<sync::SyncInfo, String> {
-    let (doc, store, node_id) = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        let org_state = s.get_org_docs(&org).ok_or_else(|| format!("org {} not found", org))?;
-        (org_state.control_doc.clone(), s.store().clone(), s.node_id())
-    };
-    tauri::async_runtime::block_on(sync::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
+    let s = state.lock().map_err(|e| e.to_string())?;
+    get_sync_info_impl(&s, &org)
 }
 
 #[tauri::command]
 fn get_invites(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<invite::InvitePayload>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(s.invite_handler.get_pending())
+    Ok(get_invites_impl(&s))
 }
 
 #[tauri::command]
@@ -238,32 +213,67 @@ fn check_read_access(state: &AppState, org_id: &str, entity: &str) -> Result<(),
     }
 }
 
-#[tauri::command]
-fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
-    let (_oid, doc, store) = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
-        if resolved_org_id.is_empty() { return Ok(vec![]); }
+// ===== Extracted impl functions (no Tauri types) =====
 
-        if entity != "roles" {
-            check_read_access(&s, &resolved_org_id, &entity)?;
-            let mut filters = vec![];
-            if let (Some(field), Some(value)) = (filter_field, filter_value) {
-                filters.push(indexes::QueryFilter { field, value });
-            }
-            let options = indexes::QueryOptions {
-                filters,
-                sort: None,
-                limit: None,
-                offset: None,
-            };
-            return s.indexer.query(&resolved_org_id, &entity, &options).map_err(|e| e.to_string());
-        }
+pub fn list_orgs_impl(state: &AppState) -> Vec<OrgInfo> {
+    state.list_orgs()
+}
 
-        let org_state = s.get_org_docs(&resolved_org_id).ok_or_else(|| "Org docs not found".to_string())?;
-        (resolved_org_id, org_state.control_doc.clone(), s.store().clone())
+pub fn commit_event_impl(state: &AppState, event_type: &str, payload: &str) -> Result<String, String> {
+    events::commit_event(state, event_type, payload).map_err(|e| e.to_string())
+}
+
+pub fn sync_push_impl(state: &mut AppState, org_id: &str, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
+    sync::sync_push(state, org_id, batch).map_err(|e| e.to_string())
+}
+
+pub fn sync_pull_impl(state: &AppState, org_id: &str, cursor: Option<sync::HlcCursor>) -> sync::SyncPullResult {
+    sync::sync_pull(state, org_id, cursor)
+}
+
+pub fn sync_ping_impl(state: &AppState, org_id: &str) -> Result<sync::ConnectionState, String> {
+    sync::sync_ping(state, org_id).map_err(|e| e.to_string())
+}
+
+pub fn sync_status_impl(state: &AppState) -> String {
+    sync::sync_status(state)
+}
+
+pub fn get_sync_info_impl(state: &AppState, org: &str) -> Result<sync::SyncInfo, String> {
+    let (doc, store, node_id) = {
+        let org_state = state.get_org_docs(org).ok_or_else(|| format!("org {} not found", org))?;
+        (org_state.control_doc.clone(), state.store().clone(), state.node_id())
     };
+    tauri::async_runtime::block_on(sync::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
+}
 
+pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
+    state.invite_handler.get_pending()
+}
+
+pub fn query_entity_impl(
+    state: &AppState,
+    org_id: Option<&str>,
+    entity: &str,
+    filter_field: Option<&str>,
+    filter_value: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let resolved_org_id = org_id.map(String::from).or_else(|| state.active_org().ok().map(String::from)).unwrap_or_default();
+    if resolved_org_id.is_empty() { return Ok(vec![]); }
+
+    if entity != "roles" {
+        check_read_access(state, &resolved_org_id, entity)?;
+        let mut filters = vec![];
+        if let (Some(field), Some(value)) = (filter_field, filter_value) {
+            filters.push(indexes::QueryFilter { field: field.to_string(), value: value.to_string() });
+        }
+        let options = indexes::QueryOptions { filters, sort: None, limit: None, offset: None };
+        return state.indexer.query(&resolved_org_id, entity, &options).map_err(|e| e.to_string());
+    }
+
+    let org_state = state.get_org_docs(&resolved_org_id).ok_or_else(|| "Org docs not found".to_string())?;
+    let doc = org_state.control_doc.clone();
+    let store = state.store().clone();
     tauri::async_runtime::block_on(async move {
         let mut results = vec![];
         let stream_raw = doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await.map_err(|e| e.to_string())?;
@@ -289,19 +299,17 @@ fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>
     })
 }
 
-#[tauri::command]
-fn query_entity_advanced(
-    state: tauri::State<'_, Mutex<AppState>>,
-    org_id: Option<String>,
-    entity: String,
+pub fn query_entity_advanced_impl(
+    state: &AppState,
+    org_id: Option<&str>,
+    entity: &str,
     query: Option<SchemaQuery>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let q = query.unwrap_or_default();
-    let s = state.lock().map_err(|e| e.to_string())?;
-    let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
+    let resolved_org_id = org_id.map(String::from).or_else(|| state.active_org().ok().map(String::from)).unwrap_or_default();
     if resolved_org_id.is_empty() { return Ok(vec![]); }
 
-    check_read_access(&s, &resolved_org_id, &entity)?;
+    check_read_access(state, &resolved_org_id, entity)?;
 
     let options = indexes::QueryOptions {
         filters: q.filters.unwrap_or_default().into_iter().map(|f| indexes::QueryFilter { field: f.field, value: f.value }).collect(),
@@ -309,7 +317,90 @@ fn query_entity_advanced(
         limit: q.limit,
         offset: q.offset,
     };
-    s.indexer.query(&resolved_org_id, &entity, &options).map_err(|e| e.to_string())
+    state.indexer.query(&resolved_org_id, entity, &options).map_err(|e| e.to_string())
+}
+
+pub fn search_entity_impl(
+    state: &AppState,
+    org_id: Option<&str>,
+    query: &str,
+    entities: Option<Vec<String>>,
+    limit: Option<usize>,
+) -> Result<Vec<search::SearchResult>, String> {
+    let resolved_org_id = org_id.map(String::from).or_else(|| state.active_org().ok().map(String::from)).unwrap_or_default();
+    if resolved_org_id.is_empty() { return Ok(vec![]); }
+
+    let limit_val = limit.unwrap_or(20);
+    state.indexer.search_engine.search(&resolved_org_id, query, entities, limit_val).map_err(|e| e.to_string())
+}
+
+/// Sync state manipulation after org join (async doc imports already done).
+pub fn join_org_state_impl(
+    state: &mut AppState,
+    final_org_id: &str,
+    name: &str,
+    role: &str,
+    docs: Vec<(String, Doc)>,
+) -> Result<OrgInfo, String> {
+    for (ns, doc) in docs {
+        state.add_org_docs(&ns, final_org_id, name, role, doc);
+    }
+
+    let org_state = state.get_org_docs(final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
+
+    let cfg = identity::ClientOrgConfig {
+        org_id: final_org_id.to_string(),
+        name: name.to_string(),
+        role: role.to_string(),
+        control_id: org_state.control_doc.id().to_string(),
+        catalogs_id: org_state.catalogs_doc.id().to_string(),
+        operational_id: org_state.operational_doc.id().to_string(),
+        payroll_id: org_state.payroll_doc.id().to_string(),
+    };
+    let _ = state.save_org_config(cfg);
+
+    sync::start_heartbeat_with_resync(
+        org_state.control_doc.clone(),
+        org_state.catalogs_doc.clone(),
+        org_state.operational_doc.clone(),
+        org_state.payroll_doc.clone(),
+        state.author(),
+        hex::encode(state.node_id()),
+        state.store().clone(),
+        state.secret().clone(),
+    );
+
+    identity::start_doc_subscriptions(
+        org_state.control_doc.clone(),
+        org_state.catalogs_doc.clone(),
+        org_state.operational_doc.clone(),
+        org_state.payroll_doc.clone(),
+        state.author(),
+        state.store().clone(),
+        state.indexer(),
+        final_org_id.to_string(),
+    );
+
+    Ok(OrgInfo { id: final_org_id.to_string(), name: name.to_string(), role: role.to_string() })
+}
+
+// ===== Thin Tauri command wrappers =====
+
+#[tauri::command]
+fn query_entity(state: tauri::State<'_, Mutex<AppState>>, org_id: Option<String>, entity: String, filter_field: Option<String>, filter_value: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    query_entity_impl(&s, org_id.as_deref(), &entity, filter_field.as_deref(), filter_value.as_deref())
+}
+
+#[tauri::command]
+fn query_entity_advanced(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org_id: Option<String>,
+    entity: String,
+    query: Option<SchemaQuery>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    query_entity_advanced_impl(&s, org_id.as_deref(), &entity, query)
 }
 
 #[tauri::command]
@@ -321,14 +412,7 @@ fn search_entity(
     limit: Option<usize>,
 ) -> Result<Vec<search::SearchResult>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    let resolved_org_id = org_id.or_else(|| s.active_org().ok().map(String::from)).unwrap_or_default();
-    if resolved_org_id.is_empty() { return Ok(vec![]); }
-
-    let limit_val = limit.unwrap_or(20);
-    s.indexer
-        .search_engine
-        .search(&resolved_org_id, &query, entities, limit_val)
-        .map_err(|e| e.to_string())
+    search_entity_impl(&s, org_id.as_deref(), &query, entities, limit)
 }
 
 #[tauri::command]

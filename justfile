@@ -91,6 +91,10 @@ test:
     cd apps/client && pnpm test
     cd apps/admin && pnpm test
 
+# Ejecuta pruebas Rust headless via el bridge remoto en server-1 (con failover a server-2)
+test-rust:
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace'
+
 # Valida sintaxis y formato (linter) de ambas aplicaciones
 lint:
     cd apps/client && pnpm lint
