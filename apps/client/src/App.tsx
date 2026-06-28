@@ -18,7 +18,7 @@ import { invoicesEntity } from "./entities/invoices";
 import { productsEntity } from "./entities/products";
 import { ordersEntity } from "./entities/orders";
 
-type InvitePayload = { org_name: string; role: string; tickets: { ns: string; ticket: string }[] };
+type InvitePayload = { org_name: string; role: string; admin_addr?: string; tickets: { ns: string; ticket: string }[] };
 
 
 const navItems: NavItem[] = [

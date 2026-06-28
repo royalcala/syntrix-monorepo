@@ -5,6 +5,7 @@ use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
 
 pub mod identity;
 pub mod admin;
+pub mod audit;
 
 use syntrix_schema::build_registry;
 
@@ -138,6 +139,22 @@ fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Resul
     tauri::async_runtime::block_on(admin::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
 }
 
+/// Parse node_id and device_addr from the client's endpoint address JSON.
+/// The format is: {"node_id": "hex...", "addrs": ["ip:...", "relay:..."]}
+/// Falls back to treating the raw string as a hex node_id.
+fn parse_invite_endpoint(endpoint_addr_json: &str) -> Result<(String, String), String> {
+    if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
+        let node_id_hex = addr_data["node_id"]
+            .as_str()
+            .ok_or_else(|| "invalid endpoint: missing node_id".to_string())?
+            .to_string();
+        Ok((node_id_hex, endpoint_addr_json.to_string()))
+    } else {
+        // Raw hex node_id
+        Ok((endpoint_addr_json.to_string(), endpoint_addr_json.to_string()))
+    }
+}
+
 #[tauri::command]
 fn send_invite(
     state: tauri::State<'_, Mutex<AppState>>,
@@ -147,6 +164,24 @@ fn send_invite(
     name: String,
     person: String,
 ) -> Result<(), String> {
+    let (node_id_hex, device_addr) = parse_invite_endpoint(&endpoint_addr_json)?;
+
+    // Register the device as a member FIRST, so the entry exists in the control doc
+    // before tickets are created and sent to the client.
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        tauri::async_runtime::block_on(admin::add_device(
+            &mut s,
+            &org,
+            &node_id_hex,
+            &name,
+            &person,
+            &role,
+            &device_addr,
+        )).map_err(|e| e.to_string())?;
+    }
+
+    // Now create tickets (member entry is already persisted) and send invite
     let (control_doc, catalogs_doc, operational_doc, payroll_doc, endpoint) = {
         let s = state.lock().map_err(|e| e.to_string())?;
         let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
@@ -159,7 +194,7 @@ fn send_invite(
         )
     };
 
-    let (node_id_hex, device_addr) = tauri::async_runtime::block_on(admin::send_invite(
+    tauri::async_runtime::block_on(admin::send_invite(
         control_doc,
         catalogs_doc,
         operational_doc,
@@ -168,17 +203,6 @@ fn send_invite(
         &org,
         &endpoint_addr_json,
         &role,
-    )).map_err(|e| e.to_string())?;
-
-    let mut s = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(admin::add_device(
-        &mut s,
-        &org,
-        &node_id_hex,
-        &name,
-        &person,
-        &role,
-        &device_addr,
     )).map_err(|e| e.to_string())?;
 
     Ok(())
@@ -207,6 +231,20 @@ fn summarize_logs(handle: tauri::State<'_, LogHandle>, window_secs: u64) -> Resu
 fn start_tail_logs(_app: tauri::AppHandle, _handle: tauri::State<'_, LogHandle>) -> Result<(), String> {
     // Tail is started automatically in setup(), kept for explicit restart if needed
     Ok(())
+}
+
+#[tauri::command]
+fn audit_query(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org_id: String,
+    filter: Option<audit::AuditFilter>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<audit::AuditEntry>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let f = filter.unwrap_or_default();
+    let entries = audit::audit_query(&s, &org_id, &f, limit.unwrap_or(50), offset.unwrap_or(0));
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -283,6 +321,7 @@ pub fn run() {
             add_device, update_device, list_devices, list_roles, network_status,
             share_org, send_invite, get_endpoint_addr,
             create_role, update_role, get_sync_info, get_schema_registry,
+            audit_query,
             query_logs, summarize_logs, start_tail_logs,
         ])
         .run(tauri::generate_context!())

@@ -82,6 +82,7 @@ pub fn parse_node_id(hex_str: &str) -> anyhow::Result<[u8; 32]> {
 pub struct TestInvitePayload {
     pub org_name: String,
     pub role: String,
+    pub admin_addr: Option<String>,
     pub tickets: Vec<TestTicketInfo>,
 }
 

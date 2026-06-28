@@ -13,6 +13,7 @@ import {
 import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { useSearchParams } from "react-router-dom";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
@@ -304,12 +305,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                   isCreate={detailMode === "create"}
                   onSaveCreate={onSaveCreate || (async (val) => {
                     await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
+                    toast.success(`${entity.label} creado`);
                     await new Promise(r => setTimeout(r, 250)); // Margen seguro
                     await queryClient.refetchQueries({ queryKey: ["entity"] });
                     return val as Row;
                   })}
                   onSaveUpdate={async (id, val) => {
                     await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
+                    toast.success(`${entity.label} actualizado`);
                     setSelectedRow((prev) => prev && prev.id === id ? { ...prev, ...val } as Row : prev);
                     // Actualización instantánea en memoria (Pessimistic Update)
                     queryClient.setQueryData(
@@ -341,12 +344,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                 isCreate={detailMode === "create"}
                 onSaveCreate={onSaveCreate || (async (val) => {
                   await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
+                  toast.success(`${entity.label} creado`);
                   await new Promise(r => setTimeout(r, 250));
                   await queryClient.refetchQueries({ queryKey: ["entity"] });
                   return val as Row;
                 })}
                 onSaveUpdate={async (id, val) => {
                   await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
+                  toast.success(`${entity.label} actualizado`);
                   setSelectedRow((prev) => prev && prev.id === id ? { ...prev, ...val } as Row : prev);
                   queryClient.setQueryData(
                     ["entity", entity.id, orgId, viewId, columnFilters],

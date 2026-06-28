@@ -125,6 +125,65 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         )
     };
 
+    // Bootstrap P2P sync with the admin who sent the invite BEFORE populating members.
+    // The admin's address is included in the invite payload so the client can connect
+    // immediately without waiting for the heartbeat loop (~15s).
+    if let Some(ref admin_addr_str) = invite.admin_addr {
+        if let Some(admin_endpoint) = syntrix_core::parse_device_addr(admin_addr_str) {
+            let peer_vec = vec![admin_endpoint];
+            let _ = ctrl_doc.start_sync(peer_vec.clone()).await;
+            let _ = cat_doc.start_sync(peer_vec.clone()).await;
+            let _ = op_doc.start_sync(peer_vec.clone()).await;
+            let _ = pay_doc.start_sync(peer_vec).await;
+        }
+    }
+
+    // Give the sync a moment to deliver control doc entries (members, roles) so that
+    // sync_and_populate_org_members_impl can discover peers and start additional sync
+    // sessions with them (not just admin). Without this brief delay, the control doc
+    // is empty and no peers are found.
+    let mut member_found = false;
+    for _attempt in 0..4 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let check = {
+            let s = state.lock().map_err(|e| e.to_string())?;
+            if let Some(org) = s.get_org_docs(&final_org_id) {
+                let ctrl = org.control_doc.clone();
+                // Check if any members have arrived in the control doc
+                let members = tauri::async_runtime::block_on(async {
+                    if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                        let mut pinned = Box::pin(stream);
+                        use futures_util::StreamExt;
+                        pinned.next().await.is_some()
+                    } else {
+                        false
+                    }
+                });
+                if members {
+                    true
+                } else {
+                    // Also check for roles
+                    tauri::async_runtime::block_on(async {
+                        if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                            let mut pinned = Box::pin(stream);
+                            use futures_util::StreamExt;
+                            pinned.next().await.is_some()
+                        } else {
+                            false
+                        }
+                    })
+                }
+            } else {
+                false
+            }
+        };
+        if check {
+            member_found = true;
+            break;
+        }
+    }
+
+    // Now populate members — with luck the control doc has entries from the sync above.
     let _ = identity::sync_and_populate_org_members_impl(
         ctrl_doc,
         cat_doc,
@@ -135,6 +194,65 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         secret,
         final_org_id.clone(),
     ).await;
+
+    // If we still don't have members after the initial sync, log a warning but continue.
+    // The heartbeat loop (every 15s) will retry and eventually discover all peers.
+    if !member_found {
+        eprintln!(
+            "join_org: no members synced yet for org {}. Heartbeat loop will retry.",
+            &final_org_id[..8]
+        );
+    }
+
+    // Ensure the current device is always registered in the namespace registry.
+    // This prevents "Access denied: role cannot read X" errors that occur when
+    // the control doc's members/{node_id} entry hasn't synced from the admin yet.
+    let node_id;
+    let registry_arc = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        node_id = s.node_id();
+        s.registry().clone()
+    };
+    let node_id_hex = hex::encode(node_id);
+    if let Ok(mut reg) = registry_arc.write() {
+        // upsert_device is idempotent — safe to call even if already registered
+        reg.upsert_device(
+            final_org_id.clone(),
+            node_id,
+            syntrix_core::registry::Device {
+                node_id,
+                active: true,
+                role: role.clone(),
+                person: node_id_hex.clone(),
+                name: format!("Device {}", &node_id_hex[..8]),
+            },
+        );
+        // If role grants haven't been loaded from control doc yet, use defaults
+        // so openable_namespaces() returns the right namespaces immediately.
+        let openable = reg.openable_namespaces(&final_org_id, &node_id);
+        if openable.is_empty() {
+            let (can_open, can_write): (Vec<String>, Vec<String>) = match role.as_str() {
+                "admin" => (vec!["*".into()], vec!["*".into()]),
+                "sales" => (
+                    vec!["customers".into(), "products".into(), "invoices".into(), "orders".into()],
+                    vec!["customers".into(), "invoices".into(), "orders".into()],
+                ),
+                "contabilidad" => (
+                    vec!["invoices".into(), "customers".into()],
+                    vec![],
+                ),
+                _ => (vec![], vec![]),
+            };
+            reg.upsert_role(
+                final_org_id.clone(),
+                role.clone(),
+                syntrix_core::registry::RoleGrants {
+                    can_open,
+                    can_write,
+                },
+            );
+        }
+    }
 
     Ok(OrgInfo { id: final_org_id, name, role })
 }

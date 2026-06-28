@@ -11,6 +11,9 @@ pub const INVITE_ALPN: &[u8] = b"/syntrix/invite/1";
 pub struct InvitePayload {
     pub org_name: String,
     pub role: String,
+    /// The admin's device address (for bootstrapping P2P sync after joining).
+    /// Format: semicolon-separated or JSON object (see parse_device_addr).
+    pub admin_addr: Option<String>,
     pub tickets: Vec<TicketInfo>,
 }
 

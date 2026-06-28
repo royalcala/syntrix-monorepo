@@ -258,6 +258,7 @@ pub async fn send_invite(
     let payload = serde_json::json!({
         "org_name": org,
         "role": role,
+        "admin_addr": build_device_addr_string(&endpoint),
         "tickets": tickets,
     });
 

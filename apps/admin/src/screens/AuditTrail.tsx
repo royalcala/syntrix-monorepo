@@ -11,6 +11,29 @@ type AuditEntry = {
   payload: Record<string, unknown>;
 };
 
+const ENTITY_OPTIONS = [
+  { value: "", label: "Todas las entidades" },
+  { value: "customers", label: "Clientes" },
+  { value: "invoices", label: "Facturas" },
+  { value: "products", label: "Productos" },
+  { value: "orders", label: "Órdenes" },
+  { value: "suppliers", label: "Proveedores" },
+  { value: "payroll", label: "Nómina" },
+];
+
+const EVENT_TYPE_OPTIONS = [
+  { value: "", label: "Todos los tipos" },
+  { value: "customer.created", label: "Cliente creado" },
+  { value: "customer.updated", label: "Cliente actualizado" },
+  { value: "customer.deleted", label: "Cliente eliminado" },
+  { value: "invoice.created", label: "Factura creada" },
+  { value: "invoice.updated", label: "Factura actualizada" },
+  { value: "product.created", label: "Producto creado" },
+  { value: "product.updated", label: "Producto actualizado" },
+  { value: "order.created", label: "Orden creada" },
+  { value: "order.updated", label: "Orden actualizada" },
+];
+
 export function AuditTrail({ org }: { org: string }) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -50,18 +73,24 @@ export function AuditTrail({ org }: { org: string }) {
     <div className="h-full flex flex-col">
       {/* Filters */}
       <div className="flex items-center gap-3 pb-4 shrink-0">
-        <input
-          className="h-9 rounded-md border px-3 py-1.5 text-sm bg-background w-40"
-          placeholder="Entidad (ej. customers)"
+        <select
+          className="h-9 rounded-md border px-3 py-1.5 text-sm bg-background w-44"
           value={filterEntity}
           onChange={(e) => setFilterEntity(e.target.value)}
-        />
-        <input
-          className="h-9 rounded-md border px-3 py-1.5 text-sm bg-background w-44"
-          placeholder="Tipo (ej. customer.created)"
+        >
+          {ENTITY_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <select
+          className="h-9 rounded-md border px-3 py-1.5 text-sm bg-background w-48"
           value={filterEventType}
           onChange={(e) => setFilterEventType(e.target.value)}
-        />
+        >
+          {EVENT_TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
         <button
           className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
           onClick={load}
