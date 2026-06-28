@@ -514,22 +514,29 @@ pub fn start_doc_subscriptions(
         let _ns = ns_name.to_string();
 
         tokio::spawn(async move {
+            eprintln!("[sub:{}] subscription started for org={}", _ns, &org_id_clone[..8]);
             // Phase 1: initial scan of existing evt: entries
+            let mut catchup_count = 0u64;
             if let Ok(stream) = doc.get_many(iroh_docs::store::Query::key_prefix("evt:")).await {
                 let mut pinned = Box::pin(stream);
                 while let Some(Ok(entry)) = pinned.next().await {
                     if entry.author() == author_clone { continue; }
                     process_and_index_entry(&entry, &store_clone, &*indexer_clone, &org_id_clone).await;
+                    catchup_count += 1;
                 }
             }
+            eprintln!("[sub:{}] phase1 catchup complete, {} entries indexed", _ns, catchup_count);
 
             // Phase 2: subscribe to live events
             if let Ok(mut live_stream) = doc.subscribe().await {
+                eprintln!("[sub:{}] live subscription active", _ns);
                 use futures_util::StreamExt;
                 while let Some(Ok(event)) = live_stream.next().await {
                     match event {
                         iroh_docs::engine::LiveEvent::InsertRemote { entry, .. } => {
                             if entry.author() == author_clone { continue; }
+                            let key_preview = std::str::from_utf8(entry.key()).unwrap_or("?").chars().take(30).collect::<String>();
+                            eprintln!("[sub:{}] InsertRemote key={}", _ns, key_preview);
                             process_and_index_entry(&entry, &store_clone, &*indexer_clone, &org_id_clone).await;
                         }
                         iroh_docs::engine::LiveEvent::ContentReady { hash } => {
@@ -562,7 +569,10 @@ async fn process_and_index_entry(
 
     let content_bytes = match store.blobs().get_bytes(hash).await {
         Ok(b) => b,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("[process_entry] BLOB MISSING for key={} err={}", key_str, e);
+            return;
+        }
     };
 
     let content: serde_json::Value = match serde_json::from_slice(content_bytes.as_ref()) {
@@ -602,5 +612,7 @@ async fn process_and_index_entry(
     } else {
         let _ = indexer.upsert_document(org_id, entity, &doc_id, &upcasted);
     }
+
+    eprintln!("[process_entry] INDEXED entity={} doc_id={} event={}", entity, doc_id, event_type);
 }
 

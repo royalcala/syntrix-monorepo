@@ -3,9 +3,15 @@
 //! Every active node (admin or client) runs `start_heartbeat_with_resync` in the background.
 //! This loop:
 //!   1. Writes a timestamped heartbeat under `heartbeat/<own_node_id>` every 15 seconds.
-//!   2. Re-dials all known active peers from the `members/` prefix in the control document.
+//!   2. Reloads device membership from `members/` into the NamespaceRegistry AND re-dials
+//!      all known active peers on all 4 docs.
 //!   3. Reloads role grants from `roles/` prefix into the NamespaceRegistry so that
 //!      permission changes propagate to `check_read_access()` within one heartbeat cycle.
+//!
+//! The device membership reload (step 2) is CRITICAL for P2P sync. When a new member appears
+//! in the control doc (e.g. Client2 joined after Client1), the heartbeat loop registers the
+//! new device in the registry so that the accept_cb allows its sync connections. Without this,
+//! `start_sync` calls are silently rejected and live replication never works.
 //!
 //! The re-dial step ensures that when a peer restarts (and gets a new network address), sync
 //! sessions are automatically re-established within one heartbeat cycle (~15 s).
@@ -13,7 +19,7 @@
 use std::sync::{Arc, RwLock};
 use futures_util::StreamExt;
 use crate::addr::parse_device_addr;
-use crate::registry::{NamespaceRegistry, RoleGrants};
+use crate::registry::{NamespaceRegistry, RoleGrants, Device};
 
 /// Simple heartbeat loop — writes a timestamp entry every 15 s.
 ///
@@ -63,6 +69,19 @@ pub fn start_heartbeat_with_resync(
             .and_then(|r| r.lookup_org(&ctrl_doc.id()))
             .unwrap_or_default();
 
+        if org_id.is_empty() {
+            eprintln!(
+                "[heartbeat] WARN: org_id is empty for ctrl_doc {:?}, device registration will fail",
+                ctrl_doc.id()
+            );
+        } else {
+            eprintln!(
+                "[heartbeat] starting for org_id={}, ctrl_doc={:?}",
+                org_id,
+                ctrl_doc.id()
+            );
+        }
+
         loop {
             // 1. Write heartbeat
             let ts = chrono::Utc::now().timestamp_millis();
@@ -72,33 +91,77 @@ pub fn start_heartbeat_with_resync(
                 .set_bytes(author, key.into_bytes(), serde_json::to_vec(&val).unwrap())
                 .await;
 
-            // 2. Re-dial all known peers from control doc members/
+            // 2. Reload device membership + re-dial all known peers
+            let mut member_count = 0;
+            let mut registered_count = 0;
             if let Ok(entries) = ctrl_doc
                 .get_many(iroh_docs::store::Query::key_prefix("members/"))
                 .await
             {
                 let mut entries = Box::pin(entries);
                 while let Some(res) = entries.next().await {
+                    member_count += 1;
                     if let Ok(entry) = res {
-                        if let Ok(content_bytes) =
-                            store.blobs().get_bytes(entry.content_hash()).await
-                        {
-                            if let Ok(val) =
-                                serde_json::from_slice::<serde_json::Value>(&content_bytes)
-                            {
-                                let active = val["active"].as_bool().unwrap_or(true);
-                                let device_addr =
-                                    val["device_addr"].as_str().unwrap_or("").to_string();
+                        if let Ok(key_bytes) = std::str::from_utf8(entry.key()) {
+                            if let Some(node_id_str) = key_bytes.strip_prefix("members/") {
+                                if let Ok(content_bytes) =
+                                    store.blobs().get_bytes(entry.content_hash()).await
+                                {
+                                    if let Ok(val) =
+                                        serde_json::from_slice::<serde_json::Value>(&content_bytes)
+                                    {
+                                        let active = val["active"].as_bool().unwrap_or(true);
+                                        let r = val["role"].as_str().unwrap_or("sales").to_string();
+                                        let person = val["person"].as_str().unwrap_or("").to_string();
+                                        let name_str = val["name"].as_str().unwrap_or("").to_string();
+                                        let device_addr =
+                                            val["device_addr"].as_str().unwrap_or("").to_string();
 
-                                if active {
-                                    if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
-                                        if endpoint_addr.id != secret.public() {
-                                            let peers_vec = vec![endpoint_addr];
-                                            let _ =
-                                                ctrl_doc.start_sync(peers_vec.clone()).await;
-                                            let _ = cat_doc.start_sync(peers_vec.clone()).await;
-                                            let _ = op_doc.start_sync(peers_vec.clone()).await;
-                                            let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                        // Register this device in the namespace registry so the
+                                        // accept_cb allows its sync connections.
+                                        if let Ok(node_id_bytes) = hex::decode(node_id_str) {
+                                            let mut id = [0u8; 32];
+                                            let len = node_id_bytes.len().min(32);
+                                            id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                            if let Ok(mut reg) = registry.write() {
+                                                reg.upsert_device(org_id.clone(), id, Device {
+                                                    node_id: id,
+                                                    active,
+                                                    role: r.clone(),
+                                                    person: person.clone(),
+                                                    name: name_str.clone(),
+                                                });
+                                                registered_count += 1;
+                                            }
+                                        }
+
+                                        if active {
+                                            if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
+                                                if endpoint_addr.id != secret.public() {
+                                                    let peers_vec = vec![endpoint_addr];
+                                                    let res_ctrl = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                                    eprintln!("[heartbeat] start_sync ctrl_doc -> {}: {:?}", &node_id_str[..8], res_ctrl.is_ok());
+                                                    // Only sync other docs if they're different from control_doc
+                                                    if cat_doc.id() != ctrl_doc.id() {
+                                                        let res_cat = cat_doc.start_sync(peers_vec.clone()).await;
+                                                        eprintln!("[heartbeat] start_sync cat_doc  -> {}: {:?}", &node_id_str[..8], res_cat.is_ok());
+                                                    } else {
+                                                        eprintln!("[heartbeat] SKIP cat_doc (same as ctrl, id={:?})", cat_doc.id());
+                                                    }
+                                                    if op_doc.id() != ctrl_doc.id() {
+                                                        let _ = op_doc.start_sync(peers_vec.clone()).await;
+                                                    } else {
+                                                        eprintln!("[heartbeat] SKIP op_doc (same as ctrl)");
+                                                    }
+                                                    if pay_doc.id() != ctrl_doc.id() {
+                                                        let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                                    } else {
+                                                        eprintln!("[heartbeat] SKIP pay_doc (same as ctrl)");
+                                                    }
+                                                } else {
+                                                    eprintln!("[heartbeat] SKIP self (peer {} is us)", &node_id_str[..8]);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -107,6 +170,10 @@ pub fn start_heartbeat_with_resync(
                     }
                 }
             }
+            eprintln!(
+                "[heartbeat] found {} members, registered {} devices in org {}",
+                member_count, registered_count, org_id
+            );
 
             // 3. Reload role grants from control doc into the registry.
             //    This is critical for second peers joining an org: the initial
