@@ -14,8 +14,6 @@ SESSION_ID="$(echo "$(pwd)-$$-$(date +%s)" | md5sum 2>/dev/null | head -c 8 || e
 # Target dir persistente en el remoto (se reutiliza entre invocaciones → caché de compilación)
 REMOTE_TARGET_NAME="target-remote"
 
-# Lock file — se define después de determinar REMOTE_HOST (es por host)
-
 # Buscar el cargo real en el PATH (evitando nuestra propia carpeta bin)
 REAL_CARGO=""
 IFS=':' read -r -a array <<< "$PATH"
@@ -71,7 +69,16 @@ if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ||
     REMOTE_DIR="$REMOTE_REPO_ROOT/$RELATIVE_DIR"
     REMOTE_TARGET_DIR="$REMOTE_DIR/$REMOTE_TARGET_NAME"
 
-    # El flock se libera automáticamente al salir del subshell
+    # Determinar el modo de operación ANTES del lock (las variables de subshell no se propagan)
+    IS_TAURI_DEV=0
+    if [[ "$1" == "tauri" && "$2" == "dev" ]]; then
+        IS_TAURI_DEV=1
+    fi
+
+    # =========================================================================
+    # BLOQUE CON LOCK: solo sync + compilación remota + rsync de regreso
+    # El lock se libera automáticamente al salir de este subshell
+    # =========================================================================
     (
       flock -x 200 || exit 1
 
@@ -96,7 +103,6 @@ if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ||
       # Reemplazar rutas absolutas de la laptop a las del servidor en los argumentos
       # Y si es "run" o "tauri dev", transformarlos a "build" para solo compilar en el servidor
       REMOTE_ARGS=()
-      IS_TAURI_DEV=0
       if [[ "$1" == "run" ]]; then
           REMOTE_ARGS+=("build")
           for arg in "${@:2}"; do
@@ -105,8 +111,7 @@ if [[ "$1" == "build" || "$1" == "check" || "$1" == "clippy" || "$1" == "run" ||
               fi
               REMOTE_ARGS+=("${arg//$REPO_ROOT/$REMOTE_REPO_ROOT}")
           done
-      elif [[ "$1" == "tauri" && "$2" == "dev" ]]; then
-          IS_TAURI_DEV=1
+      elif [[ "$IS_TAURI_DEV" == "1" ]]; then
           REMOTE_ARGS+=("build")
       else
           for arg in "$@"; do
@@ -149,81 +154,123 @@ SCRIPTEOF
           # NOTA: NO borramos el target remoto — se conserva como caché persistente
           # para que compilaciones subsecuentes sean incrementales.
           # Para limpiarlo manualmente: `just clean-remote-targets`
-
-          # Si era un "run", ahora ejecutamos el binario local directamente
-          if [[ "$1" == "run" ]]; then
-              BINARY_NAME=""
-              if [[ -f "Cargo.toml" ]]; then
-                  BINARY_NAME=$(grep -m1 '^name = ' Cargo.toml | cut -d'"' -f2)
-              fi
-              BINARY_NAME="${BINARY_NAME:-syntrix-admin}"
-              BINARY_PATH="./target/debug/$BINARY_NAME"
-
-              BIN_ARGS=()
-              FOUND_SEPARATOR=false
-              for arg in "$@"; do
-                  if [[ "$FOUND_SEPARATOR" == true ]]; then
-                      BIN_ARGS+=("$arg")
-                  elif [[ "$arg" == "--" ]]; then
-                      FOUND_SEPARATOR=true
-                  fi
-              done
-
-              if [[ -f "$BINARY_PATH" ]]; then
-                  echo "=== [Bridge:${SESSION_ID}] Iniciando ejecución local directa: $BINARY_PATH ${BIN_ARGS[@]} ==="
-                  chmod +x "$BINARY_PATH"
-                  exec "$BINARY_PATH" "${BIN_ARGS[@]}"
-              else
-                  echo "=== [Bridge:${SESSION_ID}] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
-                  exec "$REAL_CARGO" "$@"
-              fi
-          fi
-
-          # Si era "tauri dev", compilamos en el servidor y ejecutamos localmente
-          if [[ "$IS_TAURI_DEV" == "1" ]]; then
-              BINARY_NAME=""
-              if [[ -f "Cargo.toml" ]]; then
-                  BINARY_NAME=$(grep -m1 '^name = ' Cargo.toml | cut -d'"' -f2)
-              fi
-              BINARY_NAME="${BINARY_NAME:-syntrix-admin}"
-              BINARY_PATH="./target/debug/$BINARY_NAME"
-
-              if [[ ! -f "$BINARY_PATH" ]]; then
-                  echo "=== [Bridge:${SESSION_ID}] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
-                  exec "$REAL_CARGO" "$@"
-              fi
-
-              chmod +x "$BINARY_PATH"
-
-              APP_DIR="$(dirname "$CURRENT_DIR")"
-
-              echo "=== [Bridge:${SESSION_ID}] Iniciando beforeDevCommand (pnpm dev) en $APP_DIR... ==="
-              pkill -f "vite" 2>/dev/null || true
-              (cd "$APP_DIR" && pnpm dev) &
-              VITE_PID=$!
-              cleanup_vite() { kill "$VITE_PID" 2>/dev/null || true; pkill -f "$APP_DIR.*vite" 2>/dev/null || true; }
-              trap cleanup_vite EXIT INT TERM
-
-              echo "=== [Bridge:${SESSION_ID}] Esperando a que Vite esté listo... ==="
-              for i in $(seq 1 30); do
-                  if curl -s http://localhost:1421 >/dev/null 2>&1 || curl -s http://localhost:1420 >/dev/null 2>&1; then
-                      echo "=== [Bridge:${SESSION_ID}] Vite está listo ==="
-                      break
-                  fi
-                  sleep 1
-              done
-
-              echo "=== [Bridge:${SESSION_ID}] Iniciando $BINARY_PATH localmente... ==="
-              cd "$CURRENT_DIR"
-              "$BINARY_PATH"
-              BINARY_EXIT=$?
-              kill "$VITE_PID" 2>/dev/null || true
-              pkill -f "$APP_DIR.*vite" 2>/dev/null || true
-              exit $BINARY_EXIT
-          fi
       fi
+
       exit $EXIT_CODE
     ) 200>"$LOCK_FILE"
+    # =========================================================================
+    # LOCK LIBERADO — desde aquí se puede ejecutar la app localmente
+    # =========================================================================
+
+    BRIDGE_EXIT=$?
+
+    if [ $BRIDGE_EXIT -ne 0 ]; then
+        exit $BRIDGE_EXIT
+    fi
+
+    # Si era "run", ejecutamos el binario local directamente
+    if [[ "$1" == "run" ]]; then
+        BINARY_NAME=""
+        if [[ -f "Cargo.toml" ]]; then
+            BINARY_NAME=$(grep -m1 '^name = ' Cargo.toml | cut -d'"' -f2)
+        fi
+        BINARY_NAME="${BINARY_NAME:-syntrix-admin}"
+        BINARY_PATH="./target/debug/$BINARY_NAME"
+
+        BIN_ARGS=()
+        FOUND_SEPARATOR=false
+        for arg in "$@"; do
+            if [[ "$FOUND_SEPARATOR" == true ]]; then
+                BIN_ARGS+=("$arg")
+            elif [[ "$arg" == "--" ]]; then
+                FOUND_SEPARATOR=true
+            fi
+        done
+
+        if [[ -f "$BINARY_PATH" ]]; then
+            echo "=== [Bridge:${SESSION_ID}] Iniciando ejecución local directa: $BINARY_PATH ${BIN_ARGS[@]} ==="
+            chmod +x "$BINARY_PATH"
+            exec "$BINARY_PATH" "${BIN_ARGS[@]}"
+        else
+            echo "=== [Bridge:${SESSION_ID}] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
+            exec "$REAL_CARGO" "$@"
+        fi
+    fi
+
+    # Si era "tauri dev", ejecutamos Vite + binario localmente
+    if [[ "$IS_TAURI_DEV" == "1" ]]; then
+        BINARY_NAME=""
+        if [[ -f "Cargo.toml" ]]; then
+            BINARY_NAME=$(grep -m1 '^name = ' Cargo.toml | cut -d'"' -f2)
+        fi
+        BINARY_NAME="${BINARY_NAME:-syntrix-admin}"
+        BINARY_PATH="./target/debug/$BINARY_NAME"
+
+        if [[ ! -f "$BINARY_PATH" ]]; then
+            echo "=== [Bridge:${SESSION_ID}] ADVERTENCIA: No se encontró el binario en $BINARY_PATH. Usando cargo local... ==="
+            exec "$REAL_CARGO" "$@"
+        fi
+
+        chmod +x "$BINARY_PATH"
+
+        APP_DIR="$(dirname "$CURRENT_DIR")"
+
+        # Detectar el puerto de Vite desde --config antes de matar/iniciar nada
+        VITE_PORT=""
+        VITE_PORT_FLAG=""
+        for arg in "$@"; do
+            # Extraer --port N del beforeDevCommand dentro del --config JSON
+            if [[ "$arg" =~ beforeDevCommand.*--port[[:space:]]+([0-9]+) ]]; then
+                VITE_PORT="${BASH_REMATCH[1]}"
+            fi
+            # También extraer puerto de devUrl (fallback si no hay --port en beforeDevCommand)
+            if [[ -z "$VITE_PORT" && "$arg" =~ devUrl.*http://localhost:([0-9]+) ]]; then
+                VITE_PORT="${BASH_REMATCH[1]}"
+            fi
+        done
+        # Fallback: los puertos según tauri.conf.json de cada app
+        if [[ -z "$VITE_PORT" ]]; then
+            if [[ "$BINARY_NAME" == "syntrix-admin" ]]; then
+                VITE_PORT="1421"   # admin/tauri.conf.json → 1421
+            else
+                VITE_PORT="1420"   # client/tauri.conf.json → 1420
+            fi
+        fi
+
+        echo "=== [Bridge:${SESSION_ID}] Iniciando beforeDevCommand (pnpm dev) en $APP_DIR (puerto $VITE_PORT)... ==="
+        # Matar Vite en el puerto específico (no afecta otras instancias en otros puertos)
+        fuser -k "${VITE_PORT}/tcp" 2>/dev/null || true
+        sleep 0.5
+
+        # Iniciar Vite en el puerto correcto (--port solo si es diferente del default)
+        if [[ "$VITE_PORT" != "1420" && "$VITE_PORT" != "1421" ]]; then
+            VITE_PORT_FLAG="--port $VITE_PORT"
+        fi
+        (cd "$APP_DIR" && pnpm dev $VITE_PORT_FLAG) &
+        VITE_PID=$!
+        cleanup_vite() { kill "$VITE_PID" 2>/dev/null || true; fuser -k "${VITE_PORT}/tcp" 2>/dev/null || true; }
+        trap cleanup_vite EXIT INT TERM
+
+        echo "=== [Bridge:${SESSION_ID}] Esperando a que Vite esté listo en puerto $VITE_PORT... ==="
+        for i in $(seq 1 30); do
+            if curl -s "http://localhost:${VITE_PORT}" >/dev/null 2>&1; then
+                echo "=== [Bridge:${SESSION_ID}] Vite está listo en puerto $VITE_PORT ==="
+                break
+            fi
+            sleep 1
+        done
+
+        DEV_URL="http://localhost:${VITE_PORT}"
+        echo "=== [Bridge:${SESSION_ID}] Iniciando $BINARY_PATH localmente con --dev-url $DEV_URL ==="
+        cd "$CURRENT_DIR"
+        TAURI_DEV=true TAURI_DEV_URL="$DEV_URL" "$BINARY_PATH" --dev-url "$DEV_URL"
+        BINARY_EXIT=$?
+        kill "$VITE_PID" 2>/dev/null || true
+        fuser -k "${VITE_PORT}/tcp" 2>/dev/null || true
+        exit $BINARY_EXIT
+    fi
+
+    exit 0
 else
     # Ejecutar localmente cualquier otro comando
     exec "$REAL_CARGO" "$@"
