@@ -97,6 +97,7 @@ impl AppState {
             .spawn();
 
         let mut orgs = HashMap::new();
+        let node_id = *secret.public().as_bytes();
         let orgs_config_path = data_dir.join("orgs.json");
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
@@ -110,6 +111,15 @@ impl AppState {
                         if let Ok(mut reg) = registry.write() {
                             let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
                             reg.set_topic_id(cfg.org_id.clone(), iroh_topic_id);
+                            reg.upsert_device(cfg.org_id.clone(), node_id, Device {
+                                node_id,
+                                active: true,
+                                role: cfg.role.clone(),
+                                person: hex::encode(node_id),
+                                name: format!("Device {}", &hex::encode(node_id)[..8]),
+                            });
+                            let (can_open, can_write) = default_role_grants(&cfg.role);
+                            reg.upsert_role(cfg.org_id.clone(), cfg.role.clone(), RoleGrants { can_open, can_write });
                         }
 
                         orgs.insert(cfg.org_id.clone(), OrgState {
@@ -185,5 +195,20 @@ impl AppState {
 
     pub fn get_org(&self, org_id: &str) -> Option<&OrgState> {
         self.orgs.get(org_id)
+    }
+}
+
+fn default_role_grants(role: &str) -> (Vec<String>, Vec<String>) {
+    match role {
+        "admin" => (vec!["*".into()], vec!["*".into()]),
+        "sales" => (
+            vec!["customers".into(), "products".into(), "invoices".into(), "orders".into()],
+            vec!["customers".into(), "invoices".into(), "orders".into()],
+        ),
+        "contabilidad" => (
+            vec!["invoices".into(), "customers".into()],
+            vec![],
+        ),
+        _ => (vec![], vec![]),
     }
 }

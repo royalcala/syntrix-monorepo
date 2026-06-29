@@ -12,7 +12,7 @@ export default defineConfig({
     },
   },
   clearScreen: false,
-  server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**"] } },
+  server: { port: 1420, strictPort: true, fs: { allow: ["../.."] }, watch: { ignored: ["**/src-tauri/**"] } },
   test: {
     globals: true,
     environment: "jsdom",

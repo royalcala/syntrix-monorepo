@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use iroh::{Endpoint, endpoint::Connection};
 use iroh::protocol::ProtocolHandler;
-use tokio::io::AsyncWriteExt;
 
 use crate::indexes::RelationalEngine;
 

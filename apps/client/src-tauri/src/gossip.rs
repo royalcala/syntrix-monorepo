@@ -80,10 +80,10 @@ impl GossipEventBus {
         Ok(())
     }
 
-    pub fn broadcast(&self, org_id: &str, event_bytes: bytes::Bytes) -> anyhow::Result<()> {
-        match self.topics.get(org_id) {
+    pub async fn broadcast(&mut self, org_id: &str, event_bytes: bytes::Bytes) -> anyhow::Result<()> {
+        match self.topics.get_mut(org_id) {
             Some(topic) => {
-                topic.broadcast(event_bytes)?;
+                topic.broadcast(event_bytes).await?;
                 Ok(())
             }
             None => Err(anyhow::anyhow!("no gossip topic for org {}", org_id)),

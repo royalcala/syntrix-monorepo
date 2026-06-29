@@ -78,7 +78,10 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     let invite: invite::InvitePayload = serde_json::from_str(&invite_json)
         .map_err(|e| format!("invalid invite json: {}", e))?;
 
-    let topic_id = invite.topic_id;
+    let topic_id_bytes = hex::decode(&invite.topic_id).map_err(|e| format!("invalid topic_id: {e}"))?;
+    let mut topic_id = [0u8; 32];
+    let len = topic_id_bytes.len().min(32);
+    topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
     let role = invite.role.clone();
     let admin_addr = invite.admin_addr.clone();
     let final_org_id = hex::encode(&topic_id[..4]);
@@ -132,11 +135,11 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     }
 
     // Join gossip topic with admin as bootstrap
-    {
+    let (gossip_bus, indexer, node_id_hex, iroh_topic_id, bootstrap) = {
         let s = state.lock().map_err(|e| e.to_string())?;
+        let gossip_bus = s.gossip_bus.clone();
         let indexer = s.indexer.clone();
         let node_id_hex = hex::encode(s.node_id());
-
         let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
         let bootstrap = if let Some(ref addr) = admin_addr {
             if let Some(ep) = syntrix_core::parse_device_addr(addr) {
@@ -147,11 +150,11 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         } else {
             vec![]
         };
-
-        {
-            let mut gossip_bus = s.gossip_bus.write().await;
-            let _ = gossip_bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer, node_id_hex).await;
-        }
+        (gossip_bus, indexer, node_id_hex, iroh_topic_id, bootstrap)
+    };
+    {
+        let mut bus = gossip_bus.write().await;
+        let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer, node_id_hex).await;
     }
 
     // Catch-up from admin

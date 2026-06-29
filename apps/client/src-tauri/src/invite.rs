@@ -10,7 +10,7 @@ pub struct InvitePayload {
     pub org_name: String,
     pub role: String,
     pub admin_addr: Option<String>,
-    pub topic_id: [u8; 32],
+    pub topic_id: String,
 }
 
 #[derive(Debug, Clone)]
