@@ -1,8 +1,6 @@
 use crate::identity::AppState;
 use serde::{Deserialize, Serialize};
 
-// PeerStatus, SyncInfo, get_sync_info, start_heartbeat, start_heartbeat_with_resync
-// are shared with syntrix-admin — they live in syntrix-core.
 pub use syntrix_core::{SyncInfo, get_sync_info, start_heartbeat_with_resync};
 
 #[derive(Debug, Deserialize)]
@@ -35,13 +33,31 @@ pub struct HlcCursor { pub ts: u64, pub count: u32, pub node: String }
 #[derive(Debug, Serialize)]
 pub struct ConnectionState { pub connected: bool, pub peers: u32 }
 
+/// Get the doc for a given entity name from the org.
+fn entity_doc<'a>(org: &'a crate::identity::OrgState, entity: &str) -> Option<&'a iroh_docs::api::Doc> {
+    // Map common prefixes to entity names
+    let entity = match entity.split('.').next().unwrap_or(entity) {
+        "invoice" | "invoices" => "invoices",
+        "order" | "orders" => "orders",
+        "product" | "products" => "products",
+        "customer" | "customers" => "customers",
+        "supplier" | "suppliers" => "suppliers",
+        "payroll" => "payroll",
+        other => other,
+    };
+    org.entity_docs.get(entity)
+}
+
 pub fn sync_push(state: &mut AppState, org_id: &str, batch: Vec<SyncEventEncoded>) -> anyhow::Result<()> {
     let org = state.get_org_docs(org_id).ok_or_else(|| anyhow::anyhow!("org {} not found", org_id))?;
-    let doc = org.operational_doc.clone();
     let author = state.author();
     let node_hex = hex::encode(state.node_id());
 
     for event in &batch {
+        let entity = event.name.split('.').next().unwrap_or(&event.name);
+        let doc = entity_doc(org, entity)
+            .ok_or_else(|| anyhow::anyhow!("unknown entity in event: {}", event.name))?;
+
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as u64;
         let counter = state.counter();
         let count = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as u32;
@@ -54,17 +70,14 @@ pub fn sync_push(state: &mut AppState, org_id: &str, batch: Vec<SyncEventEncoded
         });
         tauri::async_runtime::block_on(doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value)?))?;
 
-        let entity = event.name.split('.').next().unwrap_or(&event.name);
         let doc_id = event.args.get("id")
             .and_then(|v| v.as_str())
             .or_else(|| event.args.get("node_id").and_then(|v| v.as_str()))
             .unwrap_or(&key);
 
-        // Apply upcasters if the event was written with an older schema version
         let upcasted = crate::events::upcast_payload(entity, event.args.clone(), event.schema_version);
         let _ = state.indexer.upsert_document(org_id, entity, doc_id, &upcasted);
     }
-    // Record after loop to avoid borrow conflict
     for event in batch {
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as u64;
         let count = state.counter().load(std::sync::atomic::Ordering::SeqCst) as u32;
@@ -100,6 +113,3 @@ pub fn sync_ping(state: &AppState, org_id: &str) -> anyhow::Result<ConnectionSta
 pub fn sync_status(state: &AppState) -> String {
     format!("online · {} orgs · node {}", state.list_orgs().len(), hex::encode(state.node_id())[..8].to_string())
 }
-
-
-

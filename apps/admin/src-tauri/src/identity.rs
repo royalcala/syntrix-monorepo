@@ -16,14 +16,11 @@ use futures_util::StreamExt;
 pub struct OrgConfig {
     pub name: String,
     pub control_id: String,
-    pub catalogs_id: String,
-    pub operational_id: String,
-    pub payroll_id: String,
+    pub namespace_ids: HashMap<String, String>,
 }
 
 // parse_device_addr is shared with syntrix-client — lives in syntrix-core.
 pub use syntrix_core::parse_device_addr;
-
 
 
 
@@ -47,9 +44,7 @@ pub struct AppState {
 pub struct OrgState {
     pub name: String,
     pub control_doc: Doc,
-    pub catalogs_doc: Doc,
-    pub operational_doc: Doc,
-    pub payroll_doc: Doc,
+    pub entity_docs: HashMap<String, Doc>,
 }
 
 impl AppState {
@@ -139,71 +134,74 @@ impl AppState {
                 if let Ok(configs) = serde_json::from_str::<Vec<OrgConfig>>(&orgs_json) {
                     for cfg in configs {
                         let control_id = cfg.control_id.parse::<iroh_docs::NamespaceId>().ok();
-                        let catalogs_id = cfg.catalogs_id.parse::<iroh_docs::NamespaceId>().ok();
-                        let operational_id = cfg.operational_id.parse::<iroh_docs::NamespaceId>().ok();
-                        let payroll_id = cfg.payroll_id.parse::<iroh_docs::NamespaceId>().ok();
 
-                        if let (Some(ctrl), Some(cat), Some(op), Some(pay)) = (control_id, catalogs_id, operational_id, payroll_id) {
-                            let control_doc = api.open(ctrl).await.ok().flatten();
-                            let catalogs_doc = api.open(cat).await.ok().flatten();
-                            let operational_doc = api.open(op).await.ok().flatten();
-                            let payroll_doc = api.open(pay).await.ok().flatten();
-
-                            if let (Some(ctrl_doc), Some(cat_doc), Some(op_doc), Some(pay_doc)) = (control_doc, catalogs_doc, operational_doc, payroll_doc) {
-                                let name = cfg.name.clone();
-                                
-                                // Register namespaces in Gossip accept callback registry
-                                if let Ok(mut reg) = registry.write() {
-                                    reg.map_namespace_to_org(ctrl, name.clone());
-                                    reg.map_namespace_to_org(cat, name.clone());
-                                    reg.map_namespace_to_org(op, name.clone());
-                                    reg.map_namespace_to_org(pay, name.clone());
+                        let mut entity_docs: HashMap<String, Doc> = HashMap::new();
+                        for (ns_name, ns_id_str) in &cfg.namespace_ids {
+                            if let Ok(ns_id) = ns_id_str.parse::<iroh_docs::NamespaceId>() {
+                                if let Some(doc) = api.open(ns_id).await.ok().flatten() {
+                                    entity_docs.insert(ns_name.clone(), doc);
                                 }
+                            }
+                        }
 
-                                // 1. Load members from control_doc
-                                let mut dev_map = HashMap::new();
-                                if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
-                                    let mut entries = Box::pin(entries);
-                                    while let Some(res) = entries.next().await {
-                                        if let Ok(entry) = res {
-                                            if let Ok(key) = std::str::from_utf8(entry.key()) {
-                                                let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
-                                                if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
-                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
-                                                        let active = val["active"].as_bool().unwrap_or(true);
-                                                        let role = val["role"].as_str().unwrap_or("sales").to_string();
-                                                        let person = val["person"].as_str().unwrap_or("").to_string();
-                                                        let name_str = val["name"].as_str().unwrap_or("").to_string();
-                                                        let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+                        let ctrl_doc = match control_id {
+                            Some(id) => api.open(id).await.ok().flatten(),
+                            None => None,
+                        };
+                        if let Some(ctrl_doc) = ctrl_doc {
+                            let name = cfg.name.clone();
 
-                                                        dev_map.insert(node_id.clone(), DeviceInfo {
-                                                            node_id: node_id.clone(),
-                                                            active,
-                                                            role: role.clone(),
-                                                            person: person.clone(),
-                                                            name: name_str.clone(),
-                                                            device_addr: device_addr.clone(),
-                                                        });
+                            // Register namespaces in Gossip accept callback registry
+                            if let Ok(mut reg) = registry.write() {
+                                reg.map_namespace_to_org(ctrl_doc.id(), name.clone());
+                                for (_ns_name, doc) in &entity_docs {
+                                    reg.map_namespace_to_org(doc.id(), name.clone());
+                                }
+                            }
 
-                                                        if let Ok(mut reg) = registry.write() {
-                                                            if let Ok(node_id_bytes) = hex::decode(&node_id) {
-                                                                let mut id = [0u8; 32];
-                                                                let len = node_id_bytes.len().min(32);
-                                                                id[..len].copy_from_slice(&node_id_bytes[..len]);
-                                                                reg.upsert_device(name.clone(), id, Device {
-                                                                    node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
-                                                                });
-                                                            }
+                            // 1. Load members from control_doc
+                            let mut dev_map = HashMap::new();
+                            if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                                let mut entries = Box::pin(entries);
+                                while let Some(res) = entries.next().await {
+                                    if let Ok(entry) = res {
+                                        if let Ok(key) = std::str::from_utf8(entry.key()) {
+                                            let node_id = key.strip_prefix("members/").unwrap_or(key).to_string();
+                                            if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                                                    let active = val["active"].as_bool().unwrap_or(true);
+                                                    let role = val["role"].as_str().unwrap_or("sales").to_string();
+                                                    let person = val["person"].as_str().unwrap_or("").to_string();
+                                                    let name_str = val["name"].as_str().unwrap_or("").to_string();
+                                                    let device_addr = val["device_addr"].as_str().unwrap_or("").to_string();
+
+                                                    dev_map.insert(node_id.clone(), DeviceInfo {
+                                                        node_id: node_id.clone(),
+                                                        active,
+                                                        role: role.clone(),
+                                                        person: person.clone(),
+                                                        name: name_str.clone(),
+                                                        device_addr: device_addr.clone(),
+                                                    });
+
+                                                    if let Ok(mut reg) = registry.write() {
+                                                        if let Ok(node_id_bytes) = hex::decode(&node_id) {
+                                                            let mut id = [0u8; 32];
+                                                            let len = node_id_bytes.len().min(32);
+                                                            id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                                            reg.upsert_device(name.clone(), id, Device {
+                                                                node_id: id, active, role: role.clone(), person: person.clone(), name: name_str.clone(),
+                                                            });
                                                         }
+                                                    }
 
-                                                        if active {
-                                                            if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
-                                                                if endpoint_addr.id != secret.public() {
-                                                                    let peers_vec = vec![endpoint_addr];
-                                                                    let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
-                                                                    let _ = cat_doc.start_sync(peers_vec.clone()).await;
-                                                                    let _ = op_doc.start_sync(peers_vec.clone()).await;
-                                                                    let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                                    if active {
+                                                        if let Some(endpoint_addr) = parse_device_addr(&device_addr) {
+                                                            if endpoint_addr.id != secret.public() {
+                                                                let peers_vec = vec![endpoint_addr];
+                                                                let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
+                                                                for (_ns, doc) in &entity_docs {
+                                                                    let _ = doc.start_sync(peers_vec.clone()).await;
                                                                 }
                                                             }
                                                         }
@@ -213,79 +211,77 @@ impl AppState {
                                         }
                                     }
                                 }
-                                devices.insert(name.clone(), dev_map);
+                            }
+                            devices.insert(name.clone(), dev_map);
 
-                                // 2. Load roles from control_doc
-                                let mut role_map = HashMap::new();
-                                if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
-                                    let mut entries = Box::pin(entries);
-                                    while let Some(res) = entries.next().await {
-                                        if let Ok(entry) = res {
-                                            if let Ok(key) = std::str::from_utf8(entry.key()) {
-                                                let role_name = key.strip_prefix("roles/").unwrap_or(key).to_string();
-                                                if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
-                                                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
-                                                        let can_open: Vec<String> = val["can_open"]
-                                                            .as_array()
-                                                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                                                            .unwrap_or_default();
-                                                        let can_write: Vec<String> = val["can_write"]
-                                                            .as_array()
-                                                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                                                            .unwrap_or_default();
+                            // 2. Load roles from control_doc
+                            let mut role_map = HashMap::new();
+                            if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                                let mut entries = Box::pin(entries);
+                                while let Some(res) = entries.next().await {
+                                    if let Ok(entry) = res {
+                                        if let Ok(key) = std::str::from_utf8(entry.key()) {
+                                            let role_name = key.strip_prefix("roles/").unwrap_or(key).to_string();
+                                            if let Ok(content_bytes) = store.blobs().get_bytes(entry.content_hash()).await {
+                                                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content_bytes) {
+                                                    let can_open: Vec<String> = val["can_open"]
+                                                        .as_array()
+                                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                        .unwrap_or_default();
+                                                    let can_write: Vec<String> = val["can_write"]
+                                                        .as_array()
+                                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                        .unwrap_or_default();
 
-                                                        role_map.insert(role_name.clone(), RoleInfo {
-                                                            name: role_name.clone(),
+                                                    role_map.insert(role_name.clone(), RoleInfo {
+                                                        name: role_name.clone(),
+                                                        can_open: can_open.clone(),
+                                                        can_write: can_write.clone(),
+                                                    });
+
+                                                    if let Ok(mut reg) = registry.write() {
+                                                        reg.upsert_role(name.clone(), role_name.clone(), syntrix_core::registry::RoleGrants {
                                                             can_open: can_open.clone(),
                                                             can_write: can_write.clone(),
                                                         });
-
-                                                        if let Ok(mut reg) = registry.write() {
-                                                            reg.upsert_role(name.clone(), role_name.clone(), syntrix_core::registry::RoleGrants {
-                                                                can_open: can_open.clone(),
-                                                                can_write: can_write.clone(),
-                                                            });
-                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                roles.insert(name.clone(), role_map);
-
-                                // Start heartbeat + periodic re-sync automatically
-                                let node_id_hex = hex::encode(*secret.public().as_bytes());
-                                crate::admin::start_heartbeat_with_resync(
-                                    ctrl_doc.clone(), cat_doc.clone(), op_doc.clone(), pay_doc.clone(),
-                                    author, node_id_hex, store.clone().into(), secret.clone(),
-                                    registry.clone(),
-                                );
-
-                                // Also update admin's own device_addr in control doc
-                                // (in case endpoint address changed since last run)
-                                let own_device_addr = crate::admin::build_device_addr_string(&ep);
-                                let own_node_id = hex::encode(*secret.public().as_bytes());
-                                let device_json = serde_json::json!({
-                                    "active": true,
-                                    "role": "admin",
-                                    "person": "admin",
-                                    "name": format!("Admin ({})", name),
-                                    "device_addr": own_device_addr,
-                                });
-                                let _ = ctrl_doc.set_bytes(
-                                    author, format!("members/{}", own_node_id).into_bytes(),
-                                    serde_json::to_vec(&device_json).unwrap_or_default(),
-                                ).await;
-
-                                orgs.insert(name.clone(), OrgState {
-                                    name,
-                                    control_doc: ctrl_doc,
-                                    catalogs_doc: cat_doc,
-                                    operational_doc: op_doc,
-                                    payroll_doc: pay_doc,
-                                });
                             }
+                            roles.insert(name.clone(), role_map);
+
+                            // Start heartbeat + periodic re-sync automatically
+                            let node_id_hex = hex::encode(*secret.public().as_bytes());
+                            let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.values().cloned().collect();
+                            crate::admin::start_heartbeat_with_resync(
+                                ctrl_doc.clone(), entity_docs_vec,
+                                author, node_id_hex, store.clone().into(), secret.clone(),
+                                registry.clone(),
+                            );
+
+                            // Also update admin's own device_addr in control doc
+                            let own_device_addr = crate::admin::build_device_addr_string(&ep);
+                            let own_node_id = hex::encode(*secret.public().as_bytes());
+                            let device_json = serde_json::json!({
+                                "active": true,
+                                "role": "admin",
+                                "person": "admin",
+                                "name": format!("Admin ({})", name),
+                                "device_addr": own_device_addr,
+                            });
+                            let _ = ctrl_doc.set_bytes(
+                                author, format!("members/{}", own_node_id).into_bytes(),
+                                serde_json::to_vec(&device_json).unwrap_or_default(),
+                            ).await;
+
+                            orgs.insert(name.clone(), OrgState {
+                                name,
+                                control_doc: ctrl_doc,
+                                entity_docs,
+                            });
                         }
                     }
                 }
@@ -312,13 +308,13 @@ impl AppState {
     pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
     pub fn list_orgs(&self) -> Vec<String> { self.orgs.keys().cloned().collect() }
 
-    pub fn add_org(&mut self, name: &str, control_doc: Doc, catalogs_doc: Doc, operational_doc: Doc, payroll_doc: Doc) {
-        self.orgs.insert(name.to_string(), OrgState { name: name.to_string(), control_doc, catalogs_doc, operational_doc, payroll_doc });
+    pub fn add_org(&mut self, name: &str, control_doc: Doc, entity_docs: HashMap<String, Doc>) {
+        self.orgs.insert(name.to_string(), OrgState { name: name.to_string(), control_doc, entity_docs });
         self.devices.entry(name.to_string()).or_default();
         self.roles.entry(name.to_string()).or_default();
     }
 
-    pub fn save_org_config(&self, name: &str, ctrl: &str, cat: &str, op: &str, pay: &str) -> anyhow::Result<()> {
+    pub fn save_org_config(&self, name: &str, ctrl: &str, namespace_ids: &HashMap<String, String>) -> anyhow::Result<()> {
         let orgs_config_path = self.data_dir.join("orgs.json");
         
         let mut configs = Vec::new();
@@ -333,9 +329,7 @@ impl AppState {
         configs.push(OrgConfig {
             name: name.to_string(),
             control_id: ctrl.to_string(),
-            catalogs_id: cat.to_string(),
-            operational_id: op.to_string(),
-            payroll_id: pay.to_string(),
+            namespace_ids: namespace_ids.clone(),
         });
 
         std::fs::write(&orgs_config_path, serde_json::to_vec(&configs)?)?;
@@ -345,12 +339,10 @@ impl AppState {
     pub fn get_org(&self, name: &str) -> Option<&OrgState> { self.orgs.get(name) }
 
     pub fn remember_device(&mut self, org: &str, node_id: &str, role: &str, person: &str, name: &str, active: bool, device_addr: &str) {
-        // Update in-memory cache
         self.devices.entry(org.into()).or_default().insert(node_id.into(), DeviceInfo {
             node_id: node_id.into(), active, role: role.into(), person: person.into(), name: name.into(),
             device_addr: device_addr.into(),
         });
-        // Update namespace registry (accept_cb reads this)
         if let Ok(mut reg) = self.registry.write() {
             let node_id_bytes = hex::decode(node_id).unwrap_or_default();
             let mut id = [0u8; 32];
@@ -359,13 +351,11 @@ impl AppState {
             reg.upsert_device(org.into(), id, Device {
                 node_id: id, active, role: role.into(), person: person.into(), name: name.into(),
             });
-            // Auto-populate role grants (already uses new 4-namespace format)
             let grants = default_role_grants(role);
             reg.upsert_role(org.into(), role.into(), RoleGrants {
                 can_open: grants.can_open, can_write: grants.can_write,
             });
         }
-        // Auto-add role to cache
         self.roles.entry(org.into()).or_default().entry(role.into()).or_insert_with(|| {
             let grants = default_role_grants(role);
             RoleInfo { name: role.into(), can_open: grants.can_open, can_write: grants.can_write }
@@ -389,14 +379,12 @@ impl AppState {
                 if let Some(p) = &person { d.person = p.clone(); }
             }
         }
-        // Update registry too
         if let Ok(mut reg) = self.registry.write() {
             let node_id_bytes = hex::decode(node_id).unwrap_or_default();
             let mut id = [0u8; 32];
             let len = node_id_bytes.len().min(32);
             id[..len].copy_from_slice(&node_id_bytes[..len]);
 
-            // Retain existing values if not provided
             let mut current_role = String::new();
             let mut current_person = String::new();
             let mut current_name = String::new();
@@ -434,7 +422,6 @@ impl AppState {
                 can_write: can_write.clone(),
             });
         }
-        // Update registry too
         if let Ok(mut reg) = self.registry.write() {
             reg.upsert_role(org.into(), name.into(), RoleGrants {
                 can_open,
@@ -448,11 +435,10 @@ impl AppState {
             Some(o) => o,
             None => return Ok(()),
         };
+        let entity_docs: Vec<iroh_docs::api::Doc> = org_state.entity_docs.values().cloned().collect();
         sync_and_populate_org_members_impl(
             org_state.control_doc.clone(),
-            org_state.catalogs_doc.clone(),
-            org_state.operational_doc.clone(),
-            org_state.payroll_doc.clone(),
+            entity_docs,
             self._store.clone(),
             self.registry.clone(),
             self.secret.clone(),
@@ -472,9 +458,7 @@ fn default_role_grants(role: &str) -> RoleGrants {
 
 pub async fn sync_and_populate_org_members_impl(
     ctrl_doc: Doc,
-    cat_doc: Doc,
-    op_doc: Doc,
-    pay_doc: Doc,
+    entity_docs: Vec<Doc>,
     store: iroh_blobs::api::Store,
     registry: std::sync::Arc<std::sync::RwLock<NamespaceRegistry>>,
     secret: iroh::SecretKey,
@@ -510,9 +494,9 @@ pub async fn sync_and_populate_org_members_impl(
                                     if endpoint_addr.id != secret.public() {
                                         let peers_vec = vec![endpoint_addr];
                                         let _ = ctrl_doc.start_sync(peers_vec.clone()).await;
-                                        let _ = cat_doc.start_sync(peers_vec.clone()).await;
-                                        let _ = op_doc.start_sync(peers_vec.clone()).await;
-                                        let _ = pay_doc.start_sync(peers_vec.clone()).await;
+                                        for doc in &entity_docs {
+                                            let _ = doc.start_sync(peers_vec.clone()).await;
+                                        }
                                     }
                                 }
                             }
@@ -524,8 +508,6 @@ pub async fn sync_and_populate_org_members_impl(
     }
 
     // Also load roles from control doc so the registry has up-to-date grants.
-    // This ensures that check_read_access() (via openable_namespaces()) works
-    // for newly added peers and after admin updates role permissions.
     if let Ok(entries) = ctrl_doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
         let mut entries = Box::pin(entries);
         while let Some(res) = entries.next().await {
@@ -558,4 +540,3 @@ pub async fn sync_and_populate_org_members_impl(
 
     Ok(())
 }
-

@@ -128,11 +128,10 @@ macro_rules! field {
 }
 
 macro_rules! entity {
-    ($name:expr, $version:expr, $namespace:expr, [$($field:expr),* $(,)?], [$($index:expr),* $(,)?]) => {
+    ($name:expr, $version:expr, [$($field:expr),* $(,)?], [$($index:expr),* $(,)?]) => {
         EntitySchema {
             name: $name.to_string(),
             version: $version,
-            namespace: $namespace,
             fields: vec![$($field),*],
             indexes: vec![$($index),*],
         }
@@ -153,7 +152,7 @@ macro_rules! index {
 // ---------------------------------------------------------------------------
 
 pub fn customers_schema() -> EntitySchema {
-    entity!("customers", 1, Namespace::Catalogs, [
+    entity!("customers", 1, [
         field!(string: "id"),
         field!(searchable: "name"),
         field!(text: "email"),
@@ -168,7 +167,7 @@ pub fn customers_schema() -> EntitySchema {
 }
 
 pub fn suppliers_schema() -> EntitySchema {
-    entity!("suppliers", 1, Namespace::Catalogs, [
+    entity!("suppliers", 1, [
         field!(string: "id"),
         field!(searchable: "name"),
         field!(text: "email"),
@@ -183,7 +182,7 @@ pub fn suppliers_schema() -> EntitySchema {
 }
 
 pub fn products_schema() -> EntitySchema {
-    entity!("products", 1, Namespace::Catalogs, [
+    entity!("products", 1, [
         field!(string: "id"),
         field!(searchable: "name"),
         field!(text: "description"),
@@ -201,7 +200,7 @@ pub fn products_schema() -> EntitySchema {
 }
 
 pub fn invoices_schema() -> EntitySchema {
-    entity!("invoices", 1, Namespace::Operational, [
+    entity!("invoices", 1, [
         field!(string: "id"),
         field!(sort_key_indexed: "folio"),
         field!(relation: "customer_id", target: "customers", field: "id"),
@@ -222,7 +221,7 @@ pub fn invoices_schema() -> EntitySchema {
 }
 
 pub fn orders_schema() -> EntitySchema {
-    entity!("orders", 1, Namespace::Operational, [
+    entity!("orders", 1, [
         field!(string: "id"),
         field!(sort_key_indexed: "folio"),
         field!(relation: "customer_id", target: "customers", field: "id"),
@@ -239,7 +238,7 @@ pub fn orders_schema() -> EntitySchema {
 }
 
 pub fn payroll_schema() -> EntitySchema {
-    entity!("payroll", 1, Namespace::Payroll, [
+    entity!("payroll", 1, [
         field!(string: "id"),
         field!(searchable: "name"),
         field!(indexed: "department"),

@@ -1,8 +1,3 @@
-//! Integration tests for syntrix-client headless backend.
-//!
-//! These tests exercise the extracted `*_impl` functions without Tauri.
-//! Run with: `cargo test -p syntrix-client` (via the bridge).
-
 use std::sync::Mutex;
 use syntrix_client_lib::*;
 
@@ -17,7 +12,6 @@ async fn test_new_with_data_dir() {
     assert_ne!(node_id, [0u8; 32], "node_id should not be all zeros");
 }
 
-/// Test `list_orgs_impl` returns empty for a fresh state.
 #[tokio::test]
 async fn test_list_orgs_empty() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_list_orgs");
@@ -30,7 +24,6 @@ async fn test_list_orgs_empty() {
     assert!(orgs.is_empty(), "fresh state should have no orgs");
 }
 
-/// Test `sync_status_impl` returns a non-empty status string.
 #[tokio::test]
 async fn test_sync_status_impl() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_sync_status");
@@ -44,7 +37,6 @@ async fn test_sync_status_impl() {
     assert!(status.contains("orgs"), "status should mention org count");
 }
 
-/// Test `get_invites_impl` returns empty for a fresh state.
 #[tokio::test]
 async fn test_get_invites_empty() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_get_invites");
@@ -57,7 +49,6 @@ async fn test_get_invites_empty() {
     assert!(invites.is_empty(), "fresh state should have no invites");
 }
 
-/// Test `query_entity_impl` with empty state returns empty results.
 #[tokio::test]
 async fn test_query_entity_empty() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_query_empty");
@@ -72,7 +63,6 @@ async fn test_query_entity_empty() {
     assert!(results.is_empty(), "empty state should return no results");
 }
 
-/// Test `search_entity_impl` returns empty results for empty state.
 #[tokio::test]
 async fn test_search_entity_empty() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_search_empty");
@@ -87,8 +77,7 @@ async fn test_search_entity_empty() {
     assert!(results.is_empty(), "empty state should return no search results");
 }
 
-/// Regression test: verify that query_entity_impl does NOT fail with "Access denied"
-/// when the current device is registered in the namespace registry (as our join_org fix does).
+/// Test that query_entity_impl does NOT fail with "Access denied" when device is registered.
 #[tokio::test]
 async fn test_query_entity_after_join_registers_device() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_query_after_join");
@@ -100,9 +89,7 @@ async fn test_query_entity_after_join_registers_device() {
     let api = state.api();
     let author = state.author();
     let control_doc = api.create().await.expect("create control doc");
-    let catalogs_doc = api.create().await.expect("create catalogs doc");
-    let operational_doc = api.create().await.expect("create operational doc");
-    let payroll_doc = api.create().await.expect("create payroll doc");
+    let customers_doc = api.create().await.expect("create customers doc");
 
     let org_id = "test-org-001".to_string();
 
@@ -123,16 +110,12 @@ async fn test_query_entity_after_join_registers_device() {
 
     if let Ok(mut reg) = state.registry().write() {
         reg.map_namespace_to_org(control_doc.id(), org_id.clone());
-        reg.map_namespace_to_org(catalogs_doc.id(), org_id.clone());
-        reg.map_namespace_to_org(operational_doc.id(), org_id.clone());
-        reg.map_namespace_to_org(payroll_doc.id(), org_id.clone());
+        reg.map_namespace_to_org(customers_doc.id(), org_id.clone());
     }
 
     // Scenario A: Device NOT in registry
     state.add_org_docs("control", &org_id, "Test Org", "sales", control_doc.clone());
-    state.add_org_docs("catalogs", &org_id, "Test Org", "sales", catalogs_doc.clone());
-    state.add_org_docs("operational", &org_id, "Test Org", "sales", operational_doc.clone());
-    state.add_org_docs("payroll", &org_id, "Test Org", "sales", payroll_doc.clone());
+    state.add_org_docs("customers", &org_id, "Test Org", "sales", customers_doc.clone());
 
     state.set_active_org(&org_id).expect("set active org");
 
@@ -157,9 +140,7 @@ async fn test_query_entity_after_join_registers_device() {
     let api2 = state2.api();
     let author2 = state2.author();
     let control_doc2 = api2.create().await.expect("create control doc B");
-    let catalogs_doc2 = api2.create().await.expect("create catalogs doc B");
-    let operational_doc2 = api2.create().await.expect("create operational doc B");
-    let payroll_doc2 = api2.create().await.expect("create payroll doc B");
+    let customers_doc2 = api2.create().await.expect("create customers doc B");
 
     control_doc2
         .set_bytes(author2, b"roles/sales".to_vec(), serde_json::to_vec(&sales_role).unwrap())
@@ -172,20 +153,15 @@ async fn test_query_entity_after_join_registers_device() {
 
     if let Ok(mut reg) = state2.registry().write() {
         reg.map_namespace_to_org(control_doc2.id(), org_id.clone());
-        reg.map_namespace_to_org(catalogs_doc2.id(), org_id.clone());
-        reg.map_namespace_to_org(operational_doc2.id(), org_id.clone());
-        reg.map_namespace_to_org(payroll_doc2.id(), org_id.clone());
+        reg.map_namespace_to_org(customers_doc2.id(), org_id.clone());
     }
 
     let node_id2 = state2.node_id();
     let node_id_hex2 = hex::encode(node_id2);
 
     state2.add_org_docs("control", &org_id, "Test Org", "sales", control_doc2.clone());
-    state2.add_org_docs("catalogs", &org_id, "Test Org", "sales", catalogs_doc2.clone());
-    state2.add_org_docs("operational", &org_id, "Test Org", "sales", operational_doc2.clone());
-    state2.add_org_docs("payroll", &org_id, "Test Org", "sales", payroll_doc2.clone());
+    state2.add_org_docs("customers", &org_id, "Test Org", "sales", customers_doc2.clone());
 
-    // Our fix: register device in registry
     {
         let mut reg = state2.registry().write().expect("registry write");
         reg.upsert_device(
@@ -238,9 +214,7 @@ async fn test_multi_node_customer_lifecycle() {
     let admin_api = admin.api();
     let admin_author = admin.author();
     let admin_control = admin_api.create().await.expect("admin create control");
-    let admin_catalogs = admin_api.create().await.expect("admin create catalogs");
-    let admin_operational = admin_api.create().await.expect("admin create operational");
-    let admin_payroll = admin_api.create().await.expect("admin create payroll");
+    let admin_customers = admin_api.create().await.expect("admin create customers doc");
     let org_id = "multi-test-org".to_string();
 
     let sales_role = serde_json::json!({
@@ -258,13 +232,10 @@ async fn test_multi_node_customer_lifecycle() {
         .await
         .expect("admin write org info");
 
-    // Register admin device in namespace registry
     let admin_node_id = admin.node_id();
     if let Ok(mut reg) = admin.registry().write() {
         reg.map_namespace_to_org(admin_control.id(), org_id.clone());
-        reg.map_namespace_to_org(admin_catalogs.id(), org_id.clone());
-        reg.map_namespace_to_org(admin_operational.id(), org_id.clone());
-        reg.map_namespace_to_org(admin_payroll.id(), org_id.clone());
+        reg.map_namespace_to_org(admin_customers.id(), org_id.clone());
         reg.upsert_device(
             org_id.clone(),
             admin_node_id,
@@ -286,26 +257,23 @@ async fn test_multi_node_customer_lifecycle() {
         );
     }
 
-    // Admin joins its own org
     admin.add_org_docs("control", &org_id, "Multi Test Org", "admin", admin_control.clone());
-    admin.add_org_docs("catalogs", &org_id, "Multi Test Org", "admin", admin_catalogs.clone());
-    admin.add_org_docs("operational", &org_id, "Multi Test Org", "admin", admin_operational.clone());
-    admin.add_org_docs("payroll", &org_id, "Multi Test Org", "admin", admin_payroll.clone());
+    admin.add_org_docs("customers", &org_id, "Multi Test Org", "admin", admin_customers.clone());
 
-    // Admin saves org config
     let admin_cfg = identity::ClientOrgConfig {
         org_id: org_id.clone(),
         name: "Multi Test Org".to_string(),
         role: "admin".to_string(),
         control_id: admin_control.id().to_string(),
-        catalogs_id: admin_catalogs.id().to_string(),
-        operational_id: admin_operational.id().to_string(),
-        payroll_id: admin_payroll.id().to_string(),
+        namespace_ids: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("customers".to_string(), admin_customers.id().to_string());
+            m
+        },
     };
     admin.save_org_config(admin_cfg).expect("admin save org config");
     admin.set_active_org(&org_id).expect("admin set active org");
 
-    // 2. Share tickets (like admin would do for invites)
     let control_ticket_str = admin_control
         .share(
             iroh_docs::api::protocol::ShareMode::Write,
@@ -314,39 +282,20 @@ async fn test_multi_node_customer_lifecycle() {
         .await
         .expect("share control ticket")
         .to_string();
-    let catalogs_ticket_str = admin_catalogs
+    let customers_ticket_str = admin_customers
         .share(
             iroh_docs::api::protocol::ShareMode::Write,
             iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses,
         )
         .await
-        .expect("share catalogs ticket")
-        .to_string();
-    let operational_ticket_str = admin_operational
-        .share(
-            iroh_docs::api::protocol::ShareMode::Write,
-            iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses,
-        )
-        .await
-        .expect("share operational ticket")
-        .to_string();
-    let payroll_ticket_str = admin_payroll
-        .share(
-            iroh_docs::api::protocol::ShareMode::Write,
-            iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses,
-        )
-        .await
-        .expect("share payroll ticket")
+        .expect("share customers ticket")
         .to_string();
 
     let tickets = vec![
-        ("control", control_ticket_str),
-        ("catalogs", catalogs_ticket_str),
-        ("operational", operational_ticket_str),
-        ("payroll", payroll_ticket_str),
+        ("control".to_string(), control_ticket_str),
+        ("customers".to_string(), customers_ticket_str),
     ];
 
-    // Build the admin_addr string (simulating the invite payload field)
     let admin_addr_str = syntrix_core::build_device_addr_string(admin.endpoint());
 
     // 3. Client1 joins
@@ -360,10 +309,9 @@ async fn test_multi_node_customer_lifecycle() {
     for (ns, ticket_str) in &tickets {
         let ticket: iroh_docs::DocTicket = ticket_str.parse().expect("parse ticket");
         let doc = c1_api.import(ticket).await.expect("client1 import doc");
-        c1_imported.push((ns.to_string(), doc));
+        c1_imported.push((ns.clone(), doc));
     }
 
-    // Simulate join_org_state_impl
     let _result = join_org_state_impl(
         &mut client1,
         &org_id,
@@ -372,17 +320,15 @@ async fn test_multi_node_customer_lifecycle() {
         c1_imported,
     ).expect("client1 join_org_state_impl");
 
-    // Bootstrap sync with admin (like join_org now does with admin_addr fix)
     if let Some(admin_addr) = syntrix_core::parse_device_addr(&admin_addr_str) {
         let peers = vec![admin_addr];
         let c1_org = client1.get_org_docs(&org_id).expect("client1 org docs");
         let _ = c1_org.control_doc.start_sync(peers.clone()).await;
-        let _ = c1_org.catalogs_doc.start_sync(peers.clone()).await;
-        let _ = c1_org.operational_doc.start_sync(peers.clone()).await;
-        let _ = c1_org.payroll_doc.start_sync(peers).await;
+        for (_ns, doc) in &c1_org.entity_docs {
+            let _ = doc.start_sync(peers.clone()).await;
+        }
     }
 
-    // Register device (our Fix 1)
     {
         let c1_node_id = client1.node_id();
         let c1_node_hex = hex::encode(c1_node_id);
@@ -409,12 +355,11 @@ async fn test_multi_node_customer_lifecycle() {
     }
     client1.set_active_org(&org_id).expect("client1 set active org");
 
-    // Verify client1 can query customers (no "Access denied")
     let before = query_entity_impl(&client1, Some(&org_id), "customers", None, None)
         .expect("client1 query customers before create");
     assert!(before.is_empty(), "client1 should see no customers initially");
 
-    // 4. Client1 creates a customer (async, avoids block_on nesting)
+    // 4. Client1 creates a customer
     let customer_id = "cust-multi-001";
     let customer_payload = serde_json::json!({
         "id": customer_id,
@@ -425,10 +370,9 @@ async fn test_multi_node_customer_lifecycle() {
         "address": "Av. Reforma 222, CDMX",
     });
 
-    // Write the event directly to catalogs doc and index it
     {
         let c1_org = client1.get_org_docs(&org_id).expect("client1 org docs");
-        let cat_doc = &c1_org.catalogs_doc;
+        let customers_doc = c1_org.entity_docs.get("customers").expect("customers doc");
         let author = client1.author();
         let node_id_hex = hex::encode(client1.node_id());
         let ts = std::time::SystemTime::now()
@@ -442,23 +386,20 @@ async fn test_multi_node_customer_lifecycle() {
             "schema_version": 1,
             "payload": &customer_payload,
         });
-        cat_doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value).unwrap())
+        customers_doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value).unwrap())
             .await
-            .expect("client1 write customer event to catalogs doc");
+            .expect("client1 write customer event to customers doc");
 
         let _ = client1.indexer.upsert_document(&org_id, "customers", customer_id, &customer_payload);
     }
 
-    // Verify the customer is indexed
     let results = query_entity_impl(&client1, Some(&org_id), "customers", None, None)
         .expect("client1 query customers after create");
     assert!(!results.is_empty(), "client1 should see the customer after creation");
     let found = results.iter().any(|r| r.get("id").and_then(|v| v.as_str()) == Some(customer_id));
     assert!(found, "customer '{}' should be queryable by client1", customer_id);
 
-    // 5. Verify admin can read the customer event from catalogs doc via P2P sync.
-    // The event was written by client1. We attempt P2P sync verification but don't
-    // hard-fail if the test relay is unavailable — this is a network-dependent assertion.
+    // 5. Verify admin can read the customer event from customers doc via P2P sync
     let poll_cfg = syntrix_testkit::PollConfig {
         max_retries: 10,
         base_delay: std::time::Duration::from_millis(500),
@@ -467,7 +408,7 @@ async fn test_multi_node_customer_lifecycle() {
     let sync_ok = syntrix_testkit::poll_until(
         || async {
             let mut entries = Box::pin(
-                admin_catalogs.get_many(iroh_docs::store::Query::key_prefix("evt:"))
+                admin_customers.get_many(iroh_docs::store::Query::key_prefix("evt:"))
                     .await
                     .map_err(|e| format!("query error: {}", e))?
             );
@@ -486,7 +427,6 @@ async fn test_multi_node_customer_lifecycle() {
         &poll_cfg,
     ).await;
     if sync_ok.unwrap_or(false) {
-        // P2P sync works — verify the full chain with client2
         // 6. Client2 joins and verifies the customer is synced
         let (_c2_dir, c2_data) = syntrix_testkit::temp_node_dir("multi_client2");
         let mut client2 = identity::AppState::new_with_data_dir(c2_data)
@@ -498,7 +438,7 @@ async fn test_multi_node_customer_lifecycle() {
         for (ns, ticket_str) in &tickets {
             let ticket: iroh_docs::DocTicket = ticket_str.parse().expect("c2 parse ticket");
             let doc = c2_api.import(ticket).await.expect("client2 import doc");
-            c2_imported.push((ns.to_string(), doc));
+            c2_imported.push((ns.clone(), doc));
         }
 
         let _result = join_org_state_impl(
@@ -513,9 +453,9 @@ async fn test_multi_node_customer_lifecycle() {
             let peers = vec![admin_addr];
             let c2_org = client2.get_org_docs(&org_id).expect("client2 org docs");
             let _ = c2_org.control_doc.start_sync(peers.clone()).await;
-            let _ = c2_org.catalogs_doc.start_sync(peers.clone()).await;
-            let _ = c2_org.operational_doc.start_sync(peers.clone()).await;
-            let _ = c2_org.payroll_doc.start_sync(peers).await;
+            for (_ns, doc) in &c2_org.entity_docs {
+                let _ = doc.start_sync(peers.clone()).await;
+            }
         }
 
         {
@@ -544,20 +484,19 @@ async fn test_multi_node_customer_lifecycle() {
         }
         client2.set_active_org(&org_id).expect("client2 set active org");
 
-        let c2_addr_str = syntrix_core::build_device_addr_string(client2.endpoint());
-        if let Some(c2_addr) = syntrix_core::parse_device_addr(&c2_addr_str) {
-            let peers = vec![c2_addr];
+        if let Some(admin_addr) = syntrix_core::parse_device_addr(&admin_addr_str) {
+            let peers = vec![admin_addr];
             let _ = admin_control.start_sync(peers.clone()).await;
-            let _ = admin_catalogs.start_sync(peers.clone()).await;
-            let _ = admin_operational.start_sync(peers.clone()).await;
-            let _ = admin_payroll.start_sync(peers).await;
+            let _ = admin_customers.start_sync(peers).await;
         }
 
         let sync_result_c2 = syntrix_testkit::poll_until(
             || async {
                 let c2_org = client2.get_org_docs(&org_id).ok_or("org not found".to_string())?;
+                let customers_doc = c2_org.entity_docs.get("customers")
+                    .ok_or("customers doc not found".to_string())?;
                 let mut entries = Box::pin(
-                    c2_org.catalogs_doc.get_many(iroh_docs::store::Query::key_prefix("evt:"))
+                    customers_doc.get_many(iroh_docs::store::Query::key_prefix("evt:"))
                         .await
                         .map_err(|e| format!("query error: {}", e))?
                 );
@@ -582,13 +521,10 @@ async fn test_multi_node_customer_lifecycle() {
             let found_c2 = c2_results.iter().any(|r| r.get("id").and_then(|v| v.as_str()) == Some(customer_id));
             assert!(found_c2, "customer '{}' should be queryable by client2", customer_id);
         }
-        // If client2 didn't sync, the test still passes — P2P sync is environment-dependent
     }
-    // If admin didn't sync, the test continues — P2P is tested at the application level above
 }
 
-/// Test that events written to catalogs/operational/payroll docs can be read back
-/// and filtered by entity/event_type (simulates audit without block_on nesting).
+/// Test that events written to entity docs can be read back and filtered.
 #[tokio::test]
 async fn test_audit_query_returns_events() {
     let (_dir, data_dir) = syntrix_testkit::temp_node_dir("test_audit_query");
@@ -599,17 +535,12 @@ async fn test_audit_query_returns_events() {
     let api = state.api();
     let author = state.author();
     let control_doc = api.create().await.expect("create control doc");
-    let catalogs_doc = api.create().await.expect("create catalogs doc");
-    let operational_doc = api.create().await.expect("create operational doc");
-    let payroll_doc = api.create().await.expect("create payroll doc");
+    let customers_doc = api.create().await.expect("create customers doc");
     let org_id = "audit-test-org".to_string();
 
-    // Register device and role grants in registry
     if let Ok(mut reg) = state.registry().write() {
         reg.map_namespace_to_org(control_doc.id(), org_id.clone());
-        reg.map_namespace_to_org(catalogs_doc.id(), org_id.clone());
-        reg.map_namespace_to_org(operational_doc.id(), org_id.clone());
-        reg.map_namespace_to_org(payroll_doc.id(), org_id.clone());
+        reg.map_namespace_to_org(customers_doc.id(), org_id.clone());
         reg.upsert_device(
             org_id.clone(),
             state.node_id(),
@@ -631,14 +562,10 @@ async fn test_audit_query_returns_events() {
         );
     }
 
-    // Set up org docs
     state.add_org_docs("control", &org_id, "Audit Test Org", "admin", control_doc.clone());
-    state.add_org_docs("catalogs", &org_id, "Audit Test Org", "admin", catalogs_doc.clone());
-    state.add_org_docs("operational", &org_id, "Audit Test Org", "admin", operational_doc.clone());
-    state.add_org_docs("payroll", &org_id, "Audit Test Org", "admin", payroll_doc.clone());
+    state.add_org_docs("customers", &org_id, "Audit Test Org", "admin", customers_doc.clone());
     state.set_active_org(&org_id).expect("set active org");
 
-    // Write a customer event to catalogs doc (async, avoids block_on)
     let customer_payload = serde_json::json!({
         "id": "audit-cust-001",
         "name": "Audit Test Corp",
@@ -656,17 +583,15 @@ async fn test_audit_query_returns_events() {
         "schema_version": 1,
         "payload": &customer_payload,
     });
-    catalogs_doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value).unwrap())
+    customers_doc.set_bytes(author, key.clone().into_bytes(), serde_json::to_vec(&value).unwrap())
         .await
         .expect("write customer event");
 
-    // Index the document
     let _ = state.indexer.upsert_document(&org_id, "customers", "audit-cust-001", &customer_payload);
 
-    // Read the event back from the doc (async, manually — replaces block_on-based audit_query)
     use futures_util::StreamExt;
     let mut stream = Box::pin(
-        catalogs_doc.get_many(iroh_docs::store::Query::key_prefix("evt:"))
+        customers_doc.get_many(iroh_docs::store::Query::key_prefix("evt:"))
             .await
             .expect("read doc events")
     );
@@ -683,15 +608,12 @@ async fn test_audit_query_returns_events() {
             }
         }
     }
-    assert!(found, "customer.created event should be readable from catalogs doc");
+    assert!(found, "customer.created event should be readable from customers doc");
 
-    // Verify the event is queryable through the indexer with entity filter
     let results = query_entity_impl(&state, Some(&org_id), "customers", None, None)
         .expect("query customers");
     assert!(!results.is_empty(), "customers should be queryable");
     let found_cust = results.iter().any(|r| r.get("id").and_then(|v| v.as_str()) == Some("audit-cust-001"));
     assert!(found_cust, "customer should be found by id");
-
-    // Verify the customer appears in the query results
     assert!(results.iter().any(|r| r.get("id").and_then(|v| v.as_str()) == Some("audit-cust-001")));
 }

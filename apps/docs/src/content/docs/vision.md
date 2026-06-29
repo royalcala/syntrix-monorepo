@@ -233,34 +233,11 @@ Los índices son **locales y derivados**, nunca se sincronizan P2P. Cada peer re
 
 ### 4.3 Particionamiento por sucursal (visión futura)
 
-Cuando hay 100+ sucursales escribiendo a `operational`, el set reconciliation de iroh-docs puede volverse pesado:
+Cuando hay 100+ sucursales escribiendo al mismo namespace, el set reconciliation de iroh-docs puede volverse pesado.
 
-```
-operational/
-  branch_001/
-    invoices/...
-    orders/...
-  branch_002/
-    invoices/...
-    orders/...
-  _global/
-    customers/...     ← catálogos globales (synced a todos)
-    products/...
-```
+Con namespaces por entidad, el aislamiento es granular y la contención se minimiza.
 
-### 4.4 Archivo histórico (Fase 3)
-
-Las entradas de iroh-docs se streamean a almacenamiento descentralizado (Arweave/Storj) para backup, analytics y auditoría offline. Los datos en el dispositivo se pueden compactar/purgar sabiendo que el archivo histórico está seguro.
-
----
-
-## 5. Sistema de permisos completo
-
-### 5.1 Permisos por rol (implementado)
-
-`can_open`/`can_write` contienen nombres de entidad (ej. `"customers"`) o `"*"` (acceso total). Resolución: `lista.contains(entidad) || lista.contains("*")`.
-
-La UI de administración usa una **matriz de permisos** agrupada por namespace, con selección masiva por grupo.
+La UI de administración usa una **matriz de permisos** plana por entidad, sin agrupación por namespace.
 
 ### 5.2 Permisos a nivel de campo (visión futura)
 

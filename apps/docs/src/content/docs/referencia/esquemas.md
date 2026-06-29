@@ -76,14 +76,12 @@ pub fn invoices_schema() -> EntitySchema {
 
 | Entidad | Versión | Campos Indexados | Campos Buscables | Relaciones |
 |---------|---------|-----------------|------------------|------------|
-| Entidad | Versión | Namespace | Campos Indexados | Campos Buscables | Relaciones |
-|---------|---------|-----------|-----------------|------------------|-----------|
-| customers | 1 | catalogs | name | name, email, phone, rfc, address | — |
-| suppliers | 1 | catalogs | name | name, email, phone, rfc, address | — |
-| products | 1 | catalogs | name, price, cost, sku, category, stock | name, description | — |
-| invoices | 1 | operational | folio, customer_id, date, total, status | notes | customer_id → customers.id |
-| orders | 1 | operational | folio, customer_id, date, total, status | notes | customer_id → customers.id |
-| payroll | 1 | payroll | name, department, salary, role, active | name, payment_method | — |
+| customers | 1 | name | name, email, phone, rfc, address | — |
+| suppliers | 1 | name | name, email, phone, rfc, address | — |
+| products | 1 | name, price, cost, sku, category, stock | name, description | — |
+| invoices | 1 | folio, customer_id, date, total, status | notes | customer_id → customers.id |
+| orders | 1 | folio, customer_id, date, total, status | notes | customer_id → customers.id |
+| payroll | 1 | name, department, salary, role, active | name, payment_method | — |
 
 ---
 
@@ -130,15 +128,14 @@ Las entidades legacy sin schema registrado caen en modo de compatibilidad invers
 
 ---
 
-## Permisos y Namespaces
+## Permisos y Entidades
 
-El `namespace` de cada entidad (definido en el esquema) conecta el sistema de permisos con el Registry:
+Cada entidad tiene su propio namespace de Iroh. Los permisos operan directamente sobre nombres de entidad:
 
-1. **Asignación entidad→namespace**: Cada entidad sabe a qué namespace pertenece (catalogs, operational, payroll).
-2. **Resolución de permisos**: `can_open`/`can_write` contienen nombres de entidad (o `"*"`). Se resuelve con `can_access(lista, entidad)` → `lista.contains(entidad) || lista.contains("*")`.
-3. **Ticket sharing**: `send_invite()` mapea las entidades en `can_open` a sus namespaces vía el registry para compartir los tickets de iroh-docs correctos.
-4. **Validación en queries**: `query_entity()` verifica que el namespace de la entidad solicitada esté en los namespaces abiertos del rol del dispositivo.
+1. **Resolución directa**: `can_open`/`can_write` contienen nombres de entidad (o `"*"`). Se resuelve con `can_access(lista, entidad)` → `lista.contains(entidad) || lista.contains("*")`.
+2. **Ticket sharing**: `send_invite()` itera `can_open` y genera tickets solo para los namespaces (entidades) que el rol necesita.
+3. **Validación en queries**: `query_entity()` verifica que el nombre de la entidad esté en los namespaces abiertos del rol del dispositivo.
 
-Ejemplo: Un rol `sales` con `can_open: ["customers","products","invoices","orders"]` → namespaces `catalogs` + `operational`. El `accept_cb` de red permite acceso a esos namespaces. `query_entity("payroll")` es rechazado porque `payroll` no está en catalogs ni operational.
+Ejemplo: Un rol `sales` con `can_open: ["customers","products","invoices","orders"]` puede abrir exactamente esos 4 namespaces. `query_entity("payroll")` es rechazado porque `payroll` no está en `can_open`.
 
 Ver [Namespaces y Autorización](/arquitectura/namespaces/) para más detalles sobre el modelo de permisos.

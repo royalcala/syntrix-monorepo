@@ -1,21 +1,3 @@
-//! Heartbeat and peer re-sync loop for Syntrix P2P nodes.
-//!
-//! Every active node (admin or client) runs `start_heartbeat_with_resync` in the background.
-//! This loop:
-//!   1. Writes a timestamped heartbeat under `heartbeat/<own_node_id>` every 15 seconds.
-//!   2. Reloads device membership from `members/` into the NamespaceRegistry AND re-dials
-//!      all known active peers on all 4 docs.
-//!   3. Reloads role grants from `roles/` prefix into the NamespaceRegistry so that
-//!      permission changes propagate to `check_read_access()` within one heartbeat cycle.
-//!
-//! The device membership reload (step 2) is CRITICAL for P2P sync. When a new member appears
-//! in the control doc (e.g. Client2 joined after Client1), the heartbeat loop registers the
-//! new device in the registry so that the accept_cb allows its sync connections. Without this,
-//! `start_sync` calls are silently rejected and live replication never works.
-//!
-//! The re-dial step ensures that when a peer restarts (and gets a new network address), sync
-//! sessions are automatically re-established within one heartbeat cycle (~15 s).
-
 use std::sync::{Arc, RwLock};
 use futures_util::StreamExt;
 use crate::addr::parse_device_addr;
@@ -48,13 +30,13 @@ pub fn start_heartbeat(
 /// Writes a heartbeat every 15 seconds, re-dials all known active peers from
 /// the control document's `members/` prefix, and reloads role grants from the
 /// `roles/` prefix into the `NamespaceRegistry`. This ensures that permission
-/// changes (e.g. admin updating a role) propagate to `check_read_access()`
-/// within one heartbeat cycle without requiring a restart.
+/// changes propagate within one heartbeat cycle without requiring a restart.
+///
+/// `entity_docs` is a list of all data documents (one per entity) that should
+/// receive sync connections alongside the control document.
 pub fn start_heartbeat_with_resync(
     ctrl_doc: iroh_docs::api::Doc,
-    cat_doc: iroh_docs::api::Doc,
-    op_doc: iroh_docs::api::Doc,
-    pay_doc: iroh_docs::api::Doc,
+    entity_docs: Vec<iroh_docs::api::Doc>,
     author: iroh_docs::AuthorId,
     node_id: String,
     store: iroh_blobs::api::Store,
@@ -62,7 +44,6 @@ pub fn start_heartbeat_with_resync(
     registry: Arc<RwLock<NamespaceRegistry>>,
 ) {
     tokio::spawn(async move {
-        // Resolve org_id once from the control doc's namespace id via the registry.
         let org_id: String = registry
             .read()
             .ok()
@@ -117,8 +98,6 @@ pub fn start_heartbeat_with_resync(
                                         let device_addr =
                                             val["device_addr"].as_str().unwrap_or("").to_string();
 
-                                        // Register this device in the namespace registry so the
-                                        // accept_cb allows its sync connections.
                                         if let Ok(node_id_bytes) = hex::decode(node_id_str) {
                                             let mut id = [0u8; 32];
                                             let len = node_id_bytes.len().min(32);
@@ -141,22 +120,10 @@ pub fn start_heartbeat_with_resync(
                                                     let peers_vec = vec![endpoint_addr];
                                                     let res_ctrl = ctrl_doc.start_sync(peers_vec.clone()).await;
                                                     eprintln!("[heartbeat] start_sync ctrl_doc -> {}: {:?}", &node_id_str[..8], res_ctrl.is_ok());
-                                                    // Only sync other docs if they're different from control_doc
-                                                    if cat_doc.id() != ctrl_doc.id() {
-                                                        let res_cat = cat_doc.start_sync(peers_vec.clone()).await;
-                                                        eprintln!("[heartbeat] start_sync cat_doc  -> {}: {:?}", &node_id_str[..8], res_cat.is_ok());
-                                                    } else {
-                                                        eprintln!("[heartbeat] SKIP cat_doc (same as ctrl, id={:?})", cat_doc.id());
-                                                    }
-                                                    if op_doc.id() != ctrl_doc.id() {
-                                                        let _ = op_doc.start_sync(peers_vec.clone()).await;
-                                                    } else {
-                                                        eprintln!("[heartbeat] SKIP op_doc (same as ctrl)");
-                                                    }
-                                                    if pay_doc.id() != ctrl_doc.id() {
-                                                        let _ = pay_doc.start_sync(peers_vec.clone()).await;
-                                                    } else {
-                                                        eprintln!("[heartbeat] SKIP pay_doc (same as ctrl)");
+                                                    for edoc in &entity_docs {
+                                                        if edoc.id() != ctrl_doc.id() {
+                                                            let _ = edoc.start_sync(peers_vec.clone()).await;
+                                                        }
                                                     }
                                                 } else {
                                                     eprintln!("[heartbeat] SKIP self (peer {} is us)", &node_id_str[..8]);
@@ -176,11 +143,6 @@ pub fn start_heartbeat_with_resync(
             );
 
             // 3. Reload role grants from control doc into the registry.
-            //    This is critical for second peers joining an org: the initial
-            //    sync_and_populate_org_members_impl may find an empty control doc
-            //    (sync hasn't completed yet), so roles are absent from the registry.
-            //    Within one heartbeat cycle the control doc data arrives, and this
-            //    block loads the roles into the registry so check_read_access() works.
             if !org_id.is_empty() {
                 if let Ok(entries) = ctrl_doc
                     .get_many(iroh_docs::store::Query::key_prefix("roles/"))

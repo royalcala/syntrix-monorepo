@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::identity::AppState;
-use syntrix_schema::{build_registry, can_access, upcast::{apply_upcasters, collect_upcasters}};
+use syntrix_schema::{build_registry, can_access};
 
 /// Hybrid Logical Clock — guarantees causal ordering without central authority.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -50,13 +50,10 @@ pub fn entity_from_event_type(event_type: &str) -> &str {
     }
 }
 
-/// Route event_type to its iroh-docs namespace.
-/// Returns (namespace_name, entity_name).
-pub fn route_namespace(event_type: &str) -> Option<(&'static str, String)> {
+/// Route event_type to its entity doc name.
+pub fn route_namespace(event_type: &str) -> Option<String> {
     let entity = entity_from_event_type(event_type);
-    let registry = build_registry();
-    let ns = registry.namespace_of(entity)?;
-    Some((ns.as_str(), entity.to_string()))
+    Some(entity.to_string())
 }
 
 /// Get the current schema version for a given entity.
@@ -73,8 +70,8 @@ pub fn upcast_payload(entity: &str, payload: serde_json::Value, event_schema_ver
     if event_schema_version == current_version {
         return payload;
     }
-    let upcasters = collect_upcasters();
-    apply_upcasters(payload, event_schema_version, current_version, &upcasters)
+    let upcasters = syntrix_schema::collect_upcasters();
+    syntrix_schema::apply_upcasters(payload, event_schema_version, current_version, &upcasters)
 }
 
 /// Commit an event to the active org's data doc via iroh-docs.
@@ -89,15 +86,11 @@ pub fn commit_event(
 
     let entity = entity_from_event_type(event_type);
 
-    let (ns_name, _entity_name) = route_namespace(event_type)
+    let ns_name = route_namespace(event_type)
         .ok_or_else(|| anyhow::anyhow!("unknown event_type module: {}", event_type))?;
 
-    let doc = match ns_name {
-        "operational" => &org.operational_doc,
-        "catalogs" => &org.catalogs_doc,
-        "payroll" => &org.payroll_doc,
-        _ => return Err(anyhow::anyhow!("unknown namespace: {}", ns_name)),
-    };
+    let doc = org.entity_docs.get(&ns_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown namespace: {}", ns_name))?;
 
     // Validate write permission (pure entity-level format)
     let role = &org.role;

@@ -1,27 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Iroh-docs namespace that an entity belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Namespace {
-    #[serde(rename = "catalogs")]
-    Catalogs,
-    #[serde(rename = "operational")]
-    Operational,
-    #[serde(rename = "payroll")]
-    Payroll,
-}
-
-impl Namespace {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Namespace::Catalogs => "catalogs",
-            Namespace::Operational => "operational",
-            Namespace::Payroll => "payroll",
-        }
-    }
-}
-
 /// Primitive field types that can be stored in entities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldType {
@@ -71,8 +50,6 @@ pub struct IndexDef {
 pub struct EntitySchema {
     pub name: String,
     pub version: u32,
-    /// The iroh-docs namespace this entity belongs to.
-    pub namespace: Namespace,
     pub fields: Vec<FieldSchema>,
     /// Explicit index definitions (including composite indexes)
     pub indexes: Vec<IndexDef>,
@@ -127,29 +104,9 @@ impl SchemaRegistry {
         self.entities.values().collect()
     }
 
-    /// Get the namespace for a given entity name.
-    pub fn namespace_of(&self, entity: &str) -> Option<Namespace> {
-        self.get(entity).map(|s| s.namespace)
-    }
-
-    /// Return entity names that belong to the given namespace.
-    pub fn entities_in_namespace(&self, ns: Namespace) -> Vec<&str> {
-        self.entities
-            .values()
-            .filter(|s| s.namespace == ns)
-            .map(|s| s.name.as_str())
-            .collect()
-    }
-
-    /// Return entity names that belong to the given namespace (by string).
-    pub fn entities_in_namespace_by_str(&self, ns: &str) -> Vec<&str> {
-        let target = match ns {
-            "catalogs" => Namespace::Catalogs,
-            "operational" => Namespace::Operational,
-            "payroll" => Namespace::Payroll,
-            _ => return vec![],
-        };
-        self.entities_in_namespace(target)
+    /// Return entity names.
+    pub fn entity_names(&self) -> Vec<&str> {
+        self.entities.keys().map(|s| s.as_str()).collect()
     }
 
     /// Export the full registry as a JSON-serializable value (for Tauri IPC to frontend).

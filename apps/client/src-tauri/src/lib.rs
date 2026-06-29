@@ -20,7 +20,6 @@ pub struct SchemaFilter {
     pub value: String,
 }
 
-/// Serializable query options for the Tauri IPC boundary.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SchemaQuery {
     pub filters: Option<Vec<SchemaFilter>>,
@@ -103,7 +102,7 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     }
 
     let role = invite.role.clone();
-    let (ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret) = {
+    let (ctrl_doc, entity_docs, store, registry, secret) = {
         let mut s = state.lock().map_err(|e| e.to_string())?;
 
         let mut doc_imports = Vec::new();
@@ -116,32 +115,25 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         let org_state = s.get_org_docs(&final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
         (
             org_state.control_doc.clone(),
-            org_state.catalogs_doc.clone(),
-            org_state.operational_doc.clone(),
-            org_state.payroll_doc.clone(),
+            org_state.entity_docs.clone(),
             s.store().clone(),
             s.registry().clone(),
             s.secret().clone(),
         )
     };
 
-    // Bootstrap P2P sync with the admin who sent the invite BEFORE populating members.
-    // The admin's address is included in the invite payload so the client can connect
-    // immediately without waiting for the heartbeat loop (~15s).
+    // Bootstrap P2P sync with the admin who sent the invite
     if let Some(ref admin_addr_str) = invite.admin_addr {
         if let Some(admin_endpoint) = syntrix_core::parse_device_addr(admin_addr_str) {
             let peer_vec = vec![admin_endpoint];
             let _ = ctrl_doc.start_sync(peer_vec.clone()).await;
-            let _ = cat_doc.start_sync(peer_vec.clone()).await;
-            let _ = op_doc.start_sync(peer_vec.clone()).await;
-            let _ = pay_doc.start_sync(peer_vec).await;
+            for (_ns, doc) in &entity_docs {
+                let _ = doc.start_sync(peer_vec.clone()).await;
+            }
         }
     }
 
-    // Give the sync a moment to deliver control doc entries (members, roles) so that
-    // sync_and_populate_org_members_impl can discover peers and start additional sync
-    // sessions with them (not just admin). Without this brief delay, the control doc
-    // is empty and no peers are found.
+    // Give the sync a moment to deliver control doc entries
     let mut member_found = false;
     for _attempt in 0..4 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -149,7 +141,6 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
             let s = state.lock().map_err(|e| e.to_string())?;
             if let Some(org) = s.get_org_docs(&final_org_id) {
                 let ctrl = org.control_doc.clone();
-                // Check if any members have arrived in the control doc
                 let members = tauri::async_runtime::block_on(async {
                     if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
                         let mut pinned = Box::pin(stream);
@@ -162,7 +153,6 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
                 if members {
                     true
                 } else {
-                    // Also check for roles
                     tauri::async_runtime::block_on(async {
                         if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
                             let mut pinned = Box::pin(stream);
@@ -183,20 +173,16 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         }
     }
 
-    // Now populate members — with luck the control doc has entries from the sync above.
+    let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.values().cloned().collect();
     let _ = identity::sync_and_populate_org_members_impl(
-        ctrl_doc,
-        cat_doc,
-        op_doc,
-        pay_doc,
+        ctrl_doc.clone(),
+        entity_docs_vec,
         store,
-        registry,
+        registry.clone(),
         secret,
         final_org_id.clone(),
     ).await;
 
-    // If we still don't have members after the initial sync, log a warning but continue.
-    // The heartbeat loop (every 15s) will retry and eventually discover all peers.
     if !member_found {
         eprintln!(
             "join_org: no members synced yet for org {}. Heartbeat loop will retry.",
@@ -205,8 +191,6 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     }
 
     // Ensure the current device is always registered in the namespace registry.
-    // This prevents "Access denied: role cannot read X" errors that occur when
-    // the control doc's members/{node_id} entry hasn't synced from the admin yet.
     let node_id;
     let registry_arc = {
         let s = state.lock().map_err(|e| e.to_string())?;
@@ -215,7 +199,6 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     };
     let node_id_hex = hex::encode(node_id);
     if let Ok(mut reg) = registry_arc.write() {
-        // upsert_device is idempotent — safe to call even if already registered
         reg.upsert_device(
             final_org_id.clone(),
             node_id,
@@ -227,8 +210,6 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
                 name: format!("Device {}", &node_id_hex[..8]),
             },
         );
-        // If role grants haven't been loaded from control doc yet, use defaults
-        // so openable_namespaces() returns the right namespaces immediately.
         let openable = reg.openable_namespaces(&final_org_id, &node_id);
         if openable.is_empty() {
             let (can_open, can_write): (Vec<String>, Vec<String>) = match role.as_str() {
@@ -324,10 +305,10 @@ fn check_read_access(state: &AppState, org_id: &str, entity: &str) -> Result<(),
         &org_id.to_string(),
         &node_id,
     );
-    let schema_reg = syntrix_schema::build_registry();
-    match schema_reg.namespace_of(entity) {
-        Some(ns) if openable.contains(ns.as_str()) => Ok(()),
-        _ => Err(format!("Access denied: role cannot read {}", entity)),
+    if openable.contains(entity) || openable.contains("*") {
+        Ok(())
+    } else {
+        Err(format!("Access denied: role cannot read {}", entity))
     }
 }
 
@@ -466,22 +447,21 @@ pub fn join_org_state_impl(
 
     let org_state = state.get_org_docs(final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
 
+    let namespace_ids: std::collections::HashMap<String, String> = org_state.entity_docs.iter().map(|(k, v)| (k.clone(), v.id().to_string())).collect();
+
     let cfg = identity::ClientOrgConfig {
         org_id: final_org_id.to_string(),
         name: name.to_string(),
         role: role.to_string(),
         control_id: org_state.control_doc.id().to_string(),
-        catalogs_id: org_state.catalogs_doc.id().to_string(),
-        operational_id: org_state.operational_doc.id().to_string(),
-        payroll_id: org_state.payroll_doc.id().to_string(),
+        namespace_ids,
     };
     let _ = state.save_org_config(cfg);
 
+    let entity_docs_vec: Vec<iroh_docs::api::Doc> = org_state.entity_docs.values().cloned().collect();
     sync::start_heartbeat_with_resync(
         org_state.control_doc.clone(),
-        org_state.catalogs_doc.clone(),
-        org_state.operational_doc.clone(),
-        org_state.payroll_doc.clone(),
+        entity_docs_vec.clone(),
         state.author(),
         hex::encode(state.node_id()),
         state.store().clone(),
@@ -491,9 +471,7 @@ pub fn join_org_state_impl(
 
     identity::start_doc_subscriptions(
         org_state.control_doc.clone(),
-        org_state.catalogs_doc.clone(),
-        org_state.operational_doc.clone(),
-        org_state.payroll_doc.clone(),
+        entity_docs_vec,
         state.author(),
         state.store().clone(),
         state.indexer(),
@@ -580,7 +558,6 @@ fn seed_dev_data(state: tauri::State<'_, Mutex<AppState>>) -> Result<usize, Stri
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Data directory for logs
     let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
         std::path::PathBuf::from(custom_path)
     } else {
@@ -589,7 +566,6 @@ pub fn run() {
             .join("syntrix")
     };
 
-    // Initialize structured logging (AI-first: NDJSON + ring buffer + query API)
     let log_handle = syntrix_logging::init_logging("client", data_dir.clone());
 
     let app_state = tauri::async_runtime::block_on(async {
@@ -599,7 +575,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // Start tail log events
             let handle = app.state::<LogHandle>();
             let rx = handle.subscribe_tail();
             let app_handle = app.handle().clone();
@@ -628,7 +603,6 @@ pub fn run() {
                 }
             });
 
-            // Invite listener
             let state = app.state::<Mutex<AppState>>();
             let s = state.lock().unwrap();
             if let Some(rx) = s.invite_rx.lock().unwrap().take() {

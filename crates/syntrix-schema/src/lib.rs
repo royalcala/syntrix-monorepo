@@ -19,10 +19,10 @@ pub mod entities;
 
 pub use schema::*;
 pub use encoded::encode_value;
-pub use upcast::{Upcaster, apply_upcasters};
+pub use upcast::{Upcaster, apply_upcasters, collect_upcasters};
 
-/// Re-export build_registry for convenience.
-pub use entities::build_registry;
+/// Re-export build_registry and all_schemas for convenience.
+pub use entities::{build_registry, all_schemas};
 
 /// Permission resolution: checks if a list of allowed entities (or "*") contains the target.
 pub fn can_access(allowed: &[String], entity: &str) -> bool {

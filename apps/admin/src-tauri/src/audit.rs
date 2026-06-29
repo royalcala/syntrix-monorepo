@@ -66,17 +66,14 @@ fn scan_doc_events(
         let payload = val.get("payload").cloned().unwrap_or_default();
         let node = val.get("hlc").and_then(|h| h.get("node")).and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-        // Parse entity from event_type (e.g. "customer.created" → "customers")
         let entity = entity_from_event_type(&event_type).to_string();
 
-        // Extract doc_id from payload
         let doc_id = payload.get("id")
             .and_then(|v| v.as_str())
             .or_else(|| payload.get("node_id").and_then(|v| v.as_str()))
             .unwrap_or("")
             .to_string();
 
-        // Apply filters
         if let Some(ref ent) = filter.entity { if &entity != ent { continue; } }
         if let Some(ref et) = filter.event_type { if &event_type != et { continue; } }
         if let Some(ref n) = filter.node { if &node != n { continue; } }
@@ -99,7 +96,7 @@ fn scan_doc_events(
     results
 }
 
-/// Audit query: scan the org's data docs for matching events.
+/// Audit query: scan the org's entity docs for matching events.
 pub fn audit_query(
     state: &AppState,
     org_name: &str,
@@ -115,22 +112,14 @@ pub fn audit_query(
 
     let mut results = Vec::new();
 
-    // Scan operational, catalogs, and payroll docs
-    let docs = [
-        ("operational", &org.operational_doc),
-        ("catalogs", &org.catalogs_doc),
-        ("payroll", &org.payroll_doc),
-    ];
-
-    for (_ns, doc) in &docs {
+    // Scan all entity docs
+    for (_ns, doc) in &org.entity_docs {
         let mut entries = scan_doc_events(doc, &store, filter);
         results.append(&mut entries);
     }
 
-    // Re-sort all across namespaces by HLC
     results.sort_by(|a, b| a.hlc_ts.cmp(&b.hlc_ts));
 
-    // Apply limit/offset globally
     let offset = offset.min(results.len());
     let mut results = if offset > 0 { results.split_off(offset) } else { results };
     results.truncate(limit);

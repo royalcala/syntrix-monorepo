@@ -18,7 +18,7 @@ pub struct DeviceInfo {
     pub role: String,
     pub person: String,
     pub name: String,
-    pub device_addr: String, // full addr JSON for QUIC connections
+    pub device_addr: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -32,8 +32,6 @@ pub struct RoleInfo {
 pub struct OrgInfo {
     pub name: String,
 }
-
-// All commands use block_on for iroh async ops
 
 #[tauri::command]
 fn get_node_id(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
@@ -58,7 +56,7 @@ fn add_device(
     state: tauri::State<'_, Mutex<AppState>>,
     org: String, node_id: String, name: String, person: String, role: String, device_addr: Option<String>,
 ) -> Result<(), String> {
-    let (ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret) = {
+    let (ctrl_doc, entity_docs, store, registry, secret) = {
         let mut state = state.lock().map_err(|e| e.to_string())?;
         tauri::async_runtime::block_on(
             admin::add_device(&mut state, &org, &node_id, &name, &person, &role, &device_addr.clone().unwrap_or_default())
@@ -66,17 +64,15 @@ fn add_device(
         let org_state = state.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
         (
             org_state.control_doc.clone(),
-            org_state.catalogs_doc.clone(),
-            org_state.operational_doc.clone(),
-            org_state.payroll_doc.clone(),
+            org_state.entity_docs.clone(),
             state.store().clone(),
             state.registry().clone(),
             state.secret().clone(),
         )
     };
-    // Immediately dial the new device so sync starts now
+    let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.into_values().collect();
     tauri::async_runtime::block_on(identity::sync_and_populate_org_members_impl(
-        ctrl_doc, cat_doc, op_doc, pay_doc, store, registry, secret, org,
+        ctrl_doc, entity_docs_vec, store, registry, secret, org,
     )).map_err(|e| e.to_string())
 }
 
@@ -139,9 +135,6 @@ fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Resul
     tauri::async_runtime::block_on(admin::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
 }
 
-/// Parse node_id and device_addr from the client's endpoint address JSON.
-/// The format is: {"node_id": "hex...", "addrs": ["ip:...", "relay:..."]}
-/// Falls back to treating the raw string as a hex node_id.
 fn parse_invite_endpoint(endpoint_addr_json: &str) -> Result<(String, String), String> {
     if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"]
@@ -150,7 +143,6 @@ fn parse_invite_endpoint(endpoint_addr_json: &str) -> Result<(String, String), S
             .to_string();
         Ok((node_id_hex, endpoint_addr_json.to_string()))
     } else {
-        // Raw hex node_id
         Ok((endpoint_addr_json.to_string(), endpoint_addr_json.to_string()))
     }
 }
@@ -166,8 +158,6 @@ fn send_invite(
 ) -> Result<(), String> {
     let (node_id_hex, device_addr) = parse_invite_endpoint(&endpoint_addr_json)?;
 
-    // Register the device as a member FIRST, so the entry exists in the control doc
-    // before tickets are created and sent to the client.
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
         tauri::async_runtime::block_on(admin::add_device(
@@ -181,24 +171,19 @@ fn send_invite(
         )).map_err(|e| e.to_string())?;
     }
 
-    // Now create tickets (member entry is already persisted) and send invite
-    let (control_doc, catalogs_doc, operational_doc, payroll_doc, endpoint) = {
+    let (control_doc, entity_docs, endpoint) = {
         let s = state.lock().map_err(|e| e.to_string())?;
         let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
         (
             org_state.control_doc.clone(),
-            org_state.catalogs_doc.clone(),
-            org_state.operational_doc.clone(),
-            org_state.payroll_doc.clone(),
+            org_state.entity_docs.clone(),
             s.endpoint().clone(),
         )
     };
 
     tauri::async_runtime::block_on(admin::send_invite(
         control_doc,
-        catalogs_doc,
-        operational_doc,
-        payroll_doc,
+        entity_docs,
         endpoint,
         &org,
         &endpoint_addr_json,
@@ -229,7 +214,6 @@ fn summarize_logs(handle: tauri::State<'_, LogHandle>, window_secs: u64) -> Resu
 
 #[tauri::command]
 fn start_tail_logs(_app: tauri::AppHandle, _handle: tauri::State<'_, LogHandle>) -> Result<(), String> {
-    // Tail is started automatically in setup(), kept for explicit restart if needed
     Ok(())
 }
 
@@ -266,7 +250,6 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Data directory for logs
     let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
         std::path::PathBuf::from(custom_path)
     } else {
@@ -275,7 +258,6 @@ pub fn run() {
             .join("syntrix")
     };
 
-    // Initialize structured logging (AI-first: NDJSON + ring buffer + query API)
     let log_handle = syntrix_logging::init_logging("admin", data_dir.clone());
 
     let app_state = tauri::async_runtime::block_on(async {

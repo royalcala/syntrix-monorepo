@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 type EntitySchema = {
   name: string;
   version: number;
-  namespace: string;
   fields: { name: string; field_type: string; indexed: boolean; searchable: boolean; sort_key: boolean; relation: { target: string } | null }[];
   indexes: { name: string; fields: string[] }[];
 };
@@ -13,12 +12,6 @@ type Props = {
   canOpen: string[];
   canWrite: string[];
   onChange: (canOpen: string[], canWrite: string[]) => void;
-};
-
-const NAMESPACE_LABELS: Record<string, string> = {
-  catalogs: "Catálogos",
-  operational: "Operacional",
-  payroll: "Nómina",
 };
 
 export function PermissionMatrix({ canOpen, canWrite, onChange }: Props) {
@@ -40,45 +33,6 @@ export function PermissionMatrix({ canOpen, canWrite, onChange }: Props) {
     }
   }, [hasAll, onChange]);
 
-  // Group schemas by namespace
-  const grouped = schemas.reduce<Record<string, EntitySchema[]>>((acc, s) => {
-    const ns = s.namespace || "other";
-    if (!acc[ns]) acc[ns] = [];
-    acc[ns].push(s);
-    return acc;
-  }, {});
-
-  const filtered = (entities: EntitySchema[]) => {
-    if (!search) return entities;
-    const q = search.toLowerCase();
-    return entities.filter((e) => e.name.includes(q));
-  };
-
-  const toggleNamespace = (ns: string, col: "read" | "write") => {
-    if (hasAll) return;
-    const list = col === "read" ? canOpen : canWrite;
-    const entities = schemas.filter((s) => (s.namespace || "other") === ns);
-    const allSelected = entities.every((e) => list.includes(e.name));
-    const updated = [...list];
-    if (allSelected) {
-      // Deselect all in namespace
-      entities.forEach((e) => {
-        const idx = updated.indexOf(e.name);
-        if (idx >= 0) updated.splice(idx, 1);
-      });
-    } else {
-      // Select all in namespace
-      entities.forEach((e) => {
-        if (!updated.includes(e.name)) updated.push(e.name);
-      });
-    }
-    if (col === "read") {
-      onChange(updated, canWrite);
-    } else {
-      onChange(canOpen, updated);
-    }
-  };
-
   const toggleEntity = (entity: string, col: "read" | "write") => {
     if (hasAll) return;
     const list = col === "read" ? [...canOpen] : [...canWrite];
@@ -92,19 +46,11 @@ export function PermissionMatrix({ canOpen, canWrite, onChange }: Props) {
     }
   };
 
-  const namespaceAllSelected = (ns: string, col: "read" | "write") => {
-    if (hasAll) return true;
-    const list = col === "read" ? canOpen : canWrite;
-    const entities = schemas.filter((s) => (s.namespace || "other") === ns);
-    return entities.length > 0 && entities.every((e) => list.includes(e.name));
-  };
-
-  const namespaceSomeSelected = (ns: string, col: "read" | "write") => {
-    if (hasAll) return true;
-    const list = col === "read" ? canOpen : canWrite;
-    const entities = schemas.filter((s) => (s.namespace || "other") === ns);
-    return entities.some((e) => list.includes(e.name));
-  };
+  const filtered = schemas.filter((e) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return e.name.includes(q);
+  });
 
   if (schemas.length === 0) return <div className="text-sm text-muted-foreground p-4">Cargando esquemas…</div>;
 
@@ -120,7 +66,7 @@ export function PermissionMatrix({ canOpen, canWrite, onChange }: Props) {
         />
         <div>
           <span className="text-sm font-medium">Acceso total ({"*"})</span>
-          <p className="text-xs text-muted-foreground">Otorga acceso de lectura y escritura a todas las entidades y namespaces</p>
+          <p className="text-xs text-muted-foreground">Otorga acceso de lectura y escritura a todas las entidades</p>
         </div>
       </label>
 
@@ -143,68 +89,29 @@ export function PermissionMatrix({ canOpen, canWrite, onChange }: Props) {
             </tr>
           </thead>
           <tbody>
-            {Object.entries(grouped).map(([ns, entities]) => {
-              const visible = filtered(entities);
-              if (visible.length === 0 && search) return null;
-              return (
-                <>
-                  {/* Namespace header row */}
-                  <tr key={ns} className="bg-muted/20 border-t">
-                    <td className="px-3 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider" colSpan={3}>
-                      {NAMESPACE_LABELS[ns] || ns}
-                    </td>
-                  </tr>
-                  {/* Namespace select-all row */}
-                  <tr key={`${ns}-all`} className="bg-muted/10">
-                    <td className="px-3 py-1 text-xs text-muted-foreground pl-6">Seleccionar todo</td>
-                    <td className="text-center py-1">
-                      <input
-                        type="checkbox"
-                        checked={namespaceAllSelected(ns, "read")}
-                        ref={(el) => { if (el) el.indeterminate = namespaceSomeSelected(ns, "read") && !namespaceAllSelected(ns, "read"); }}
-                        onChange={() => toggleNamespace(ns, "read")}
-                        disabled={hasAll}
-                        className="h-4 w-4"
-                      />
-                    </td>
-                    <td className="text-center py-1">
-                      <input
-                        type="checkbox"
-                        checked={namespaceAllSelected(ns, "write")}
-                        ref={(el) => { if (el) el.indeterminate = namespaceSomeSelected(ns, "write") && !namespaceAllSelected(ns, "write"); }}
-                        onChange={() => toggleNamespace(ns, "write")}
-                        disabled={hasAll}
-                        className="h-4 w-4"
-                      />
-                    </td>
-                  </tr>
-                  {/* Entity rows */}
-                  {(search ? visible : entities).map((e) => (
-                    <tr key={e.name} className="border-t border-muted/30 hover:bg-muted/20">
-                      <td className="px-3 py-2 pl-8 text-sm capitalize">{e.name}</td>
-                      <td className="text-center py-2">
-                        <input
-                          type="checkbox"
-                          checked={hasAll || canOpen.includes(e.name)}
-                          onChange={() => toggleEntity(e.name, "read")}
-                          disabled={hasAll}
-                          className="h-4 w-4"
-                        />
-                      </td>
-                      <td className="text-center py-2">
-                        <input
-                          type="checkbox"
-                          checked={hasAll || canWrite.includes(e.name)}
-                          onChange={() => toggleEntity(e.name, "write")}
-                          disabled={hasAll}
-                          className="h-4 w-4"
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </>
-              );
-            })}
+            {filtered.map((e) => (
+              <tr key={e.name} className="border-t border-muted/30 hover:bg-muted/20">
+                <td className="px-3 py-2 pl-3 text-sm capitalize">{e.name}</td>
+                <td className="text-center py-2">
+                  <input
+                    type="checkbox"
+                    checked={hasAll || canOpen.includes(e.name)}
+                    onChange={() => toggleEntity(e.name, "read")}
+                    disabled={hasAll}
+                    className="h-4 w-4"
+                  />
+                </td>
+                <td className="text-center py-2">
+                  <input
+                    type="checkbox"
+                    checked={hasAll || canWrite.includes(e.name)}
+                    onChange={() => toggleEntity(e.name, "write")}
+                    disabled={hasAll}
+                    className="h-4 w-4"
+                  />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>

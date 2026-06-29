@@ -15,7 +15,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 ### 1.1 Capa de Datos (Source of Truth)
 - **Tecnología:** `iroh-docs`
 - **Función:** Sincronización P2P multi-dispositivo y almacenamiento inmutable de eventos.
-- **Estructura:** Los datos se guardan como payloads JSON inmutables. El control de concurrencia se maneja mediante HLC (Hybrid Logical Clocks) en la llave del evento. Se utilizan diferentes namespaces para aislar permisos (ej. ventas vs nómina).
+- **Estructura:** Los datos se guardan como payloads JSON inmutables. El control de concurrencia se maneja mediante HLC (Hybrid Logical Clocks) en la llave del evento. Cada entidad tiene su propio namespace Iroh para aislar permisos a nivel granular.
 
 ### 1.2 Capa Relacional (Local Engine)
 - **Tecnología:** `redb` (Embebido en Rust)
@@ -50,7 +50,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 ## 3. Estado de Desarrollo (Roadmap Unificado)
 
 ### ✅ Completado y en Producción
-- **Infraestructura Core:** Admin crea organización con 4 namespaces, agrega dispositivos y comparte tickets selectivos por rol.
+- **Infraestructura Core:** Admin crea organización con namespaces por entidad, agrega dispositivos y comparte tickets selectivos por rol.
 - **Registry de Esquemas (`crates/syntrix-schema/`):** Definición centralizada de entidades, campos, tipos, índices, relaciones y versiones. Exportable a JSON para frontend.
 - **Motor Relacional Schema-Driven:** `indexes.rs` genera índices solo para campos `#[indexed]`, con codificación sortable de números (big-endian hex), índices compuestos y paginación server-side.
 - **Tantivy Schema-Driven:** Solo indexa campos `#[searchable]` del Registry.

@@ -1,11 +1,11 @@
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use iroh_docs::api::protocol::{ShareMode, AddrInfoOptions};
 
 use crate::identity::AppState;
 use crate::{DeviceInfo, RoleInfo};
 pub use syntrix_core::{build_device_addr_string, start_heartbeat_with_resync, SyncInfo, get_sync_info};
-use syntrix_schema::build_registry;
+use syntrix_schema::all_schemas;
 
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
@@ -13,12 +13,13 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     let author = state.author();
 
     let control_doc = api.create().await?;
-    let catalogs_doc = api.create().await?;
-    let operational_doc = api.create().await?;
-    let payroll_doc = api.create().await?;
+    let mut entity_docs = HashMap::new();
+    for schema in all_schemas() {
+        let doc = api.create().await?;
+        entity_docs.insert(schema.name, doc);
+    }
 
     let node_id_hex = hex::encode(state.node_id());
-    // Build device_addr for admin itself so peers can re-sync with us
     let own_device_addr = build_device_addr_string(state.endpoint());
     let device_json = serde_json::json!({
         "active": true,
@@ -41,24 +42,23 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     // Register namespaces for accept_cb
     if let Ok(mut reg) = state.registry().write() {
         reg.map_namespace_to_org(control_doc.id(), name.into());
-        reg.map_namespace_to_org(catalogs_doc.id(), name.into());
-        reg.map_namespace_to_org(operational_doc.id(), name.into());
-        reg.map_namespace_to_org(payroll_doc.id(), name.into());
+        for (_ns, doc) in &entity_docs {
+            reg.map_namespace_to_org(doc.id(), name.into());
+        }
     }
 
     let ctrl_id = control_doc.id().to_string();
-    let cat_id = catalogs_doc.id().to_string();
-    let op_id = operational_doc.id().to_string();
-    let pay_id = payroll_doc.id().to_string();
+    let namespace_ids: HashMap<String, String> = entity_docs.iter().map(|(k, v)| (k.clone(), v.id().to_string())).collect();
 
     state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, &own_device_addr);
-    state.add_org(name, control_doc.clone(), catalogs_doc.clone(), operational_doc.clone(), payroll_doc.clone());
-    state.save_org_config(name, &ctrl_id, &cat_id, &op_id, &pay_id)?;
+    state.add_org(name, control_doc.clone(), entity_docs.clone());
+    state.save_org_config(name, &ctrl_id, &namespace_ids)?;
     
     let store = state.store().clone();
     let secret = state.secret().clone();
+    let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.into_values().collect();
     start_heartbeat_with_resync(
-        control_doc.clone(), catalogs_doc.clone(), operational_doc.clone(), payroll_doc.clone(),
+        control_doc.clone(), entity_docs_vec,
         author, node_id_hex, store, secret, state.registry().clone(),
     );
 
@@ -132,12 +132,10 @@ pub async fn update_device(
     Ok(())
 }
 
-/// List devices from in-memory cache.
 pub async fn list_devices(state: &mut AppState, org: &str) -> anyhow::Result<Vec<DeviceInfo>> {
     Ok(state.list_org_devices(org))
 }
 
-/// List roles from in-memory cache (populated during add_device/create_org).
 pub async fn list_roles(state: &mut AppState, org: &str) -> anyhow::Result<Vec<RoleInfo>> {
     let roles = state.list_org_roles(org);
     Ok(roles)
@@ -147,41 +145,31 @@ pub fn network_status(_state: &AppState) -> String {
     "online (iroh P2P node running)".into()
 }
 
-/// Generate tickets for sharing an org's control + data docs.
 pub async fn share_org_tickets(state: &mut AppState, org: &str) -> anyhow::Result<Vec<String>> {
     let org_state = state.get_org(org)
         .ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
 
     let control_ticket = org_state.control_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let catalogs_ticket = org_state.catalogs_doc
-        .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let operational_ticket = org_state.operational_doc
-        .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let payroll_ticket = org_state.payroll_doc
-        .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
-    Ok(vec![
-        control_ticket.to_string(),
-        catalogs_ticket.to_string(),
-        operational_ticket.to_string(),
-        payroll_ticket.to_string(),
-    ])
+    let mut tickets = vec![control_ticket.to_string()];
+    for (_ns, doc) in &org_state.entity_docs {
+        let ticket = doc.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+        tickets.push(ticket.to_string());
+    }
+
+    Ok(tickets)
 }
 
 /// Send an org invitation to a client device.
-/// Accepts either a JSON with node_id + addrs, or just a hex node_id.
 pub async fn send_invite(
     control_doc: iroh_docs::api::Doc,
-    catalogs_doc: iroh_docs::api::Doc,
-    operational_doc: iroh_docs::api::Doc,
-    payroll_doc: iroh_docs::api::Doc,
+    entity_docs: HashMap<String, iroh_docs::api::Doc>,
     endpoint: iroh::Endpoint,
     org: &str,
     endpoint_addr_json: &str,
     role: &str,
 ) -> anyhow::Result<(String, String)> {
-    // Try parsing as JSON (full address), fall back to raw hex node_id
     let (peer, addrs, device_addr_str) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"].as_str()
             .ok_or_else(|| anyhow::anyhow!("invalid addr json: missing node_id"))?;
@@ -194,7 +182,6 @@ pub async fn send_invite(
             .map(|a| a.iter().filter_map(|v| {
                 let s = v.as_str()?;
                 if let Some(relay_str) = s.strip_prefix("relay:") {
-                    // Include relay URL for relay-based discovery
                     relay_str.parse::<iroh::RelayUrl>().ok().map(iroh::TransportAddr::Relay)
                 } else {
                     let addr_str = s.strip_prefix("ip:").unwrap_or(s);
@@ -204,7 +191,6 @@ pub async fn send_invite(
             .unwrap_or_default();
         (peer, addrs, endpoint_addr_json.to_string())
     } else {
-        // Raw hex node_id — rely on DNS
         let node_id_bytes = hex::decode(endpoint_addr_json)?;
         let node_id: [u8; 32] = node_id_bytes.as_slice().try_into()
             .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
@@ -214,45 +200,29 @@ pub async fn send_invite(
 
     let control_ticket = control_doc
         .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let catalogs_ticket = catalogs_doc
-        .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let operational_ticket = operational_doc
-        .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
-    let payroll_ticket = payroll_doc
-        .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
-    // Determine which namespace tickets to share based on role's can_open
+    // Determine which entity docs to share based on role's can_open
     let grants = default_role_grants(role);
     let can_open: Vec<String> = grants["can_open"].as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
-    let registry = build_registry();
-    let mut needed_ns: HashSet<&'static str> = HashSet::new();
-
-    if can_open.iter().any(|e| e == "*") {
-        // All entities → all namespace tickets
-        needed_ns.insert("catalogs");
-        needed_ns.insert("operational");
-        needed_ns.insert("payroll");
-    } else {
-        for entity in &can_open {
-            if let Some(ns) = registry.namespace_of(entity) {
-                needed_ns.insert(ns.as_str());
-            }
-        }
-    }
-
     let mut tickets: Vec<serde_json::Value> = vec![];
     tickets.push(serde_json::json!({"ns": "control", "ticket": control_ticket.to_string()}));
-    if needed_ns.contains("catalogs") {
-        tickets.push(serde_json::json!({"ns": "catalogs", "ticket": catalogs_ticket.to_string()}));
-    }
-    if needed_ns.contains("operational") {
-        tickets.push(serde_json::json!({"ns": "operational", "ticket": operational_ticket.to_string()}));
-    }
-    if needed_ns.contains("payroll") {
-        tickets.push(serde_json::json!({"ns": "payroll", "ticket": payroll_ticket.to_string()}));
+
+    if can_open.iter().any(|e| e == "*") {
+        // All entities → include all entity doc tickets
+        for (ns_name, doc) in &entity_docs {
+            let ticket = doc.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+            tickets.push(serde_json::json!({"ns": ns_name, "ticket": ticket.to_string()}));
+        }
+    } else {
+        for ns_name in &can_open {
+            if let Some(doc) = entity_docs.get(ns_name) {
+                let ticket = doc.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+                tickets.push(serde_json::json!({"ns": ns_name, "ticket": ticket.to_string()}));
+            }
+        }
     }
 
     let payload = serde_json::json!({
@@ -274,7 +244,6 @@ pub async fn send_invite(
     let mut send = conn.open_uni().await?;
     send.write_all(serde_json::to_vec(&payload)?.as_slice()).await?;
     send.finish()?;
-    // Wait for client to read before closing connection (race condition fix)
     let _ = conn.closed().await;
 
     let node_id_hex = hex::encode(&peer.as_bytes()[..]);
@@ -283,10 +252,10 @@ pub async fn send_invite(
 
 /// Validate that every string in a permission list is a known entity name or "*".
 fn validate_permissions(perms: &[String]) -> Result<(), String> {
-    let registry = build_registry();
+    let schemas = all_schemas();
     for p in perms {
         if p == "*" { continue; }
-        if registry.get(p).is_some() { continue; }
+        if schemas.iter().any(|s| s.name == *p) { continue; }
         return Err(format!("Permiso inválido: '{}' no es una entidad conocida ni '*'", p));
     }
     Ok(())
@@ -314,7 +283,6 @@ pub async fn create_role(
     });
     doc.set_bytes(author, role_key.into_bytes(), serde_json::to_vec(&grants)?).await?;
 
-    // Update in-memory
     state.set_role(org, name, can_open, can_write);
     Ok(())
 }
@@ -332,7 +300,6 @@ pub async fn update_role(
     let bytes = state.store().blobs().get_bytes(entry.content_hash()).await?;
     let mut role_json: serde_json::Value = serde_json::from_slice(&bytes)?;
 
-    // Apply partial changes
     if let Some(obj) = role_json.as_object_mut() {
         for (k, v) in changes {
             obj.insert(k, v);
@@ -341,15 +308,9 @@ pub async fn update_role(
 
     doc.set_bytes(author, role_key.into_bytes(), serde_json::to_vec(&role_json)?).await?;
 
-    // Update in-memory state
     let can_open = role_json["can_open"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
     let can_write = role_json["can_write"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
     state.set_role(org, key, can_open, can_write);
     
     Ok(())
 }
-
-
-// build_device_addr_string, start_heartbeat, start_heartbeat_with_resync,
-// PeerStatus, SyncInfo, get_sync_info — re-exported from syntrix-core at the top of this file.
-
