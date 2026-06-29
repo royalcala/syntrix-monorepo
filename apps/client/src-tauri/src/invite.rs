@@ -3,31 +3,19 @@ use iroh::{endpoint::Connection, protocol::ProtocolHandler};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-/// ALPN for invite protocol: admin sends org tickets to client devices.
 pub const INVITE_ALPN: &[u8] = b"/syntrix/invite/1";
 
-/// Payload received from admin when a device is invited to an org.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InvitePayload {
     pub org_name: String,
     pub role: String,
-    /// The admin's device address (for bootstrapping P2P sync after joining).
-    /// Format: semicolon-separated or JSON object (see parse_device_addr).
     pub admin_addr: Option<String>,
-    pub tickets: Vec<TicketInfo>,
+    pub topic_id: [u8; 32],
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct TicketInfo {
-    pub ns: String,
-    pub ticket: String,
-}
-
-/// Stores received invites + emits Tauri events.
 #[derive(Debug, Clone)]
 pub struct InviteProtocolHandler {
     pub queue: Arc<Mutex<Vec<InvitePayload>>>,
-    /// Channel sender for real-time event emission to the frontend.
     event_tx: mpsc::UnboundedSender<InvitePayload>,
 }
 
@@ -68,9 +56,7 @@ impl ProtocolHandler for InviteProtocolHandler {
             match serde_json::from_slice::<InvitePayload>(&buf) {
                 Ok(invite) => {
                     eprintln!("invite: received invite for org {} as {}", invite.org_name, invite.role);
-                    // Emit event to frontend immediately (non-blocking)
                     let _ = tx.send(invite.clone());
-                    // Also store in queue as fallback
                     queue.lock().unwrap().push(invite);
                 }
                 Err(e) => {

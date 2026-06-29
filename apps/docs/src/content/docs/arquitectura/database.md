@@ -1,188 +1,67 @@
 ---
 title: "Motor de Base de Datos"
-description: "Persistencia local, proyecciones causales en Redb, búsqueda indexada con Tantivy y comparación relacional."
+description: "Persistencia local, event log en Redb, búsqueda indexada con Tantivy."
 ---
 
 # Motor de Base de Datos
 
-Syntrix implementa una arquitectura de datos descentralizada basada en **Event Sourcing** y **Proyecciones Locales**. En lugar de depender de una base de datos relacional centralizada (como PostgreSQL) o de motores de almacenamiento tradicionales en el frontend, Syntrix separa la capa de transmisión de red/consistencia de la capa de consulta local y texto completo.
+Syntrix implementa una arquitectura de datos descentralizada basada en **Event Sourcing** y **Proyecciones Locales**. La capa de red P2P (iroh-gossip) solo transporta eventos; el almacenamiento durable es exclusivamente **redb**.
 
 ---
 
-## 1. Arquitectura de Tres Capas
-
-La persistencia y el motor de datos local en el backend en Rust se dividen en tres capas con propósitos claramente separados:
+## 1. Arquitectura de Dos Capas
 
 ```mermaid
 graph TD
     A[React UI / Frontend] -- Tauri IPC --> B[Rust App State]
     
-    subgraph Capa de Red y Transmisión P2P
-        C[Iroh Docs - Event Log]
-    end
-    
-    subgraph Capa de Consulta Relacional Local
-        D[Redb - Relational Engine]
+    subgraph Capa de Almacenamiento y Consulta
+        D[Redb - Relational Engine + EVENT_LOG]
     end
     
     subgraph Capa de Búsqueda Libre
         E[Tantivy - Search Engine]
     end
 
-    B --> C
-    C -- Sincronización Eventual --> C
-    B -- Proyección Causal --> D
+    B -- Broadcast/Receive --> C[Iroh Gossip - Transporte P2P]
+    C -- Proyección --> D
     B -- Indexación Invertida --> E
 ```
 
-### Capa 1: El Log de Eventos (Iroh Docs - Replicación P2P)
-- **Persistencia de Eventos**: Toda escritura/mutación (crear un cliente, actualizar inventario, emitir factura) se guarda como un evento inmutable dentro del log de réplicas de **Iroh Docs**.
-- **Hybrid Logical Clocks (HLC)**: Las claves de los eventos se ordenan mediante HLC con el formato `evt:<timestamp_hlc>:<node_id_hlc>`. Esto garantiza que los cambios tengan un orden causal estricto sin necesidad de un servidor de hora central, tolerando desvíos horaria de relojes locales de dispositivos.
+### Capa 1: El Log de Eventos (redb EVENT_LOG + Gossip Broadcast)
+- **Persistencia de Eventos**: Toda escritura se guarda como un evento inmutable en la tabla `EVENT_LOG` de redb.
+- **Claves**: `evt:{org_id}:{hlc_ts:020}:{hlc_count:08}:{hlc_node}`.
+- **Transmisión**: El evento se broadcast al topic gossip de la org inmediatamente después de escribirlo en redb.
+- **Hybrid Logical Clocks (HLC)**: Orden causal estricto sin servidor central.
 
-### Capa 2: La Proyección Relacional (Redb - Almacenamiento Embebido)
-- **Redb**: Una base de datos embebida escrita en Rust, altamente transaccional e in-process, que almacena el "estado proyectado" consolidado de los datos.
-- **Tabla `DOCUMENTS`**: Mapea `doc:{org_id}:{entity}:{doc_id}` -> `Payload JSON (bytes)`. Permite lecturas de documentos consolidados a O(1).
-- **Tabla `INDEXES`**: Almacena índices secundarios por campo, con formato `idx:{org_id}:{entity}:{field}:{encoded_value}:{doc_id}` -> `[]`. La indexación es **schema-driven**: solo se indexan los campos marcados como `#[indexed]` en el [Registry de Esquemas](/referencia/esquemas/). Los valores se codifican con orden lexicográfico preservado (números como big-endian hex con signo invertido).
-- **Tabla `COMPOSITE`**: Almacena índices compuestos (multi-campo) con formato `compidx:{org_id}:{entity}:{name}:{v1_enc}:{v2_enc}:...:{doc_id}`. Definidos en el registry.
-- La consulta soporta filtros múltiples (intersección de índices), ordenamiento por campo y paginación server-side (`limit`/`offset`).
+### Capa 2: La Proyección Relacional (Redb)
+- **`DOCUMENTS`**: Mapea `doc:{org_id}:{entity}:{doc_id}` → Payload JSON.
+- **`INDEXES`**: Índices secundarios: `idx:{org_id}:{entity}:{field}:{encoded_value}:{doc_id}`.
+- **`COMPOSITE`**: Índices compuestos: `compidx:{org_id}:{entity}:{name}:{v1_enc}:...:{doc_id}`.
+- **`HLC_TRACKER`**: Último HLC por doc: `hlc:{org_id}:{entity}:{doc_id}` → `{ ts, count, node }`.
+- **`MEMBERS`**: Miembros de org: `members:{org_id}:{node_id}` → `{ active, role, person, name, device_addr }`.
+- **`ROLES`**: Roles de org: `roles:{org_id}:{role_name}` → `{ can_open, can_write }`.
+- **`HEARTBEATS`**: Heartbeats: `heartbeat:{org_id}:{node_id}` → `{ ts, status }`.
 
 ### Capa 3: Búsqueda de Texto Completo (Tantivy)
-- **Índice Invertido Local**: Cada vez que se actualiza o inserta un documento, se indexa en **Tantivy** con un schema derivado del Registry de Esquemas: solo los campos `#[searchable]` son indexados para búsqueda full-text.
-- Permite al frontend realizar búsquedas de lenguaje natural, términos difusos (*fuzzy search*) y obtener fragmentos de coincidencia destacados (*highlighted snippets*) en microsegundos directamente desde la máquina del usuario.
-- Tantivy actúa únicamente como índice de búsqueda; la fuente de verdad sigue siendo redb.
+- Índice invertido local. Solo campos `#[searchable]` son indexados.
 
 ---
 
-## 2. Comparativa Relacional: SQL vs. Arquitectura Syntrix
+## 2. Ciclo de Vida de las Mutaciones
 
-Dado que el modelado en Syntrix se construye sobre clave-valor criptográfico y eventos distribuidos, la traducción conceptual de un paradigma relacional tradicional cambia radicalmente:
-
-| Concepto Relacional (SQL) | Traducción en Syntrix (P2P + Redb + Tantivy) | Mecanismo Interno y Comportamiento |
-| :--- | :--- | :--- |
-| **Tablas** (ej. `customers`) | Colecciones de documentos JSON proyectadas bajo el prefijo `doc:{org_id}:customers:` en **Redb**. | Flexibilidad de esquema. Cada documento es autodescriptivo. |
-| **Fila / Registro** | Un documento JSON mapeado por su identificador único `doc_id`. | Los datos se guardan estructurados e indexados como blobs de bytes JSON. |
-| **Clave Primaria** | El sufijo `doc_id` en la tabla `DOCUMENTS`. | Usualmente derivado del HLC o UUID de la entidad. |
-| **UPDATE / INSERT** | Se escribe un nuevo evento causal en **Iroh Docs**. El indexador local intercepta el evento e incrementa/modifica la proyección física. | Operación 100% libre de bloqueos. Garantiza consistencia eventual P2P a nivel de red y local. |
-| **Búsqueda por Texto (`LIKE`)** | Motor de búsqueda invertida **Tantivy**. | Búsqueda por lenguaje natural o aproximaciones directamente sobre el índice optimizado en disco. |
+| Operación | redb (Almacenamiento Local) |
+|---|---|
+| **Crear (Insert)** | `append_event()` en `EVENT_LOG`, `upsert_document()` en `DOCUMENTS`, broadcast gossip |
+| **Editar (Update)** | Nuevo evento en `EVENT_LOG`, upsert en `DOCUMENTS` (LWW por HLC), broadcast gossip |
+| **Borrar (Delete)` | `delete_document()` en `DOCUMENTS` + índices |
 
 ---
 
-## 3. Hibridación de Datos: Event Sourcing P2P vs. Proyecciones Locales
+## 3. Reconstrucción de Proyecciones
 
-Syntrix no utiliza una única estrategia. Combina el modelo **Event Sourcing** (para la transmisión distribuida en red P2P) con el modelo de **Proyecciones de Estado** (para las lecturas locales y consultas del frontend):
+El archivo `syntrix_indexes.redb` y `search_index/` son reconstruibles desde `EVENT_LOG`:
 
-#### Capa de Red P2P (Iroh Docs)
-El almacenamiento distribuido de Iroh Docs opera bajo **Event Sourcing**. Los datos son inmutables y de solo añadir (*append-only*). Las claves nunca se sobrescriben directamente para evitar conflictos de sincronización de red.
-
-- **Formato de Clave Causal (HLC)**: `evt:<timestamp_hlc>:<count>:<node_id>`
-- **Valor (Encapsulado de Evento)**:
-  ```json
-  {
-    "type": "customer.upsert",
-    "hlc": { "ts": 1719414545000, "count": 2, "node": "f8a4b27a..." },
-    "schema_version": 1,
-    "payload": {
-      "id": "cust_1234",
-      "name": "Juan Perez",
-      "email": "juan@gmail.com"
-    }
-  }
-  ```
-
-#### Capa de Consulta Local (Redb y Tantivy)
-Para evitar que el frontend tenga que leer secuencialmente el log histórico de eventos de Iroh Docs cada vez que solicita datos (lo cual arruinaría el rendimiento), el backend nativo proyecta el estado actual a la base de datos local **Redb** como registros planos consolidados.
-
-- **Formato de Clave Estática**: `doc:{org_id}:{entity}:{doc_id}` (ej: `doc:org_abc:customer:cust_1234`)
-- **Valor (JSON plano consolidado)**:
-  ```json
-  {
-    "id": "cust_1234",
-    "name": "Juan Perez",
-    "email": "juan@gmail.com"
-  }
-  ```
-
-#### Ciclo de Vida de las Mutaciones
-
-| Operación | Comportamiento en Iroh Docs (Red P2P) | Comportamiento en Redb (Base de Datos Local) |
-|---|---|---|
-| **Crear (Insert)** | Genera un evento `entity.upsert` con clave temporal única `evt:<hlc>`. | Inserta el payload plano en `DOCUMENTS` y crea sus entradas indexadas en `INDEXES`. |
-| **Editar (Update)** | Genera **otro** evento `entity.upsert` con una clave `evt:<hlc>` más reciente. | Sobrescribe el JSON en `DOCUMENTS` con el nuevo payload y actualiza las claves del índice. |
-| **Borrar (Delete)** | Genera un evento `entity.delete` (tombstone) con clave `evt:<hlc>` que registra criptográficamente la eliminación. | Elimina físicamente el documento en `DOCUMENTS` y sus índices en `INDEXES` para no ser consultado más. |
-
----
-
-## 4. Manejo de Índices y Esquemas en Redb
-
-### Registry de Esquemas (Schema-Driven)
-Los esquemas de entidades se definen en el crate `syntrix-schema` (Rust, compilado). Cada entidad declara:
-- Campos con tipo (`String`, `Number`, `Boolean`, `Date`, `Relation`).
-- Qué campos tienen índice secundario (`#[indexed]`).
-- Qué campos son buscables en Tantivy (`#[searchable]`).
-- Relaciones foráneas (`#[relation(target = "...", field = "...")]`).
-- Índices compuestos.
-- Versión de esquema (`schema_version`) para migraciones.
-
-### Codificación de Valores en Claves de Índice
-Los valores en las claves de índice se codifican de forma que preserven el orden lexicográfico correcto para su tipo:
-- **Números enteros (i64)**: big-endian hex de 16 caracteres con inversión de bit de signo.
-- **Números flotantes (f64)**: IEEE 754 con inversión de bit de signo.
-- **Strings**: lowercase, sin caracteres de control.
-- **Booleanos**: `"0"` para false, `"1"` para true.
-
-Esto garantiza que `2 < 10` (a diferencia de strings lexicográficos) y que las consultas de rango numérico funcionen correctamente.
-
-### Consultas y Paginación
-El comando `query_entity_advanced` acepta:
-- `filters`: lista de pares `(field, value)` — intersección automática.
-- `sort`: nombre del campo para ordenamiento (actualmente en memoria).
-- `limit` / `offset`: paginación server-side.
-
-```rust
-let options = QueryOptions {
-    filters: vec![QueryFilter { field: "status".into(), value: encode_value(&json!("pending")) }],
-    sort: Some("date".into()),
-    limit: Some(50),
-    offset: Some(0),
-};
-let results = engine.query(&org_id, "invoices", &options)?;
-```
-
----
-
-## 5. Resiliencia y robustez de los Datos
-
-Para garantizar la integridad y robustez del sistema ante fallos o corrupciones de disco, Syntrix implementa los siguientes mecanismos:
-
-### A. Reconstrucción de Proyecciones (Rebuild from Scratch)
-El archivo de base de datos relacional y de búsquedas (`syntrix_indexes.redb` y el directorio `search_index`) son **volátiles**. Es decir, son una caché optimizada para consultas construida a partir de los datos históricos. 
-Si el archivo de índices se corrompe o se elimina:
-1. Se limpia el directorio local de Redb y Tantivy.
-2. Se escanea el historial de eventos completo de **Iroh Docs** en orden temporal/causal.
-3. Se vuelve a procesar cada evento invocando `upsert_document`, recuperando el estado completo de la base de datos en cuestión de segundos.
-
-### B. Versionamiento y Migraciones de Esquema (Upcasting)
-Cada evento lleva un campo `schema_version` que indica la versión del esquema con que fue escrito:
-
-```json
-{
-  "type": "customer.upsert",
-  "hlc": { "ts": 1719414545000, "count": 2, "node": "f8a4b27a..." },
-  "schema_version": 1,
-  "payload": { "id": "cust_1234", "name": "Juan Perez" }
-}
-```
-
-Cuando el indexador procesa un evento cuya `schema_version` es menor que la versión actual del binario, aplica una cadena de funciones **Upcaster** deterministas (definidas en el crate `syntrix-schema`):
-
-```
-Evento v1 → CustomerV1ToV2 → CustomerV2ToV3 → … → Payload vCurrent
-```
-
-Características:
-- Los eventos antiguos persisten intactos en el log de Iroh Docs.
-- Los upcasters son funciones puras (sin side effects, sin red, deterministas).
-- El payload upcasteado se proyecta en redb y Tantivy.
-- Si no hay upcaster para una versión, el payload se usa tal cual.
-- Ejemplo: `CustomerV1ToV2` convierte `address: "Calle 123, CDMX, 06600"` en `address: { street, city, zip }`.
-
+1. Limpiar directorios de redb y Tantivy.
+2. Escanear `EVENT_LOG` en orden HLC.
+3. Reprocesar cada evento con `upsert_document`.

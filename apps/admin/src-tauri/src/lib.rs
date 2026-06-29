@@ -6,6 +6,7 @@ use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
 pub mod identity;
 pub mod admin;
 pub mod audit;
+pub mod catchup;
 
 use syntrix_schema::build_registry;
 
@@ -56,24 +57,10 @@ fn add_device(
     state: tauri::State<'_, Mutex<AppState>>,
     org: String, node_id: String, name: String, person: String, role: String, device_addr: Option<String>,
 ) -> Result<(), String> {
-    let (ctrl_doc, entity_docs, store, registry, secret) = {
-        let mut state = state.lock().map_err(|e| e.to_string())?;
-        tauri::async_runtime::block_on(
-            admin::add_device(&mut state, &org, &node_id, &name, &person, &role, &device_addr.clone().unwrap_or_default())
-        ).map_err(|e| e.to_string())?;
-        let org_state = state.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
-        (
-            org_state.control_doc.clone(),
-            org_state.entity_docs.clone(),
-            state.store().clone(),
-            state.registry().clone(),
-            state.secret().clone(),
-        )
-    };
-    let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.into_values().collect();
-    tauri::async_runtime::block_on(identity::sync_and_populate_org_members_impl(
-        ctrl_doc, entity_docs_vec, store, registry, secret, org,
-    )).map_err(|e| e.to_string())
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(
+        admin::add_device(&mut state, &org, &node_id, &name, &person, &role, &device_addr.clone().unwrap_or_default())
+    ).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -127,12 +114,8 @@ fn network_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, St
 
 #[tauri::command]
 fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<admin::SyncInfo, String> {
-    let (doc, store, node_id) = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
-        (org_state.control_doc.clone(), s.store().clone(), s.node_id())
-    };
-    tauri::async_runtime::block_on(admin::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(admin::get_sync_info(&s, &org))
 }
 
 fn parse_invite_endpoint(endpoint_addr_json: &str) -> Result<(String, String), String> {
@@ -171,32 +154,29 @@ fn send_invite(
         )).map_err(|e| e.to_string())?;
     }
 
-    let (control_doc, entity_docs, endpoint) = {
+    let (endpoint, topic_id, admin_addr) = {
         let s = state.lock().map_err(|e| e.to_string())?;
         let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
-        (
-            org_state.control_doc.clone(),
-            org_state.entity_docs.clone(),
-            s.endpoint().clone(),
-        )
+        (s.endpoint().clone(), org_state.topic_id, admin::build_device_addr_string(s.endpoint()))
     };
 
     tauri::async_runtime::block_on(admin::send_invite(
-        control_doc,
-        entity_docs,
         endpoint,
         &org,
         &endpoint_addr_json,
         &role,
+        topic_id,
+        admin_addr,
     )).map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 #[tauri::command]
-fn share_org(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<Vec<String>, String> {
-    let mut state = state.lock().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(admin::share_org_tickets(&mut state, &org)).map_err(|e| e.to_string())
+fn get_invite_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<String, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let info = tauri::async_runtime::block_on(admin::get_invite_info(&s, &org)).map_err(|e| e.to_string())?;
+    Ok(serde_json::to_string(&info).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
@@ -255,7 +235,7 @@ pub fn run() {
     } else {
         dirs_next::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("syntrix")
+            .join("syntrix-admin")
     };
 
     let log_handle = syntrix_logging::init_logging("admin", data_dir.clone());
@@ -301,7 +281,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, create_org,
             add_device, update_device, list_devices, list_roles, network_status,
-            share_org, send_invite, get_endpoint_addr,
+            send_invite, get_invite_info, get_endpoint_addr,
             create_role, update_role, get_sync_info, get_schema_registry,
             audit_query,
             query_logs, summarize_logs, start_tail_logs,

@@ -1,12 +1,6 @@
-//! Headless test harness helpers for syntrix-admin and syntrix-client.
-//!
-//! Provides utilities for constructing multi-node test scenarios without
-//! requiring Tauri or GUI interaction.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Polling backoff configuration for async assertions.
 pub struct PollConfig {
     pub max_retries: usize,
     pub base_delay: Duration,
@@ -23,7 +17,6 @@ impl Default for PollConfig {
     }
 }
 
-/// Create a temporary directory for isolated test node data.
 pub fn temp_node_dir(prefix: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().join(prefix);
@@ -31,7 +24,6 @@ pub fn temp_node_dir(prefix: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// Async poll with exponential backoff until `f` returns `Ok(value)` or timeout.
 pub async fn poll_until<T, E, F, Fut>(mut f: F, config: &PollConfig) -> Result<T, String>
 where
     F: FnMut() -> Fut,
@@ -51,22 +43,6 @@ where
     Err("poll_until: unreachable".into())
 }
 
-/// Generate an invite-style ticket string for a given namespace.
-/// This mirrors the admin's `send_invite` logic for test setup without
-/// depending on the admin crate.
-pub async fn make_invite_ticket(
-    doc: &iroh_docs::api::Doc,
-) -> anyhow::Result<String> {
-    let ticket = doc
-        .share(
-            iroh_docs::api::protocol::ShareMode::Write,
-            iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses,
-        )
-        .await?;
-    Ok(ticket.to_string())
-}
-
-/// Parse a hex node ID string into a `[u8; 32]` byte array.
 pub fn parse_node_id(hex_str: &str) -> anyhow::Result<[u8; 32]> {
     let bytes = hex::decode(hex_str)?;
     if bytes.len() != 32 {
@@ -77,22 +53,14 @@ pub fn parse_node_id(hex_str: &str) -> anyhow::Result<[u8; 32]> {
     Ok(id)
 }
 
-/// An invite payload struct matching `InvitePayload` in client and admin apps.
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct TestInvitePayload {
     pub org_name: String,
     pub role: String,
     pub admin_addr: Option<String>,
-    pub tickets: Vec<TestTicketInfo>,
+    pub topic_id: [u8; 32],
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct TestTicketInfo {
-    pub ns: String,
-    pub ticket: String,
-}
-
-/// Wait for a sync condition with a generous timeout.
 pub async fn wait_for_sync(timeout_secs: u64) {
     tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
 }

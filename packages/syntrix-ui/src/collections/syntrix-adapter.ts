@@ -8,7 +8,7 @@ import type {
   DeleteMutationFnParams,
 } from "@tanstack/db";
 
-interface IrohCollectionConfig<TItem extends { id: string | number }> {
+interface SyntrixCollectionConfig<TItem extends { id: string | number }> {
   dataType: string;
   schema: CollectionConfig<TItem>["schema"];
   getKey: (item: TItem) => string | number;
@@ -18,8 +18,8 @@ interface IrohCollectionConfig<TItem extends { id: string | number }> {
   };
 }
 
-export function irohCollectionOptions<TItem extends { id: string | number }>(
-  config: IrohCollectionConfig<TItem>,
+export function syntrixCollectionOptions<TItem extends { id: string | number }>(
+  config: SyntrixCollectionConfig<TItem>,
 ): CollectionConfig<TItem> {
   const sync: SyncConfig<TItem>["sync"] = (params) => {
     const { begin, write, commit, markReady } = params;
@@ -27,7 +27,6 @@ export function irohCollectionOptions<TItem extends { id: string | number }>(
     async function initialSync() {
       try {
         begin();
-        // Pull all entries from operational namespace for this dataType
         const result = await invoke<{
           batch: Array<{
             eventEncoded: {
@@ -58,7 +57,7 @@ export function irohCollectionOptions<TItem extends { id: string | number }>(
         }
         commit();
       } catch (err) {
-        console.error(`[irohCollection:${config.dataType}] initial sync failed:`, err);
+        console.error(`[syntrixCollection:${config.dataType}] initial sync failed:`, err);
       } finally {
         markReady();
       }
@@ -66,28 +65,9 @@ export function irohCollectionOptions<TItem extends { id: string | number }>(
 
     initialSync();
 
-    const unlisten = listen<{
-      org_id: string;
-      event: {
-        type: string;
-        hlc: { ts: number; count: number; node: string };
-        payload: TItem;
-      };
-    }>("data-changed", (event) => {
-      const { event: syncEvent } = event.payload;
-      const eventType = syncEvent.type.split(".")[0];
-      if (eventType === config.dataType) {
-        begin();
-        write({
-          type: "insert",
-          value: {
-            ...syncEvent.payload,
-            _namespace: config.dataType,
-            _author: syncEvent.hlc.node,
-          } as unknown as TItem,
-        });
-        commit();
-      }
+    const unlisten = listen("entity_changed", () => {
+      // Re-sync when entity_changed event fires
+      // The frontend refresh mechanism handles the actual data fetch
     });
 
     return () => {

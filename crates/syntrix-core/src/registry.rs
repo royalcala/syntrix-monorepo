@@ -1,16 +1,8 @@
-//! Device-centric namespace registry.
-//!
-//! Reads `org_<id>/control` and answers:
-//! - Is this device active in this org?
-//! - What namespaces should it open? (resolves wildcards like `*`)
-//! - Can this device write to namespace X?
-
 use std::collections::{HashMap, HashSet};
 
-use iroh_docs::NamespaceId;
+use iroh_gossip::TopicId;
 use crate::{NodeId, OrgId};
 
-/// A device registered in an org.
 #[derive(Debug, Clone)]
 pub struct Device {
     pub node_id: NodeId,
@@ -20,28 +12,18 @@ pub struct Device {
     pub name: String,
 }
 
-/// Permissions granted to a role.
 #[derive(Debug, Clone, Default)]
 pub struct RoleGrants {
-    /// Namespace patterns this role can open (supports wildcards: `*`).
     pub can_open: Vec<String>,
-    /// Namespaces this role can write to.
     pub can_write: Vec<String>,
 }
 
-/// Tracks devices and role grants per organization.
-///
-/// Populated from `org_<id>/control` entries. Re-synced when control changes.
 #[derive(Debug, Default)]
 pub struct NamespaceRegistry {
-    /// Devices per org.
     devices: HashMap<OrgId, HashMap<NodeId, Device>>,
-    /// Role grants per org.
     grants: HashMap<OrgId, HashMap<String, RoleGrants>>,
-    /// All known namespace ids per org (for wildcard resolution).
     known_namespaces: HashMap<OrgId, HashSet<String>>,
-    /// Maps NamespaceId → OrgId for accept_cb lookup.
-    namespace_org_map: HashMap<NamespaceId, OrgId>,
+    topic_ids: HashMap<OrgId, TopicId>,
 }
 
 impl NamespaceRegistry {
@@ -49,31 +31,24 @@ impl NamespaceRegistry {
         Self::default()
     }
 
-    // ── Population ──
-
-    /// Upsert a device entry.
     pub fn upsert_device(&mut self, org_id: OrgId, node_id: NodeId, device: Device) {
         self.devices.entry(org_id).or_default().insert(node_id, device);
     }
 
-    /// Remove a device from the registry entirely.
     pub fn remove_device(&mut self, org_id: &OrgId, node_id: &NodeId) {
         if let Some(devs) = self.devices.get_mut(org_id) {
             devs.remove(node_id);
         }
     }
 
-    /// Upsert a role grant entry.
     pub fn upsert_role(&mut self, org_id: OrgId, role: String, grants: RoleGrants) {
         self.grants.entry(org_id).or_default().insert(role, grants);
     }
 
-    /// Register known namespaces for an org (used to resolve wildcards).
     pub fn set_known_namespaces(&mut self, org_id: OrgId, namespaces: HashSet<String>) {
         self.known_namespaces.insert(org_id, namespaces);
     }
 
-    /// Add a single known namespace.
     pub fn add_known_namespace(&mut self, org_id: &OrgId, namespace: String) {
         self.known_namespaces
             .entry(org_id.clone())
@@ -81,9 +56,6 @@ impl NamespaceRegistry {
             .insert(namespace);
     }
 
-    // ── Queries for accept_cb ──
-
-    /// Check if a device is active in the given org.
     pub fn is_device_active(&self, org_id: &OrgId, node_id: &NodeId) -> bool {
         self.devices
             .get(org_id)
@@ -92,11 +64,6 @@ impl NamespaceRegistry {
             .unwrap_or(false)
     }
 
-    // ── Queries for namespace opening ──
-
-    /// Get all namespaces this device should open, derived from the role's can_open.
-    /// can_open contains entity/namespace names directly (or "*").
-    /// When "*" is present, resolves against known_namespaces.
     pub fn openable_namespaces(&self, org_id: &OrgId, node_id: &NodeId) -> HashSet<String> {
         let role = match self.device_role(org_id, node_id) {
             Some(r) => r,
@@ -111,7 +78,6 @@ impl NamespaceRegistry {
             .unwrap_or_default();
 
         if can_open.iter().any(|e| e == "*") {
-            // Resolve "*" against known_namespaces; fall back to entity names from schema
             if let Some(known) = self.known_namespaces.get(org_id) {
                 known.clone()
             } else {
@@ -123,7 +89,6 @@ impl NamespaceRegistry {
         }
     }
 
-    /// Get the device's role in an org.
     fn device_role(&self, org_id: &OrgId, node_id: &NodeId) -> Option<String> {
         self.devices
             .get(org_id)
@@ -131,11 +96,6 @@ impl NamespaceRegistry {
             .map(|d| d.role.clone())
     }
 
-    // ── Write validation ──
-
-    /// Check if a device can write to the given namespace in this org.
-    /// The role's `can_write` contains entity/namespace names (or `"*"`), so we check
-    /// directly if the namespace name is in the permission list.
     pub fn can_write(&self, org_id: &OrgId, node_id: &NodeId, namespace: &str) -> bool {
         let role = match self.device_role(org_id, node_id) {
             Some(r) => r,
@@ -155,20 +115,22 @@ impl NamespaceRegistry {
         can_write.iter().any(|n| n == "*" || n == namespace)
     }
 
-    // ── Multi-org ──
-
-    /// Map a NamespaceId to the org that owns it.
-    /// Called when the app opens a namespace (learned from control entries).
-    pub fn map_namespace_to_org(&mut self, ns: NamespaceId, org_id: OrgId) {
-        self.namespace_org_map.insert(ns, org_id);
+    pub fn set_topic_id(&mut self, org_id: OrgId, topic_id: TopicId) {
+        self.topic_ids.insert(org_id, topic_id);
     }
 
-    /// Look up which org owns a given namespace.
-    pub fn lookup_org(&self, ns: &NamespaceId) -> Option<OrgId> {
-        self.namespace_org_map.get(ns).cloned()
+    pub fn get_topic_id(&self, org_id: &OrgId) -> Option<TopicId> {
+        self.topic_ids.get(org_id).copied()
     }
 
-    /// List all org IDs known to this registry.
+    pub fn map_topic_to_org(&mut self, topic_id: TopicId, org_id: OrgId) {
+        self.topic_ids.insert(org_id, topic_id);
+    }
+
+    pub fn lookup_org_by_topic(&self, topic_id: &TopicId) -> Option<OrgId> {
+        self.topic_ids.iter().find(|(_, t)| *t == topic_id).map(|(org, _)| org.clone())
+    }
+
     pub fn org_ids(&self) -> HashSet<OrgId> {
         self.devices.keys().cloned().collect()
     }
@@ -299,5 +261,14 @@ mod tests {
         assert!(reg.can_write(&"acme".into(), &admin, "org_data"));
         assert!(reg.can_write(&"acme".into(), &admin, "org_private"));
         assert!(reg.can_write(&"acme".into(), &admin, "anything"));
+    }
+
+    #[test]
+    fn test_topic_id_mapping() {
+        let mut reg = NamespaceRegistry::new();
+        let topic_id = TopicId::from_bytes([1u8; 32]);
+        reg.set_topic_id("acme".into(), topic_id);
+        assert_eq!(reg.get_topic_id(&"acme".into()), Some(topic_id));
+        assert_eq!(reg.lookup_org_by_topic(&topic_id), Some("acme".into()));
     }
 }

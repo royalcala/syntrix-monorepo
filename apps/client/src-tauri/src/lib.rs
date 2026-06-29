@@ -11,9 +11,11 @@ mod seed;
 pub mod audit;
 pub mod indexes;
 pub mod search;
+pub mod gossip;
+pub mod catchup;
 
 use syntrix_schema::build_registry;
-use iroh_docs::api::Doc;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SchemaFilter {
     pub field: String,
@@ -27,7 +29,6 @@ pub struct SchemaQuery {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
-
 
 pub use identity::AppState;
 
@@ -64,7 +65,7 @@ fn set_active_org(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> R
 #[tauri::command]
 fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, event_type: String, payload: String) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    let res = commit_event_impl(&s, &event_type, &payload);
+    let res = events::commit_event(&s, &event_type, &payload).map_err(|e| e.to_string());
     if res.is_ok() {
         let _ = app.emit("entity_changed", ());
     }
@@ -74,144 +75,35 @@ fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle,
 #[tauri::command]
 async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
     let name = org_name.unwrap_or_else(|| "org-unknown".into());
-
     let invite: invite::InvitePayload = serde_json::from_str(&invite_json)
         .map_err(|e| format!("invalid invite json: {}", e))?;
 
-    let api = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        s.api().clone()
-    };
-
-    let mut final_org_id = String::new();
-    let mut docs = Vec::new();
-
-    for ti in &invite.tickets {
-        let ticket: iroh_docs::DocTicket = ti.ticket
-            .parse()
-            .map_err(|e| format!("invalid ticket for {}: {}", ti.ns, e))?;
-
-        if final_org_id.is_empty() {
-            final_org_id = hex::encode(&ticket.capability.id().as_bytes()[..4]);
-        }
-
-        let doc = api.import(ticket).await
-            .map_err(|e| format!("import ticket for {}: {}", ti.ns, e))?;
-
-        docs.push((ti.ns.clone(), doc));
-    }
-
+    let topic_id = invite.topic_id;
     let role = invite.role.clone();
-    let (ctrl_doc, entity_docs, store, registry, secret) = {
+    let admin_addr = invite.admin_addr.clone();
+    let final_org_id = hex::encode(&topic_id[..4]);
+
+    {
         let mut s = state.lock().map_err(|e| e.to_string())?;
 
-        let mut doc_imports = Vec::new();
-        for (ns, doc) in docs {
-            doc_imports.push((ns.clone(), doc.clone()));
-        }
+        s.add_org(&final_org_id, &name, &role, topic_id);
 
-        let _result = join_org_state_impl(&mut s, &final_org_id, &name, &role, doc_imports)?;
-
-        let org_state = s.get_org_docs(&final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
-        (
-            org_state.control_doc.clone(),
-            org_state.entity_docs.clone(),
-            s.store().clone(),
-            s.registry().clone(),
-            s.secret().clone(),
-        )
-    };
-
-    // Bootstrap P2P sync with the admin who sent the invite
-    if let Some(ref admin_addr_str) = invite.admin_addr {
-        if let Some(admin_endpoint) = syntrix_core::parse_device_addr(admin_addr_str) {
-            let peer_vec = vec![admin_endpoint];
-            let _ = ctrl_doc.start_sync(peer_vec.clone()).await;
-            for (_ns, doc) in &entity_docs {
-                let _ = doc.start_sync(peer_vec.clone()).await;
-            }
-        }
-    }
-
-    // Give the sync a moment to deliver control doc entries
-    let mut member_found = false;
-    for _attempt in 0..4 {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let check = {
-            let s = state.lock().map_err(|e| e.to_string())?;
-            if let Some(org) = s.get_org_docs(&final_org_id) {
-                let ctrl = org.control_doc.clone();
-                let members = tauri::async_runtime::block_on(async {
-                    if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
-                        let mut pinned = Box::pin(stream);
-                        use futures_util::StreamExt;
-                        pinned.next().await.is_some()
-                    } else {
-                        false
-                    }
-                });
-                if members {
-                    true
-                } else {
-                    tauri::async_runtime::block_on(async {
-                        if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
-                            let mut pinned = Box::pin(stream);
-                            use futures_util::StreamExt;
-                            pinned.next().await.is_some()
-                        } else {
-                            false
-                        }
-                    })
-                }
-            } else {
-                false
-            }
-        };
-        if check {
-            member_found = true;
-            break;
-        }
-    }
-
-    let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.values().cloned().collect();
-    let _ = identity::sync_and_populate_org_members_impl(
-        ctrl_doc.clone(),
-        entity_docs_vec,
-        store,
-        registry.clone(),
-        secret,
-        final_org_id.clone(),
-    ).await;
-
-    if !member_found {
-        eprintln!(
-            "join_org: no members synced yet for org {}. Heartbeat loop will retry.",
-            &final_org_id[..8]
-        );
-    }
-
-    // Ensure the current device is always registered in the namespace registry.
-    let node_id;
-    let registry_arc = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        node_id = s.node_id();
-        s.registry().clone()
-    };
-    let node_id_hex = hex::encode(node_id);
-    if let Ok(mut reg) = registry_arc.write() {
-        reg.upsert_device(
-            final_org_id.clone(),
-            node_id,
-            syntrix_core::registry::Device {
+        let node_id = s.node_id();
+        if let Ok(mut reg) = s.registry().write() {
+            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+            reg.set_topic_id(final_org_id.clone(), iroh_topic_id);
+            reg.upsert_device(
+                final_org_id.clone(),
                 node_id,
-                active: true,
-                role: role.clone(),
-                person: node_id_hex.clone(),
-                name: format!("Device {}", &node_id_hex[..8]),
-            },
-        );
-        let openable = reg.openable_namespaces(&final_org_id, &node_id);
-        if openable.is_empty() {
+                syntrix_core::registry::Device {
+                    node_id,
+                    active: true,
+                    role: role.clone(),
+                    person: hex::encode(node_id),
+                    name: format!("Device {}", &hex::encode(node_id)[..8]),
+                },
+            );
+
             let (can_open, can_write): (Vec<String>, Vec<String>) = match role.as_str() {
                 "admin" => (vec!["*".into()], vec!["*".into()]),
                 "sales" => (
@@ -227,12 +119,54 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
             reg.upsert_role(
                 final_org_id.clone(),
                 role.clone(),
-                syntrix_core::registry::RoleGrants {
-                    can_open,
-                    can_write,
-                },
+                syntrix_core::registry::RoleGrants { can_open, can_write },
             );
         }
+
+        s.save_org_config(identity::ClientOrgConfig {
+            org_id: final_org_id.clone(),
+            name: name.clone(),
+            role: role.clone(),
+            topic_id: hex::encode(topic_id),
+        }).ok();
+    }
+
+    // Join gossip topic with admin as bootstrap
+    {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let indexer = s.indexer.clone();
+        let node_id_hex = hex::encode(s.node_id());
+
+        let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+        let bootstrap = if let Some(ref addr) = admin_addr {
+            if let Some(ep) = syntrix_core::parse_device_addr(addr) {
+                vec![ep.id]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        {
+            let mut gossip_bus = s.gossip_bus.write().await;
+            let _ = gossip_bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer, node_id_hex).await;
+        }
+    }
+
+    // Catch-up from admin
+    if let Some(ref addr) = admin_addr {
+        let endpoint = {
+            let s = state.lock().map_err(|e| e.to_string())?;
+            s.endpoint().clone()
+        };
+        let indexer = {
+            let s = state.lock().map_err(|e| e.to_string())?;
+            s.indexer.clone()
+        };
+        let _ = catchup::CatchupProtocol::request_catchup(
+            &endpoint, addr, &final_org_id, 0, &indexer,
+        ).await;
     }
 
     Ok(OrgInfo { id: final_org_id, name, role })
@@ -241,7 +175,7 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
 #[tauri::command]
 fn sync_push(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, org_id: String, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    let res = sync_push_impl(&mut s, &org_id, batch);
+    let res = sync::sync_push(&mut s, &org_id, batch).map_err(|e| e.to_string());
     if res.is_ok() {
         let _ = app.emit("entity_changed", ());
     }
@@ -251,31 +185,31 @@ fn sync_push(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, or
 #[tauri::command]
 fn sync_pull(state: tauri::State<'_, Mutex<AppState>>, org_id: String, cursor: Option<sync::HlcCursor>) -> Result<sync::SyncPullResult, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(sync_pull_impl(&s, &org_id, cursor))
+    Ok(sync::sync_pull(&s, &org_id, cursor))
 }
 
 #[tauri::command]
 fn sync_ping(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> Result<sync::ConnectionState, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    sync_ping_impl(&s, &org_id)
+    sync::sync_ping(&s, &org_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(sync_status_impl(&s))
+    Ok(sync::sync_status(&s))
 }
 
 #[tauri::command]
 fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<sync::SyncInfo, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    get_sync_info_impl(&s, &org)
+    tauri::async_runtime::block_on(sync::get_sync_info_impl(&s, &org)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_invites(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<invite::InvitePayload>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(get_invites_impl(&s))
+    Ok(s.invite_handler.get_pending())
 }
 
 #[tauri::command]
@@ -296,7 +230,6 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
     }).to_string())
 }
 
-/// Check if the current device has read access to the given entity.
 fn check_read_access(state: &AppState, org_id: &str, entity: &str) -> Result<(), String> {
     if entity == "roles" { return Ok(()); }
     let node_id = state.node_id();
@@ -311,8 +244,6 @@ fn check_read_access(state: &AppState, org_id: &str, entity: &str) -> Result<(),
         Err(format!("Access denied: role cannot read {}", entity))
     }
 }
-
-// ===== Extracted impl functions (no Tauri types) =====
 
 pub fn list_orgs_impl(state: &AppState) -> Vec<OrgInfo> {
     state.list_orgs()
@@ -339,11 +270,7 @@ pub fn sync_status_impl(state: &AppState) -> String {
 }
 
 pub fn get_sync_info_impl(state: &AppState, org: &str) -> Result<sync::SyncInfo, String> {
-    let (doc, store, node_id) = {
-        let org_state = state.get_org_docs(org).ok_or_else(|| format!("org {} not found", org))?;
-        (org_state.control_doc.clone(), state.store().clone(), state.node_id())
-    };
-    tauri::async_runtime::block_on(sync::get_sync_info(doc, store, node_id)).map_err(|e| e.to_string())
+    tauri::async_runtime::block_on(sync::get_sync_info_impl(state, org)).map_err(|e| e.to_string())
 }
 
 pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
@@ -370,32 +297,9 @@ pub fn query_entity_impl(
         return state.indexer.query(&resolved_org_id, entity, &options).map_err(|e| e.to_string());
     }
 
-    let org_state = state.get_org_docs(&resolved_org_id).ok_or_else(|| "Org docs not found".to_string())?;
-    let doc = org_state.control_doc.clone();
-    let store = state.store().clone();
-    tauri::async_runtime::block_on(async move {
-        let mut results = vec![];
-        let stream_raw = doc.get_many(iroh_docs::store::Query::key_prefix("roles/")).await.map_err(|e| e.to_string())?;
-        let mut stream = Box::pin(stream_raw);
-        use futures_util::stream::StreamExt;
-        while let Some(entry_res) = stream.next().await {
-            if let Ok(entry) = entry_res {
-                let hash = entry.content_hash();
-                if let Ok(bytes) = store.blobs().get_bytes(hash).await {
-                    let bytes_ref: &[u8] = bytes.as_ref();
-                    if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
-                        let key = String::from_utf8_lossy(entry.key()).to_string();
-                        let name = key.replace("roles/", "");
-                        if let Some(obj) = json.as_object_mut() {
-                            obj.insert("name".into(), serde_json::Value::String(name));
-                        }
-                        results.push(json);
-                    }
-                }
-            }
-        }
-        Ok(results)
-    })
+    let indexer = state.indexer();
+    let roles = indexer.get_roles(&resolved_org_id).map_err(|e| e.to_string())?;
+    Ok(roles)
 }
 
 pub fn query_entity_advanced_impl(
@@ -431,54 +335,6 @@ pub fn search_entity_impl(
 
     let limit_val = limit.unwrap_or(20);
     state.indexer.search_engine.search(&resolved_org_id, query, entities, limit_val).map_err(|e| e.to_string())
-}
-
-/// Sync state manipulation after org join (async doc imports already done).
-pub fn join_org_state_impl(
-    state: &mut AppState,
-    final_org_id: &str,
-    name: &str,
-    role: &str,
-    docs: Vec<(String, Doc)>,
-) -> Result<OrgInfo, String> {
-    for (ns, doc) in docs {
-        state.add_org_docs(&ns, final_org_id, name, role, doc);
-    }
-
-    let org_state = state.get_org_docs(final_org_id).ok_or_else(|| "Failed to get org docs".to_string())?;
-
-    let namespace_ids: std::collections::HashMap<String, String> = org_state.entity_docs.iter().map(|(k, v)| (k.clone(), v.id().to_string())).collect();
-
-    let cfg = identity::ClientOrgConfig {
-        org_id: final_org_id.to_string(),
-        name: name.to_string(),
-        role: role.to_string(),
-        control_id: org_state.control_doc.id().to_string(),
-        namespace_ids,
-    };
-    let _ = state.save_org_config(cfg);
-
-    let entity_docs_vec: Vec<iroh_docs::api::Doc> = org_state.entity_docs.values().cloned().collect();
-    sync::start_heartbeat_with_resync(
-        org_state.control_doc.clone(),
-        entity_docs_vec.clone(),
-        state.author(),
-        hex::encode(state.node_id()),
-        state.store().clone(),
-        state.secret().clone(),
-        state.registry().clone(),
-    );
-
-    identity::start_doc_subscriptions(
-        org_state.control_doc.clone(),
-        entity_docs_vec,
-        state.author(),
-        state.store().clone(),
-        state.indexer(),
-        final_org_id.to_string(),
-    );
-
-    Ok(OrgInfo { id: final_org_id.to_string(), name: name.to_string(), role: role.to_string() })
 }
 
 // ===== Thin Tauri command wrappers =====

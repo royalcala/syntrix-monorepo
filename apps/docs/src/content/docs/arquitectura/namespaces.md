@@ -1,58 +1,48 @@
 ---
-title: "Namespaces y Autorización"
-description: "Modelado de datos en Syntrix: namespaces por entidad, políticas de acceso basadas en roles y validación activa a nivel de red."
+title: "TopicIds y Autorización"
+description: "Modelado de datos en Syntrix: topic gossip por organización, políticas de acceso basadas en roles y validación por evento."
 ---
 
-# Namespaces y Autorización
+# TopicIds y Autorización
 
-Syntrix no utiliza una única base de datos global. En su lugar, los datos se organizan en **namespaces criptográficos** de Iroh. Cada namespace es un almacén clave-valor aislado, protegido por llaves públicas/privadas y cifrado de extremo a extremo (E2EE).
+Syntrix utiliza **topics gossip** de Iroh para la comunicación P2P. Cada organización tiene un `TopicId` UUID que aísla su tráfico de red.
 
 ---
 
-## 1. Namespaces por Entidad
+## 1. Topic por Organización
 
-A diferencia de un modelo con pocos namespaces compartidos, Syntrix asigna **un namespace de Iroh por cada entidad del sistema**. Esto da un aislamiento más granular y evita que un dispositivo sincronice datos de entidades para las que no tiene permiso.
+A diferencia del modelo anterior (múltiples namespaces por entidad), ahora **cada organización tiene un único topic gossip**:
 
 ```mermaid
 graph TD
-    subgraph Organización P2P
-        A[Namespace Control: Miembros, Roles y Permisos]
-        B[Namespace customers: Clientes]
-        C[Namespace products: Productos]
-        D[Namespace suppliers: Proveedores]
-        E[Namespace invoices: Facturas]
-        F[Namespace orders: Órdenes]
-        G[Namespace payroll: Nóminas]
+    subgraph Org A Topic
+        A[Eventos de todas las entidades]
+    end
+    subgraph Org B Topic
+        B[Eventos de todas las entidades]
     end
 ```
 
-### Namespace de Control (`control_id`)
-- **Propósito**: Contiene los metadatos core de la organización, miembros autorizados, roles y políticas de permisos.
-- **Ruta de Claves**:
-  - `org`: Metadatos generales (`{"name": "Empresa S.A.", "created_at": "..."}`).
-  - `members/<node_id_hex>`: Dispositivos miembros con estado activo, rol y dirección de red.
-  - `roles/<role_name>`: Permisos del rol (`can_open` y `can_write` por nombre de entidad).
-  - `heartbeat/<node_id_hex>`: Registros dinámicos de presencia.
-
-### Namespaces de Entidad (`customers`, `products`, `invoices`, etc.)
-- Cada entidad definida en el registry de esquemas tiene su propio namespace.
-- Solo los dispositivos cuyo rol incluye la entidad en `can_open` pueden sincronizar ese namespace.
-- Esto permite, por ejemplo, que un vendedor tenga acceso a `customers` e `invoices` pero no a `payroll`.
+- El `TopicId` es un UUID `[u8; 32]` generado al crear la org.
+- Todos los eventos de todas las entidades se transmiten por el mismo topic.
+- La entidad se determina del campo `type` del evento (ej: `"customer.created"` → entidad `customers`).
+- El aislamiento entre orgs se logra mediante topics separados.
 
 ---
 
 ## 2. Definición y Estructura de Roles
 
-Las políticas de acceso se definen en el namespace de **Control** bajo `roles/<nombre_rol>`:
+Las políticas de acceso se almacenan en redb bajo `roles:{org_id}:{role_name}`:
 
 ```json
 {
+  "name": "sales",
   "can_open": ["customers", "products", "invoices", "orders"],
   "can_write": ["customers", "invoices", "orders"]
 }
 ```
 
-Los campos `can_open` y `can_write` contienen **nombres de entidad directamente** (o `"*"` para todo acceso). No existe una capa intermedia de "namespace de agrupación". La validación es directa:
+La validación es directa:
 
 - `can_open.contains(entity) || can_open.contains("*")` → permiso de lectura
 - `can_write.contains(entity) || can_write.contains("*")` → permiso de escritura
@@ -64,46 +54,23 @@ Roles predeterminados:
 
 ---
 
-## 3. Autorización Activa a Nivel de Red (`accept_cb`)
+## 3. Validación de Escritura en Eventos Remotos
 
-La seguridad no se limita a ocultar botones en la UI. Se implementa en la capa de transporte P2P mediante un callback de aceptación (`accept_cb`) en `syntrix-core`.
+Cada evento gossip recibido de un peer remoto pasa por validación de permisos antes de ser indexado:
 
-Cuando un dispositivo remoto intenta sincronizar un namespace:
-
-```mermaid
-sequenceDiagram
-    participant Peer as Peer Solicitante
-    participant Local as Nodo Local
-    participant Reg as Namespace Registry
-
-    Peer->>Local: Handshake QUIC (solicita Namespace X)
-    Local->>Local: Dispara accept_cb
-    Local->>Reg: lookup_org(Namespace X)
-    Reg-->>Local: Org ID o None
-    Local->>Reg: is_device_active(Org, NodeID)
-    Reg-->>Local: true/false
-    alt Activo en la Org
-        Local-->>Peer: AcceptOutcome::Allow
-    else Inactivo o no mapeado
-        Local-->>Peer: AcceptOutcome::Reject
-    end
-```
-
-### Flujo de Validación
-1. **Identidad**: El `NodeId` del peer es su clave pública Iroh (32 bytes), inalterable por QUIC/TLS 1.3.
-2. **Mapeo**: Cada namespace se registra dinámicamente a su organización en el `NamespaceRegistry`.
-3. **Membresía**: Se verifica si el `NodeId` es un dispositivo activo en la organización propietaria.
-4. **Decisión**: Si no está registrado o está inactivo, la conexión se rechaza antes de transferir datos.
+1. El `hlc.node` del evento identifica al autor (primeros 16 chars de su PublicKey hex).
+2. Se busca el rol del autor en redb `MEMBERS`.
+3. Se verifica `can_write(entity)` para el rol del autor.
+4. Si no tiene permiso, el evento se descarta.
 
 ---
 
-## 4. Validación de Escritura
+## 4. Migración desde Namespaces
 
-Además del control de acceso a nivel de red, cada escritura pasa por `can_write()` en el `NamespaceRegistry`. Esto evita que un dispositivo con acceso de solo lectura intente modificar datos a través del namespace que tiene abierto.
-
-```rust
-// registry.rs
-pub fn can_write(&self, org_id: &OrgId, node_id: &NodeId, namespace: &str) -> bool {
-    can_write.iter().any(|n| n == "*" || n == namespace)
-}
-```
+| Concepto Anterior | Equivalente Nuevo |
+|---|---|
+| NamespaceId (iroh-docs) por entidad | TopicId (iroh-gossip) por organización |
+| accept_cb a nivel de doc | Validación por evento en receive loop |
+| `doc.set_bytes()` para escribir | `gossip.broadcast()` + redb `EVENT_LOG.append` |
+| `doc.get_many()` para leer | redb `EVENT_LOG.query_events_since()` |
+| `doc.subscribe()` para eventos remotos | `GossipTopic` stream de `Event::Received` |
