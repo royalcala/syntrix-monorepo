@@ -92,6 +92,17 @@ impl NamespaceRegistry {
             .unwrap_or(false)
     }
 
+    /// Returns `true` if at least one device is registered for the given org.
+    /// This is used by the accept callback to distinguish "bootstrap" state
+    /// (no devices yet, so we should allow incoming sync) from the steady state
+    /// (devices exist, so unknown peers should be rejected).
+    pub fn has_devices_for_org(&self, org_id: &OrgId) -> bool {
+        self.devices
+            .get(org_id)
+            .map(|d| !d.is_empty())
+            .unwrap_or(false)
+    }
+
     // ── Queries for namespace opening ──
 
     /// Get all namespaces this device should open, derived from the role's can_open.

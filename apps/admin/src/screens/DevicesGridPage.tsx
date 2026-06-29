@@ -129,7 +129,7 @@ export function DevicesGridPage({ org }: { org: string }) {
                 value={deviceAddr}
                 onChange={(e) => setDeviceAddr(e.target.value)}
                 placeholder='{"node_id": "...", "addrs": ["..."]}'
-                className="w-full min-h-[100px] text-xs font-mono p-3 bg-muted border border-input rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="w-full min-h-[100px] text-xs font-mono p-3 bg-muted border border-input text-foreground rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
 

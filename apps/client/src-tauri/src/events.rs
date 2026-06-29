@@ -1,7 +1,18 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::identity::AppState;
+use syntrix_core::registry::RoleGrants;
 use syntrix_schema::{build_registry, can_access};
+
+/// Default can_write grants for known roles (used as fallback before sync).
+fn default_role_grants(role: &str) -> RoleGrants {
+    match role {
+        "admin" => RoleGrants { can_open: vec!["*".into()], can_write: vec!["*".into()] },
+        "sales" => RoleGrants { can_open: vec!["customers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"invoices".into(),"orders".into()] },
+        "contabilidad" => RoleGrants { can_open: vec!["invoices".into(),"customers".into()], can_write: vec![] },
+        _ => RoleGrants { can_open: vec![], can_write: vec![] },
+    }
+}
 
 /// Hybrid Logical Clock — guarantees causal ordering without central authority.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -92,29 +103,49 @@ pub fn commit_event(
     let doc = org.entity_docs.get(&ns_name)
         .ok_or_else(|| anyhow::anyhow!("unknown namespace: {}", ns_name))?;
 
-    // Validate write permission (pure entity-level format)
+    // Validate write permission using multiple sources (priority order):
+    // 1. NamespaceRegistry (synced grants, fast local check)
+    // 2. Default grants for known roles (guaranteed fallback before P2P sync completes)
+    // 3. Control doc (authoritative source if available)
     let role = &org.role;
-    let role_key = format!("roles/{}", role);
-    let mut can_write_flag = role == "admin";
-
-    if !can_write_flag {
-        if let Ok(stream_raw) = tauri::async_runtime::block_on(org.control_doc.get_many(iroh_docs::store::Query::key_exact(role_key.clone()))) {
-            let mut stream = Box::pin(stream_raw);
-            use futures_util::stream::StreamExt;
-            if let Some(Ok(entry)) = tauri::async_runtime::block_on(stream.next()) {
-                let hash = entry.content_hash();
-                if let Ok(bytes) = tauri::async_runtime::block_on(state.store().blobs().get_bytes(hash)) {
-                    let bytes_ref: &[u8] = bytes.as_ref();
-                    if let Ok(grants) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
-                        if let Some(write_perms) = grants.get("can_write").and_then(|v| v.as_array()) {
-                            let perms: Vec<String> = write_perms.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                            can_write_flag = can_access(&perms, entity);
+    let node_id = state.node_id();
+    let org_id_owned = org_id.to_string();
+    let can_write_flag = {
+        if role == "admin" {
+            true
+        } else {
+            // Source 1: NamespaceRegistry
+            let reg_ok = state.registry().read()
+                .ok()
+                .map(|reg| reg.can_write(&org_id_owned, &node_id, entity))
+                .unwrap_or(false);
+            if reg_ok { true }
+            // Source 2: Default grants for known roles
+            else if can_access(&default_role_grants(role).can_write, entity) { true }
+            // Source 3: Control doc (authoritative, but may not have synced yet)
+            else {
+                let role_key = format!("roles/{}", role);
+                let mut found = false;
+                if let Ok(stream_raw) = tauri::async_runtime::block_on(org.control_doc.get_many(iroh_docs::store::Query::key_exact(role_key.clone()))) {
+                    let mut stream = Box::pin(stream_raw);
+                    use futures_util::stream::StreamExt;
+                    if let Some(Ok(entry)) = tauri::async_runtime::block_on(stream.next()) {
+                        let hash = entry.content_hash();
+                        if let Ok(bytes) = tauri::async_runtime::block_on(state.store().blobs().get_bytes(hash)) {
+                            let bytes_ref: &[u8] = bytes.as_ref();
+                            if let Ok(grants) = serde_json::from_slice::<serde_json::Value>(bytes_ref) {
+                                if let Some(write_perms) = grants.get("can_write").and_then(|v| v.as_array()) {
+                                    let perms: Vec<String> = write_perms.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                                    found = can_access(&perms, entity);
+                                }
+                            }
                         }
                     }
                 }
+                found
             }
         }
-    }
+    };
 
     if !can_write_flag {
         return Err(anyhow::anyhow!("Write denied: role {} cannot write to {}", role, entity));

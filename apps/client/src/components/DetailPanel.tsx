@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { X, ChevronLeft, ChevronRight, Check, Loader2 } from "lucide-react";
 import { useForm } from "@tanstack/react-form";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
-import { Switch } from "./ui/switch";
+import { Button } from "@syntrix/ui/components/ui/button";
+import { Input } from "@syntrix/ui/components/ui/input";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@syntrix/ui/components/ui/select";
+import { Switch } from "@syntrix/ui/components/ui/switch";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import type { EntityDefinition } from "../fields/registry";

@@ -23,10 +23,23 @@ pub fn make_accept_cb(
 
             let outcome = match registry.read() {
                 Ok(reg) => match reg.lookup_org(&namespace) {
-                    Some(org_id) if reg.is_device_active(&org_id, peer_bytes) => {
-                        AcceptOutcome::Allow
+                    Some(org_id) => {
+                        if reg.is_device_active(&org_id, peer_bytes) {
+                            // Peer is registered and active → allow
+                            AcceptOutcome::Allow
+                        } else if !reg.has_devices_for_org(&org_id) {
+                            // Bootstrap mode: namespace is known but no devices
+                            // have been synced yet (fresh data directory). Allow
+                            // incoming sync so the control doc data can be
+                            // populated. Once at least one peer synced, the
+                            // heartbeat loop will load members into the registry
+                            // and the normal device-based check takes over.
+                            AcceptOutcome::Allow
+                        } else {
+                            AcceptOutcome::Reject(AbortReason::NotFound)
+                        }
                     }
-                    _ => AcceptOutcome::Reject(AbortReason::NotFound),
+                    None => AcceptOutcome::Reject(AbortReason::NotFound),
                 },
                 Err(_) => AcceptOutcome::Reject(AbortReason::NotFound),
             };
@@ -140,6 +153,56 @@ mod tests {
         let cb = make_accept_cb(std::sync::Arc::new(std::sync::RwLock::new(reg)));
         let outcome = cb(ns, alice_key).into_inner();
         assert!(matches!(outcome, AcceptOutcome::Reject(_)));
+    }
+
+    #[test]
+    fn test_accept_bootstrap_unknown_peer() {
+        // Bootstrap: namespace mapped but no devices registered yet.
+        // Unknown peer should be ALLOWED so the control doc can sync.
+        let mut reg = NamespaceRegistry::new();
+        let unknown_key = make_pubkey(99);
+        let ns = make_namespace_id(70);
+
+        reg.map_namespace_to_org(ns, "acme".into());
+        // NOT adding any devices — simulates fresh data dir
+
+        let cb = make_accept_cb(std::sync::Arc::new(std::sync::RwLock::new(reg)));
+        let outcome = cb(ns, unknown_key).into_inner();
+        assert!(
+            matches!(outcome, AcceptOutcome::Allow),
+            "bootstrap should allow unknown peer when no devices registered"
+        );
+    }
+
+    #[test]
+    fn test_reject_unknown_peer_after_bootstrap() {
+        // After bootstrap: devices exist but this specific peer is unknown.
+        // Should be REJECTED.
+        let mut reg = NamespaceRegistry::new();
+        let known_key = make_pubkey(1);
+        let known_id = *known_key.as_bytes();
+        let unknown_key = make_pubkey(99);
+        let ns = make_namespace_id(80);
+
+        reg.map_namespace_to_org(ns, "acme".into());
+        reg.upsert_device(
+            "acme".into(),
+            known_id,
+            Device {
+                node_id: known_id,
+                active: true,
+                role: "sales".into(),
+                person: "alice".into(),
+                name: "Alice".into(),
+            },
+        );
+
+        let cb = make_accept_cb(std::sync::Arc::new(std::sync::RwLock::new(reg)));
+        let outcome = cb(ns, unknown_key).into_inner();
+        assert!(
+            matches!(outcome, AcceptOutcome::Reject(_)),
+            "unknown peer should be rejected after bootstrap (devices exist)"
+        );
     }
 
     #[test]

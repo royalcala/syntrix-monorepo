@@ -11,6 +11,7 @@ import { PageLayout } from "@syntrix/ui/components/PageLayout";
 import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
+import { toast } from "sonner";
 import { Inbox } from "./screens/Inbox";
 import { EntityGrid } from "./components/EntityGrid";
 import { customersEntity } from "./entities/customers";
@@ -179,9 +180,13 @@ export default function App() {
       <main className="h-[calc(100vh-4rem)] lg:h-screen flex flex-col overflow-y-auto">
         <Routes>
           <Route path="/inbox" element={<Inbox invites={invites} onAccept={async (invite) => {
-            await invoke("join_org", { inviteJson: JSON.stringify(invite), orgName: invite.org_name });
-            setInvites((prev) => prev.filter((i) => i !== invite));
-            loadOrgs();
+            try {
+              await invoke("join_org", { inviteJson: JSON.stringify(invite), orgName: invite.org_name });
+              setInvites((prev) => prev.filter((i) => i !== invite));
+              loadOrgs();
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : String(err));
+            }
           }} />} />
           <Route path="/orgs" element={<OrgsScreen nodeId={nodeId} orgs={orgs} setActiveOrg={(id) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }} />} />
           <Route index element={<Navigate to="/customers" replace />} />

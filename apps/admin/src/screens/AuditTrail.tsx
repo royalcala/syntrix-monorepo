@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@syntrix/ui/components/ui/select";
+import { Button } from "@syntrix/ui/components/ui/button";
 
 type AuditEntry = {
   key: string;
@@ -73,30 +75,32 @@ export function AuditTrail({ org }: { org: string }) {
     <div className="h-full flex flex-col">
       {/* Filters */}
       <div className="flex items-center gap-3 pb-4 shrink-0">
-        <select
-          className="h-9 rounded-md border px-3 py-1.5 text-sm bg-background w-44"
-          value={filterEntity}
-          onChange={(e) => setFilterEntity(e.target.value)}
-        >
-          {ENTITY_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
-        <select
-          className="h-9 rounded-md border px-3 py-1.5 text-sm bg-background w-48"
-          value={filterEventType}
-          onChange={(e) => setFilterEventType(e.target.value)}
-        >
-          {EVENT_TYPE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
-        <button
-          className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
+        <Select value={filterEntity} onValueChange={setFilterEntity}>
+          <SelectTrigger className="w-44">
+            <SelectValue placeholder="Todas las entidades" />
+          </SelectTrigger>
+          <SelectContent>
+            {ENTITY_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={filterEventType} onValueChange={setFilterEventType}>
+          <SelectTrigger className="w-48">
+            <SelectValue placeholder="Todos los tipos" />
+          </SelectTrigger>
+          <SelectContent>
+            {EVENT_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
           onClick={load}
+          disabled={loading}
         >
           {loading ? "Cargando..." : "Filtrar"}
-        </button>
+        </Button>
         <span className="text-xs text-muted-foreground ml-auto">
           {entries.length} eventos
         </span>

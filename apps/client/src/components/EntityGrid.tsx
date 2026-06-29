@@ -16,7 +16,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { useSearchParams } from "react-router-dom";
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@syntrix/ui/components/ui/table";
+import { Input } from "@syntrix/ui/components/ui/input";
+import { Button } from "@syntrix/ui/components/ui/button";
 import type { EntityDefinition } from "../fields/registry";
 import { DetailPanel } from "./DetailPanel";
 
@@ -216,17 +218,16 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
           )}
           <div className="relative ml-2">
             <Search className="absolute left-2 top-1.5 w-3.5 h-3.5 text-muted-foreground" />
-            <input
-              className="w-44 pl-7 pr-2 py-1 text-xs rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+            <Input
+              className="w-44 pl-7 pr-2 py-1 text-xs"
               placeholder="Buscar..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <button onClick={onCreateRecord}
-            className="px-3 py-1 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors ml-auto">
+          <Button size="sm" onClick={onCreateRecord} className="ml-auto text-xs h-7 px-3">
             <Plus className="w-3 h-3 inline mr-1" />Nuevo
-          </button>
+          </Button>
           <span className="text-xs text-muted-foreground">{rows.length} registros</span>
         </div>
 
@@ -243,7 +244,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                 <>
                   <Search className="w-8 h-8 opacity-30" />
                   <span>No hay resultados para "{searchQuery}"</span>
-                  <button onClick={() => setSearchQuery("")} className="text-xs text-primary hover:underline">Limpiar búsqueda</button>
+                  <Button variant="link" size="sm" onClick={() => setSearchQuery("")}>Limpiar búsqueda</Button>
                 </>
               ) : (
                 <>
@@ -251,9 +252,9 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate }: En
                     <Plus className="w-6 h-6 opacity-40" />
                   </div>
                   <span>Aún no hay {entity.label.toLowerCase()}</span>
-                  <button onClick={onCreateRecord} className="px-3 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90">
+                  <Button size="sm" onClick={onCreateRecord}>
                     Crear primer registro
-                  </button>
+                  </Button>
                 </>
               )}
             </div>

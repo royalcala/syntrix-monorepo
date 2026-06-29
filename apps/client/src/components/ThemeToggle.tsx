@@ -1,5 +1,5 @@
 import { Moon, Sun } from "lucide-react";
-import { Button } from "./ui/button";
+import { Button } from "@syntrix/ui/components/ui/button";
 
 export function ThemeToggle() {
   function toggle() {

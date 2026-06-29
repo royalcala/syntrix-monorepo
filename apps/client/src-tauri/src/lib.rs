@@ -137,35 +137,27 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     let mut member_found = false;
     for _attempt in 0..4 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let check = {
+        let ctrl_doc_for_check = {
             let s = state.lock().map_err(|e| e.to_string())?;
-            if let Some(org) = s.get_org_docs(&final_org_id) {
-                let ctrl = org.control_doc.clone();
-                let members = tauri::async_runtime::block_on(async {
-                    if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
-                        let mut pinned = Box::pin(stream);
-                        use futures_util::StreamExt;
-                        pinned.next().await.is_some()
-                    } else {
-                        false
-                    }
-                });
-                if members {
+            s.get_org_docs(&final_org_id).map(|org| org.control_doc.clone())
+        };
+        let check = if let Some(ctrl) = ctrl_doc_for_check {
+            if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("members/")).await {
+                let mut pinned = Box::pin(stream);
+                use futures_util::StreamExt;
+                if pinned.next().await.is_some() {
                     true
+                } else if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
+                    let mut pinned = Box::pin(stream);
+                    pinned.next().await.is_some()
                 } else {
-                    tauri::async_runtime::block_on(async {
-                        if let Ok(stream) = ctrl.get_many(iroh_docs::store::Query::key_prefix("roles/")).await {
-                            let mut pinned = Box::pin(stream);
-                            use futures_util::StreamExt;
-                            pinned.next().await.is_some()
-                        } else {
-                            false
-                        }
-                    })
+                    false
                 }
             } else {
                 false
             }
+        } else {
+            false
         };
         if check {
             member_found = true;

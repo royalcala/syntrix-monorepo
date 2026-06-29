@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Input } from "@syntrix/ui/components/ui/input";
 
 type EntitySchema = {
   name: string;
@@ -71,8 +72,8 @@ export function PermissionMatrix({ canOpen, canWrite, onChange }: Props) {
       </label>
 
       {/* Search */}
-      <input
-        className="h-9 w-full rounded-md border px-3 py-1.5 text-sm bg-background"
+      <Input
+        className="h-9"
         placeholder="Buscar entidad…"
         value={search}
         onChange={(e) => setSearch(e.target.value)}

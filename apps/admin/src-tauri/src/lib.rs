@@ -182,13 +182,23 @@ fn send_invite(
     };
 
     tauri::async_runtime::block_on(admin::send_invite(
-        control_doc,
-        entity_docs,
+        control_doc.clone(),
+        entity_docs.clone(),
         endpoint,
         &org,
         &endpoint_addr_json,
         &role,
     )).map_err(|e| e.to_string())?;
+
+    // Bootstrap P2P sync with the new device so it doesn't have to wait for the heartbeat
+    let (store, registry, secret) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        (s.store().clone(), s.registry().clone(), s.secret().clone())
+    };
+    let entity_docs_vec: Vec<iroh_docs::api::Doc> = entity_docs.into_values().collect();
+    let _ = tauri::async_runtime::block_on(identity::sync_and_populate_org_members_impl(
+        control_doc, entity_docs_vec, store, registry, secret, org,
+    ));
 
     Ok(())
 }

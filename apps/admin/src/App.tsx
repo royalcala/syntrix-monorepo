@@ -7,6 +7,7 @@ import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator"
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
 import { PageLayout } from "@syntrix/ui/components/PageLayout";
 import { Button } from "@syntrix/ui/components/ui/button";
+import { Input } from "@syntrix/ui/components/ui/input";
 import { CreateOrg } from "./screens/CreateOrg";
 import { Logs } from "./screens/Logs";
 import { ShareDialog } from "./screens/ShareDialog";
@@ -129,8 +130,8 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setNewOrgOpen(false)}>
           <div className="bg-card rounded-xl shadow-lg max-w-sm w-full mx-4 p-6" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold mb-4">Create Organization</h3>
-            <input
-              className="w-full h-10 rounded-md border px-3 py-2 text-sm mb-4 bg-background"
+            <Input
+              className="mb-4"
               placeholder="Organization name"
               value={newOrgName}
               onChange={(e) => setNewOrgName(e.target.value)}
