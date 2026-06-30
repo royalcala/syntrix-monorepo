@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use iroh_gossip::net::Gossip;
@@ -53,11 +54,12 @@ impl AdminGossipBus {
 
     /// Subscribe to a gossip topic, spawn a background task that captures
     /// heartbeat messages AND data events, and keep a `GossipTopic` handle
-    /// for broadcasting.
+    /// for broadcasting. The receiver task auto-reconnects if the stream ends.
     pub async fn join_org(
         &mut self,
         org_id: &str,
         topic_id: TopicId,
+        bus: Arc<tokio::sync::RwLock<AdminGossipBus>>,
     ) -> anyhow::Result<()> {
         let topic_recv = self.gossip.subscribe(topic_id, vec![]).await?;
         let topic_send = self.gossip.subscribe(topic_id, vec![]).await?;
@@ -65,44 +67,65 @@ impl AdminGossipBus {
         let org = org_id.to_string();
         let hb = self.heartbeats.clone();
         let db = self.db.clone();
+        let gossip_clone = self.gossip.clone();
 
         tokio::spawn(async move {
-            let mut stream = topic_recv;
+            let mut topic_recv = topic_recv;
             loop {
-                match stream.next().await {
-                    Some(Ok(Event::Received(msg))) => {
-                        let content = match std::str::from_utf8(&msg.content) {
-                            Ok(s) => s,
-                            Err(_) => continue,
-                        };
-                        let val: serde_json::Value = match serde_json::from_str(content) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
+                loop {
+                    match topic_recv.next().await {
+                        Some(Ok(Event::Received(msg))) => {
+                            let content = match std::str::from_utf8(&msg.content) {
+                                Ok(s) => s,
+                                Err(_) => continue,
+                            };
+                            let val: serde_json::Value = match serde_json::from_str(content) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
 
-                        // Heartbeat: no "type" field
-                        if val.get("type").is_none() {
-                            if let (Some(node_id), Some(ts)) = (
-                                val.get("node_id").and_then(|v| v.as_str()),
-                                val.get("ts").and_then(|v| v.as_i64()),
-                            ) {
-                                if let Ok(mut map) = hb.write() {
-                                    map.entry(org.clone())
-                                        .or_default()
-                                        .insert(node_id.to_string(), ts);
+                            if val.get("type").is_none() {
+                                if let (Some(node_id), Some(ts)) = (
+                                    val.get("node_id").and_then(|v| v.as_str()),
+                                    val.get("ts").and_then(|v| v.as_i64()),
+                                ) {
+                                    if let Ok(mut map) = hb.write() {
+                                        map.entry(org.clone())
+                                            .or_default()
+                                            .insert(node_id.to_string(), ts);
+                                    }
                                 }
+                                continue;
                             }
-                            continue;
-                        }
 
-                        // Data event: store in admin's EVENT_LOG for the audit panel.
-                        write_event_to_redb(&db, &org, &val);
+                            write_event_to_redb(&db, &org, &val);
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            eprintln!("[admin-gossip] recv error: {e}");
+                        }
+                        None => break,
                     }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        eprintln!("[admin-gossip] recv error: {e}");
+                }
+                eprintln!("[admin-gossip] stream ended for org={}, reconnecting in 3s...", org);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                match gossip_clone.subscribe(topic_id, vec![]).await {
+                    Ok(new_recv) => {
+                        match gossip_clone.subscribe(topic_id, vec![]).await {
+                            Ok(new_send) => {
+                                let mut guard = bus.write().await;
+                                guard.topics.insert(org.clone(), new_send);
+                            }
+                            Err(e) => {
+                                eprintln!("[admin-gossip] re-subscribe send failed: {e}");
+                            }
+                        }
+                        topic_recv = new_recv;
                     }
-                    None => break,
+                    Err(e) => {
+                        eprintln!("[admin-gossip] re-subscribe recv failed: {e}, retrying in 5s...");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
                 }
             }
         });
@@ -132,7 +155,7 @@ impl AdminGossipBus {
 // Store a gossip data event into the admin's redb EVENT_LOG table.
 // ---------------------------------------------------------------------------
 
-fn write_event_to_redb(db: &redb::Database, org_id: &str, val: &serde_json::Value) {
+pub fn write_event_to_redb(db: &redb::Database, org_id: &str, val: &serde_json::Value) {
     let event_type = val["type"].as_str().unwrap_or("unknown");
     let hlc_val = &val["hlc"];
     let hlc_ts = hlc_val["ts"].as_u64().unwrap_or(0);

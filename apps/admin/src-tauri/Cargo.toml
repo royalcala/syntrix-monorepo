@@ -33,3 +33,4 @@ fastrand = "2"
 
 [dev-dependencies]
 syntrix-testkit = { path = "../../../crates/syntrix-testkit" }
+syntrix-client = { path = "../../client/src-tauri" }

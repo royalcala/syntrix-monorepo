@@ -145,6 +145,7 @@ impl AppState {
                             let _ = bus.join_org(
                                 &cfg.org_id, iroh_topic_id, bootstrap,
                                 indexer.clone(), node_id_hex.clone(),
+                                gossip_bus.clone(),
                             ).await;
                         }
 

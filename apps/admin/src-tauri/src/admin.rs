@@ -45,7 +45,27 @@ pub async fn add_device(
 pub async fn update_device(
     state: &mut AppState, org: &str, node_id: &str, active: bool, role: Option<String>, name: Option<String>, person: Option<String>,
 ) -> anyhow::Result<()> {
-    state.update_device(org, node_id, active, role, name, person);
+    state.update_device(org, node_id, active, role.clone(), name, person);
+
+    let event = serde_json::json!({
+        "type": "device.updated",
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "payload": {
+            "org": org,
+            "node_id": node_id,
+            "active": active,
+            "role": role.unwrap_or_default(),
+        },
+    });
+    let bus = state.gossip_bus_ref().clone();
+    let org_id = org.to_string();
+    if let Ok(bytes) = serde_json::to_vec(&event).map(bytes::Bytes::from) {
+        tokio::spawn(async move {
+            let mut guard = bus.write().await;
+            let _ = guard.broadcast(&org_id, bytes).await;
+        });
+    }
+
     Ok(())
 }
 
@@ -159,7 +179,27 @@ pub async fn create_role(
         return Err(anyhow::anyhow!("El rol {} ya existe", name));
     }
 
-    state.set_role(org, name, can_open, can_write);
+    state.set_role(org, name, can_open.clone(), can_write.clone());
+
+    let event = serde_json::json!({
+        "type": "role.updated",
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "payload": {
+            "org": org,
+            "name": name,
+            "can_open": can_open,
+            "can_write": can_write,
+        },
+    });
+    let bus = state.gossip_bus_ref().clone();
+    let org_id = org.to_string();
+    if let Ok(bytes) = serde_json::to_vec(&event).map(bytes::Bytes::from) {
+        tokio::spawn(async move {
+            let mut guard = bus.write().await;
+            let _ = guard.broadcast(&org_id, bytes).await;
+        });
+    }
+
     Ok(())
 }
 
@@ -179,8 +219,37 @@ pub async fn update_role(
         can_write = v.iter().filter_map(|v| v.as_str().map(String::from)).collect();
     }
 
-    state.set_role(org, key, can_open, can_write);
+    state.set_role(org, key, can_open.clone(), can_write.clone());
+
+    let event = serde_json::json!({
+        "type": "role.updated",
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "payload": {
+            "org": org,
+            "name": key,
+            "can_open": can_open,
+            "can_write": can_write,
+        },
+    });
+    let bus = state.gossip_bus_ref().clone();
+    let org_id = org.to_string();
+    if let Ok(bytes) = serde_json::to_vec(&event).map(bytes::Bytes::from) {
+        tokio::spawn(async move {
+            let mut guard = bus.write().await;
+            let _ = guard.broadcast(&org_id, bytes).await;
+        });
+    }
+
     Ok(())
+}
+
+pub fn get_endpoint_addr_impl(state: &AppState) -> String {
+    let addr = state.endpoint().addr();
+    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
+    serde_json::json!({
+        "node_id": hex::encode(state.node_id()),
+        "addrs": addrs,
+    }).to_string()
 }
 
 pub fn get_sync_info(

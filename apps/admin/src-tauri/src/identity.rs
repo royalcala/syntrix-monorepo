@@ -228,7 +228,7 @@ impl AppState {
                         {
                             let mut bus = gossip_bus.write().await;
                             let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-                            let _ = bus.join_org(&org_name, iroh_topic_id).await;
+                            let _ = bus.join_org(&org_name, iroh_topic_id, gossip_bus.clone()).await;
                         }
 
                         // Start admin heartbeat for this org
@@ -241,6 +241,33 @@ impl AppState {
                 }
             }
         }
+
+        // Spawn background catchup: request missed events from online peers.
+        let catchup_ep = ep.clone();
+        let catchup_hb = heartbeats.clone();
+        let catchup_db = db.clone();
+        let catchup_orgs: Vec<String> = orgs.keys().cloned().collect();
+        let catchup_self = node_id_hex.clone();
+        tokio::spawn(async move {
+            // Wait for gossip heartbeats to arrive from peers.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            for org in &catchup_orgs {
+                let hb_map = match catchup_hb.read() {
+                    Ok(m) => m.clone(),
+                    Err(_) => continue,
+                };
+                let org_hb = hb_map.get(org).cloned().unwrap_or_default();
+                drop(hb_map);
+                let now = chrono::Utc::now().timestamp_millis();
+                for (peer_id, last_ts) in &org_hb {
+                    if *peer_id == catchup_self { continue; }
+                    if now - *last_ts > 120_000 { continue; }
+                    let _ = crate::catchup::admin_catchup_from_peer(
+                        &catchup_ep, peer_id, org, &catchup_db,
+                    ).await;
+                }
+            }
+        });
 
         Ok(Self {
             secret, _endpoint: ep, _router: router,
@@ -314,7 +341,7 @@ impl AppState {
         let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
         {
             let mut bus = self.gossip_bus.write().await;
-            bus.join_org(org_name, iroh_topic_id).await?;
+            bus.join_org(org_name, iroh_topic_id, self.gossip_bus.clone()).await?;
         }
         let node_id_hex = hex::encode(self.node_id());
         start_admin_heartbeat(

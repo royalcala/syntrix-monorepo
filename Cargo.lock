@@ -5878,6 +5878,7 @@ dependencies = [
  "redb",
  "serde",
  "serde_json",
+ "syntrix-client",
  "syntrix-core",
  "syntrix-logging",
  "syntrix-schema",

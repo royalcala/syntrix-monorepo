@@ -75,6 +75,45 @@ impl ProtocolHandler for AdminCatchupProtocol {
     }
 }
 
+/// Admin catchup client: request missed events from a peer after restart.
+pub async fn admin_catchup_from_peer(
+    endpoint: &iroh::Endpoint,
+    peer_id_hex: &str,
+    org_id: &str,
+    db: &Arc<redb::Database>,
+) -> anyhow::Result<()> {
+    let peer_endpoint = syntrix_core::parse_device_addr(peer_id_hex)
+        .ok_or_else(|| anyhow::anyhow!("invalid peer id"))?;
+    let conn = endpoint.connect(peer_endpoint, CATCHUP_ALPN).await?;
+
+    let request = serde_json::json!({
+        "org_id": org_id,
+        "since_hlc": 0u64,
+    });
+
+    let mut send = conn.open_uni().await?;
+    send.write_all(serde_json::to_vec(&request)?.as_slice()).await?;
+    send.finish()?;
+
+    let mut recv = conn.accept_uni().await?;
+    let buf = recv.read_to_end(65536).await?;
+
+    let events: Vec<serde_json::Value> = serde_json::from_slice(&buf)?;
+    let count = events.len();
+    for event in &events {
+        crate::gossip::write_event_to_redb(db, org_id, event);
+    }
+
+    tracing::info!(
+        org = %org_id,
+        peer = %peer_id_hex,
+        count = %count,
+        "admin-catchup: received events from peer"
+    );
+
+    Ok(())
+}
+
 fn query_events_since(
     db: &redb::Database,
     org_id: &str,

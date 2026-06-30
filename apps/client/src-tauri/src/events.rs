@@ -111,10 +111,17 @@ pub fn commit_event(
     let _ = indexer.upsert_document(org_id, entity, &doc_id, &upcasted);
 
     if let Ok(event_bytes) = serde_json::to_vec(&value).map(bytes::Bytes::from) {
-        let gossip_bus = state.gossip_bus.clone();
+        let bus = state.gossip_bus.clone();
         let org = org_id.to_string();
-        let mut guard = gossip_bus.blocking_write();
-        let _ = tauri::async_runtime::block_on(guard.broadcast(&org, event_bytes));
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut guard = bus.write().await;
+                let _ = guard.broadcast(&org, event_bytes).await;
+            });
+        } else {
+            let mut guard = bus.blocking_write();
+            let _ = tauri::async_runtime::block_on(guard.broadcast(&org, event_bytes));
+        }
     }
 
     Ok(key)

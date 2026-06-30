@@ -73,164 +73,9 @@ fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle,
 }
 
 #[tauri::command]
-async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
-    let name = org_name.unwrap_or_else(|| "org-unknown".into());
-    let invite: invite::InvitePayload = serde_json::from_str(&invite_json)
-        .map_err(|e| format!("invalid invite json: {}", e))?;
-
-    let topic_id_bytes = hex::decode(&invite.topic_id).map_err(|e| format!("invalid topic_id: {e}"))?;
-    let mut topic_id = [0u8; 32];
-    let len = topic_id_bytes.len().min(32);
-    topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
-    let role = invite.role.clone();
-    let admin_addr = invite.admin_addr.clone();
-    let can_open = invite.can_open.clone();
-    let can_write = invite.can_write.clone();
-    let final_org_id = hex::encode(&topic_id[..4]);
-
-    {
-        let mut s = state.lock().map_err(|e| e.to_string())?;
-
-        s.add_org(&final_org_id, &name, &role, topic_id, admin_addr.clone());
-
-        let node_id = s.node_id();
-
-        if let Ok(mut reg) = s.registry().write() {
-            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-            reg.set_topic_id(final_org_id.clone(), iroh_topic_id);
-            reg.upsert_device(
-                final_org_id.clone(), node_id,
-                syntrix_core::registry::Device {
-                    node_id, active: true, role: role.clone(),
-                    person: hex::encode(node_id),
-                    name: format!("Device {}", &hex::encode(node_id)[..8]),
-                },
-            );
-            reg.upsert_role(final_org_id.clone(), role.clone(),
-                syntrix_core::registry::RoleGrants { can_open: can_open.clone(), can_write: can_write.clone() });
-            eprintln!("[join_org] registered device org={} node_hex={} role={} can_open={:?}", final_org_id, hex::encode(node_id), role, can_open);
-        }
-
-        // Write role to redb so the frontend can query it via query_entity("roles")
-        let role_json = serde_json::json!({
-            "name": role,
-            "can_open": can_open,
-            "can_write": can_write,
-        });
-        let _ = s.indexer.upsert_role_cfg(&final_org_id, &role, &role_json);
-
-        s.save_org_config(identity::ClientOrgConfig {
-            org_id: final_org_id.clone(),
-            name: name.clone(),
-            role: role.clone(),
-            topic_id: hex::encode(topic_id),
-            admin_addr: admin_addr.clone(),
-            can_open: can_open.clone(),
-            can_write: can_write.clone(),
-        }).ok();
-    }
-
-    // Join gossip topic with admin as bootstrap
-    let (gossip_bus, indexer, node_id_hex, iroh_topic_id, bootstrap) = {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        let gossip_bus = s.gossip_bus.clone();
-        let indexer = s.indexer.clone();
-        let node_id_hex = hex::encode(s.node_id());
-        let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-        let bootstrap = if let Some(ref addr) = admin_addr {
-            if let Some(ep) = syntrix_core::parse_device_addr(addr) {
-                vec![ep.id]
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        };
-        (gossip_bus, indexer, node_id_hex, iroh_topic_id, bootstrap)
-    };
-    {
-        let mut bus = gossip_bus.write().await;
-        let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer.clone(), node_id_hex).await;
-    }
-
-    // P2P catch-up: try admin first, then any online peer with a recent heartbeat.
-    {
-        let endpoint = {
-            let s = state.lock().map_err(|e| e.to_string())?;
-            s.endpoint().clone()
-        };
-        let indexer = {
-            let s = state.lock().map_err(|e| e.to_string())?;
-            s.indexer.clone()
-        };
-
-        let admin_ok = if let Some(ref addr) = admin_addr {
-            catchup::CatchupProtocol::request_catchup(
-                &endpoint, addr, &final_org_id, 0, &indexer,
-            ).await.is_ok()
-        } else {
-            false
-        };
-
-        if !admin_ok {
-            // Wait briefly for gossip heartbeats from other peers.
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-            let node_id_hex = hex::encode({
-                let s = state.lock().map_err(|e| e.to_string())?;
-                s.node_id()
-            });
-
-            let hb = indexer.get_heartbeats(&final_org_id).unwrap_or_default();
-            let now = chrono::Utc::now().timestamp_millis();
-            if let Some((peer_id, _)) = hb.into_iter()
-                .find(|(nid, ts)| nid != &node_id_hex && *ts > 0 && now - *ts < 60_000)
-            {
-                let _ = catchup::CatchupProtocol::request_catchup(
-                    &endpoint, &peer_id, &final_org_id, 0, &indexer,
-                ).await;
-            }
-        }
-    }
-
-    // Write self as member to redb and start heartbeat
-    let node_id_hex2 = hex::encode(state.lock().map_err(|e| e.to_string())?.node_id());
-    let self_member = serde_json::json!({
-        "node_id": node_id_hex2,
-        "active": true,
-        "role": role,
-        "person": node_id_hex2,
-        "name": format!("Device {}", &node_id_hex2[..8]),
-    });
-    let _ = indexer.upsert_member(&final_org_id, &node_id_hex2, &self_member);
-
-    let hb_broadcast = {
-        let bus = gossip_bus.clone();
-        let org = final_org_id.clone();
-        Arc::new(move |json: &str| {
-            let bus = bus.clone();
-            let org = org.clone();
-            let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
-            // Spawn instead of blocking: the callback runs inside a tokio task.
-            tokio::spawn(async move {
-                let mut guard = bus.write().await;
-                let _ = guard.broadcast(&org, bytes).await;
-            });
-        })
-    };
-    let hb_store = {
-        let idx = indexer.clone();
-        let org = final_org_id.clone();
-        Arc::new(move |ts: i64, nid: &str| {
-            let hb = serde_json::json!({"ts": ts, "status": "online", "node_id": nid});
-            let _ = idx.upsert_heartbeat(&org, nid, &hb);
-        })
-    };
-    syntrix_core::heartbeat::start_heartbeat_with_resync(
-        node_id_hex2.clone(), hb_broadcast, hb_store,
-    );
-
-    Ok(OrgInfo { id: final_org_id, name, role })
+fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(join_org_impl(&mut s, &invite_json, org_name.as_deref()))
 }
 
 #[tauri::command]
@@ -283,12 +128,7 @@ fn debug_invite_handler(state: tauri::State<'_, Mutex<AppState>>) -> Result<Stri
 #[tauri::command]
 fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    let addr = s.endpoint().addr();
-    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
-    Ok(serde_json::json!({
-        "node_id": hex::encode(s.node_id()),
-        "addrs": addrs,
-    }).to_string())
+    Ok(get_endpoint_addr_impl(&s))
 }
 
 #[tauri::command]
@@ -344,6 +184,151 @@ pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
     state.invite_handler.get_pending()
 }
 
+pub async fn join_org_impl(
+    state: &mut AppState,
+    invite_json: &str,
+    org_name: Option<&str>,
+) -> Result<OrgInfo, String> {
+    let name = org_name.unwrap_or("org-unknown");
+    let invite: invite::InvitePayload = serde_json::from_str(invite_json)
+        .map_err(|e| format!("invalid invite json: {}", e))?;
+
+    let topic_id_bytes = hex::decode(&invite.topic_id).map_err(|e| format!("invalid topic_id: {e}"))?;
+    let mut topic_id = [0u8; 32];
+    let len = topic_id_bytes.len().min(32);
+    topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
+    let role = invite.role.clone();
+    let admin_addr = invite.admin_addr.clone();
+    let can_open = invite.can_open.clone();
+    let can_write = invite.can_write.clone();
+    let final_org_id = hex::encode(&topic_id[..4]);
+
+    state.add_org(&final_org_id, &name, &role, topic_id, admin_addr.clone());
+
+    let node_id = state.node_id();
+
+    if let Ok(mut reg) = state.registry().write() {
+        let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+        reg.set_topic_id(final_org_id.clone(), iroh_topic_id);
+        reg.upsert_device(
+            final_org_id.clone(), node_id,
+            syntrix_core::registry::Device {
+                node_id, active: true, role: role.clone(),
+                person: hex::encode(node_id),
+                name: format!("Device {}", &hex::encode(node_id)[..8]),
+            },
+        );
+        reg.upsert_role(final_org_id.clone(), role.clone(),
+            syntrix_core::registry::RoleGrants { can_open: can_open.clone(), can_write: can_write.clone() });
+        eprintln!("[join_org] registered device org={} node_hex={} role={} can_open={:?}", final_org_id, hex::encode(node_id), role, can_open);
+    }
+
+    let role_json = serde_json::json!({
+        "name": role,
+        "can_open": can_open,
+        "can_write": can_write,
+    });
+    let _ = state.indexer.upsert_role_cfg(&final_org_id, &role, &role_json);
+
+    state.save_org_config(identity::ClientOrgConfig {
+        org_id: final_org_id.clone(),
+        name: name.to_string(),
+        role: role.clone(),
+        topic_id: hex::encode(topic_id),
+        admin_addr: admin_addr.clone(),
+        can_open: can_open.clone(),
+        can_write: can_write.clone(),
+    }).ok();
+
+    let gossip_bus = state.gossip_bus.clone();
+    let indexer = state.indexer.clone();
+    let node_id_hex = hex::encode(state.node_id());
+    let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+    let bootstrap = if let Some(ref addr) = admin_addr {
+        if let Some(ep) = syntrix_core::parse_device_addr(addr) {
+            vec![ep.id]
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+    {
+        let mut bus = gossip_bus.write().await;
+        let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer.clone(), node_id_hex, gossip_bus.clone()).await;
+    }
+
+    let endpoint = state.endpoint().clone();
+    let admin_ok = if let Some(ref addr) = admin_addr {
+        crate::catchup::CatchupProtocol::request_catchup(
+            &endpoint, addr, &final_org_id, 0, &indexer,
+        ).await.is_ok()
+    } else {
+        false
+    };
+
+    if !admin_ok {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let node_id_hex = hex::encode(state.node_id());
+        let hb = indexer.get_heartbeats(&final_org_id).unwrap_or_default();
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some((peer_id, _)) = hb.into_iter()
+            .find(|(nid, ts)| nid != &node_id_hex && *ts > 0 && now - *ts < 60_000)
+        {
+            let _ = crate::catchup::CatchupProtocol::request_catchup(
+                &endpoint, &peer_id, &final_org_id, 0, &indexer,
+            ).await;
+        }
+    }
+
+    let node_id_hex2 = hex::encode(state.node_id());
+    let self_member = serde_json::json!({
+        "node_id": node_id_hex2,
+        "active": true,
+        "role": role,
+        "person": node_id_hex2,
+        "name": format!("Device {}", &node_id_hex2[..8]),
+    });
+    let _ = indexer.upsert_member(&final_org_id, &node_id_hex2, &self_member);
+
+    let hb_broadcast = {
+        let bus = gossip_bus.clone();
+        let org = final_org_id.clone();
+        Arc::new(move |json: &str| {
+            let bus = bus.clone();
+            let org = org.clone();
+            let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
+            tokio::spawn(async move {
+                let mut guard = bus.write().await;
+                let _ = guard.broadcast(&org, bytes).await;
+            });
+        })
+    };
+    let hb_store = {
+        let idx = indexer.clone();
+        let org = final_org_id.clone();
+        Arc::new(move |ts: i64, nid: &str| {
+            let hb = serde_json::json!({"ts": ts, "status": "online", "node_id": nid});
+            let _ = idx.upsert_heartbeat(&org, nid, &hb);
+        })
+    };
+    syntrix_core::heartbeat::start_heartbeat_with_resync(
+        node_id_hex2.clone(), hb_broadcast, hb_store,
+    );
+
+    Ok(OrgInfo { id: final_org_id, name: name.to_string(), role: role.to_string() })
+}
+
+pub fn get_endpoint_addr_impl(state: &AppState) -> String {
+    let addr = state.endpoint().addr();
+    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
+    serde_json::json!({
+        "node_id": hex::encode(state.node_id()),
+        "addrs": addrs,
+    }).to_string()
+}
+
 pub fn query_entity_impl(
     state: &AppState,
     org_id: Option<&str>,
@@ -355,6 +340,7 @@ pub fn query_entity_impl(
     if resolved_org_id.is_empty() { return Ok(vec![]); }
 
     if entity != "roles" {
+        check_read_access(state, &resolved_org_id, entity)?;
         let mut filters = vec![];
         if let (Some(field), Some(value)) = (filter_field, filter_value) {
             filters.push(indexes::QueryFilter { field: field.to_string(), value: value.to_string() });

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use iroh_gossip::net::Gossip;
@@ -28,50 +29,75 @@ impl GossipEventBus {
         bootstrap_peers: Vec<iroh::PublicKey>,
         indexer: Arc<RelationalEngine>,
         node_id_hex: String,
+        bus: Arc<tokio::sync::RwLock<GossipEventBus>>,
     ) -> anyhow::Result<()> {
         let topic_recv = self.gossip.subscribe(topic_id, bootstrap_peers.clone()).await?;
-        let topic_send = self.gossip.subscribe(topic_id, bootstrap_peers).await?;
+        let topic_send = self.gossip.subscribe(topic_id, bootstrap_peers.clone()).await?;
 
         let org_id_clone = org_id.to_string();
         let indexer_clone = indexer.clone();
         let node_id_hex_clone = node_id_hex.clone();
+        let gossip_clone = self.gossip.clone();
+        let bootstrap = bootstrap_peers.clone();
 
         tokio::spawn(async move {
-            let mut stream = topic_recv;
+            let mut topic_recv = topic_recv;
             loop {
-                match stream.next().await {
-                    Some(Ok(Event::Received(msg))) => {
-                        let content = match std::str::from_utf8(&msg.content) {
-                            Ok(s) => s,
-                            Err(_) => continue,
-                        };
-                        let val: serde_json::Value = match serde_json::from_str(content) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
+                loop {
+                    match topic_recv.next().await {
+                        Some(Ok(Event::Received(msg))) => {
+                            let content = match std::str::from_utf8(&msg.content) {
+                                Ok(s) => s,
+                                Err(_) => continue,
+                            };
+                            let val: serde_json::Value = match serde_json::from_str(content) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
 
-                        let sender_node = val.get("hlc")
-                            .and_then(|h| h.get("node"))
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("");
+                            let sender_node = val.get("hlc")
+                                .and_then(|h| h.get("node"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("");
 
-                        if sender_node == &node_id_hex_clone[..16] {
-                            continue;
+                            if sender_node == &node_id_hex_clone[..16] {
+                                continue;
+                            }
+
+                            if let Err(e) = process_gossip_event(
+                                &org_id_clone,
+                                &val,
+                                &indexer_clone,
+                            ) {
+                                eprintln!("[gossip] process error: {e}");
+                            }
                         }
-
-                        if let Err(e) = process_gossip_event(
-                            &org_id_clone,
-                            &val,
-                            &indexer_clone,
-                        ) {
-                            eprintln!("[gossip] process error: {e}");
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            eprintln!("[gossip] error: {e}");
                         }
+                        None => break,
                     }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        eprintln!("[gossip] error: {e}");
+                }
+                eprintln!("[gossip] stream ended for org={}, reconnecting in 3s...", org_id_clone);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                match gossip_clone.subscribe(topic_id, bootstrap.clone()).await {
+                    Ok(new_recv) => {
+                        match gossip_clone.subscribe(topic_id, bootstrap.clone()).await {
+                            Ok(new_send) => {
+                                let mut guard = bus.write().await;
+                                guard.topics.insert(org_id_clone.clone(), new_send);
+                            }
+                            Err(e) => {
+                                eprintln!("[gossip] re-subscribe send failed: {e}");
+                            }
+                        }
+                        topic_recv = new_recv;
                     }
-                    None => break,
+                    Err(e) => {
+                        eprintln!("[gossip] re-subscribe recv failed: {e}, retrying in 5s...");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
                 }
             }
         });
@@ -110,6 +136,33 @@ fn process_gossip_event(
         Some(t) => t,
         None => return Ok(()),
     };
+
+    // Handle role.updated events
+    if event_type == "role.updated" {
+        if let Some(payload) = val.get("payload") {
+            if let Some(role_name) = payload.get("name").and_then(|v| v.as_str()) {
+                let role_cfg = serde_json::json!({
+                    "name": role_name,
+                    "can_open": payload.get("can_open"),
+                    "can_write": payload.get("can_write"),
+                });
+                let _ = indexer.upsert_role_cfg(org_id, role_name, &role_cfg);
+                let _ = indexer.append_event(org_id, val);
+            }
+        }
+        return Ok(());
+    }
+
+    // Handle device.updated events
+    if event_type == "device.updated" {
+        if let Some(payload) = val.get("payload") {
+            if let Some(node_id) = payload.get("node_id").and_then(|v| v.as_str()) {
+                let _ = indexer.upsert_member(org_id, node_id, payload);
+                let _ = indexer.append_event(org_id, val);
+            }
+        }
+        return Ok(());
+    }
 
     let entity = entity_from_event_type(event_type);
     let payload = match val.get("payload") {

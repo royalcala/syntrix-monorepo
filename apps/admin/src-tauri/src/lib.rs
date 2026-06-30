@@ -232,12 +232,7 @@ fn get_schema_registry() -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    let addr = s.endpoint().addr();
-    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
-    Ok(serde_json::json!({
-        "node_id": hex::encode(s.node_id()),
-        "addrs": addrs,
-    }).to_string())
+    Ok(admin::get_endpoint_addr_impl(&s))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
