@@ -18,11 +18,34 @@ pub struct OrgConfig {
     pub topic_id: String,
 }
 
+// ----- persisted device / role shapes -----
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PersistedDevice {
+    org: String,
+    node_id: String,
+    active: bool,
+    role: String,
+    person: String,
+    name: String,
+    device_addr: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PersistedRole {
+    org: String,
+    name: String,
+    can_open: Vec<String>,
+    can_write: Vec<String>,
+}
+
 pub struct AppState {
     secret: SecretKey,
     _endpoint: Endpoint,
     _router: iroh::protocol::Router,
+    #[allow(dead_code)]
     gossip: iroh_gossip::net::Gossip,
+    pub gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>>,
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
     devices: HashMap<String, HashMap<String, DeviceInfo>>,
@@ -79,6 +102,9 @@ impl AppState {
 
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
+        let gossip_bus = Arc::new(tokio::sync::RwLock::new(
+            crate::gossip::AdminGossipBus::new(gossip.clone()),
+        ));
 
         let db_path = data_dir.join("admin.redb");
         let db = Arc::new(redb::Database::create(db_path)?);
@@ -95,10 +121,76 @@ impl AppState {
             .spawn();
 
         let mut orgs = HashMap::new();
-        let mut devices = HashMap::new();
-        let mut roles = HashMap::new();
+        let mut devices: HashMap<String, HashMap<String, DeviceInfo>> = HashMap::new();
+        let mut roles: HashMap<String, HashMap<String, RoleInfo>> = HashMap::new();
 
+        // ----- load persisted devices & roles BEFORE org loop (so lookup works) -----
+        let devices_path = data_dir.join("devices.json");
+        if devices_path.exists() {
+            if let Ok(json_str) = std::fs::read_to_string(&devices_path) {
+                if let Ok(persisted) = serde_json::from_str::<Vec<PersistedDevice>>(&json_str) {
+                    for d in persisted {
+                        devices
+                            .entry(d.org.clone())
+                            .or_default()
+                            .insert(d.node_id.clone(), DeviceInfo {
+                                node_id: d.node_id.clone(),
+                                active: d.active,
+                                role: d.role.clone(),
+                                person: d.person.clone(),
+                                name: d.name.clone(),
+                                device_addr: d.device_addr.clone(),
+                            });
+                        if let Ok(mut reg) = registry.write() {
+                            let node_id_bytes = hex::decode(&d.node_id).unwrap_or_default();
+                            let mut id = [0u8; 32];
+                            let len = node_id_bytes.len().min(32);
+                            id[..len].copy_from_slice(&node_id_bytes[..len]);
+                            reg.upsert_device(d.org.clone(), id, Device {
+                                node_id: id,
+                                active: d.active,
+                                role: d.role.clone(),
+                                person: d.person.clone(),
+                                name: d.name.clone(),
+                            });
+                            let grants = default_role_grants(&d.role);
+                            reg.upsert_role(d.org.clone(), d.role.clone(), RoleGrants {
+                                can_open: grants.can_open,
+                                can_write: grants.can_write,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let roles_path = data_dir.join("roles.json");
+        if roles_path.exists() {
+            if let Ok(json_str) = std::fs::read_to_string(&roles_path) {
+                if let Ok(persisted) = serde_json::from_str::<Vec<PersistedRole>>(&json_str) {
+                    for r in persisted {
+                        roles
+                            .entry(r.org.clone())
+                            .or_default()
+                            .insert(r.name.clone(), RoleInfo {
+                                name: r.name.clone(),
+                                can_open: r.can_open.clone(),
+                                can_write: r.can_write.clone(),
+                            });
+                        if let Ok(mut reg) = registry.write() {
+                            reg.upsert_role(r.org.clone(), r.name.clone(), RoleGrants {
+                                can_open: r.can_open,
+                                can_write: r.can_write,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----- load org config -----
         let orgs_config_path = data_dir.join("orgs.json");
+        let node_id_hex = hex::encode(*secret.public().as_bytes());
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<OrgConfig>>(&orgs_json) {
@@ -119,7 +211,21 @@ impl AppState {
                             topic_id,
                         });
                         devices.entry(org_name.clone()).or_default();
-                        roles.entry(org_name).or_default();
+                        roles.entry(org_name.clone()).or_default();
+
+                        // Re-join gossip topic on restart
+                        {
+                            let mut bus = gossip_bus.write().await;
+                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+                            let _ = bus.join_org(&org_name, iroh_topic_id).await;
+                        }
+
+                        // Start admin heartbeat for this org
+                        start_admin_heartbeat(
+                            gossip_bus.clone(),
+                            org_name.clone(),
+                            node_id_hex.clone(),
+                        );
                     }
                 }
             }
@@ -127,11 +233,15 @@ impl AppState {
 
         Ok(Self {
             secret, _endpoint: ep, _router: router,
-            gossip, registry,
+            gossip, gossip_bus, registry,
             orgs, devices, roles,
             data_dir, db,
         })
     }
+
+    // ------------------------------------------------------------------
+    // Accessors
+    // ------------------------------------------------------------------
 
     pub fn node_id(&self) -> NodeId { *self.secret.public().as_bytes() }
     pub fn secret(&self) -> &SecretKey { &self.secret }
@@ -139,6 +249,17 @@ impl AppState {
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
     pub fn list_orgs(&self) -> Vec<String> { self.orgs.keys().cloned().collect() }
+    pub fn gossip_bus_ref(&self) -> &Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>> { &self.gossip_bus }
+
+    /// Read heartbeats for an org (used by `get_sync_info`).
+    pub fn get_heartbeats(&self, org: &str) -> HashMap<String, i64> {
+        let bus = tauri::async_runtime::block_on(self.gossip_bus.read());
+        bus.get_heartbeats(org)
+    }
+
+    // ------------------------------------------------------------------
+    // Org management
+    // ------------------------------------------------------------------
 
     pub fn add_org(&mut self, name: &str, topic_id: [u8; 32]) {
         self.orgs.insert(name.to_string(), OrgState { name: name.to_string(), topic_id });
@@ -168,6 +289,30 @@ impl AppState {
 
     pub fn get_org(&self, name: &str) -> Option<&OrgState> { self.orgs.get(name) }
 
+    /// Join the gossip topic for an org and start the admin heartbeat.
+    pub async fn join_gossip_and_heartbeat(
+        &self,
+        org_name: &str,
+        topic_id: [u8; 32],
+    ) -> anyhow::Result<()> {
+        let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+        {
+            let mut bus = self.gossip_bus.write().await;
+            bus.join_org(org_name, iroh_topic_id).await?;
+        }
+        let node_id_hex = hex::encode(self.node_id());
+        start_admin_heartbeat(
+            self.gossip_bus.clone(),
+            org_name.to_string(),
+            node_id_hex,
+        );
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Device management
+    // ------------------------------------------------------------------
+
     pub fn remember_device(&mut self, org: &str, node_id: &str, role: &str, person: &str, name: &str, active: bool, device_addr: &str) {
         self.devices.entry(org.into()).or_default().insert(node_id.into(), DeviceInfo {
             node_id: node_id.into(), active, role: role.into(), person: person.into(), name: name.into(),
@@ -190,6 +335,9 @@ impl AppState {
             let grants = default_role_grants(role);
             RoleInfo { name: role.into(), can_open: grants.can_open, can_write: grants.can_write }
         });
+
+        self.save_devices();
+        self.save_roles();
     }
 
     pub fn update_device(
@@ -234,19 +382,25 @@ impl AppState {
                 name: name.unwrap_or(current_name),
             });
         }
+
+        self.save_devices();
     }
 
     pub fn list_org_devices(&self, org: &str) -> Vec<DeviceInfo> {
         self.devices.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
 
+    // ------------------------------------------------------------------
+    // Role management
+    // ------------------------------------------------------------------
+
     pub fn list_org_roles(&self, org: &str) -> Vec<RoleInfo> {
         self.roles.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
 
     pub fn set_role(&mut self, org: &str, name: &str, can_open: Vec<String>, can_write: Vec<String>) {
-        if let Some(roles) = self.roles.get_mut(org) {
-            roles.insert(name.into(), RoleInfo {
+        if let Some(roles_map) = self.roles.get_mut(org) {
+            roles_map.insert(name.into(), RoleInfo {
                 name: name.into(),
                 can_open: can_open.clone(),
                 can_write: can_write.clone(),
@@ -258,8 +412,57 @@ impl AppState {
                 can_write,
             });
         }
+
+        self.save_roles();
+    }
+
+    // ------------------------------------------------------------------
+    // Persistence helpers
+    // ------------------------------------------------------------------
+
+    fn save_devices(&self) {
+        let mut all: Vec<PersistedDevice> = Vec::new();
+        for (org, devs) in &self.devices {
+            for (_, d) in devs {
+                all.push(PersistedDevice {
+                    org: org.clone(),
+                    node_id: d.node_id.clone(),
+                    active: d.active,
+                    role: d.role.clone(),
+                    person: d.person.clone(),
+                    name: d.name.clone(),
+                    device_addr: d.device_addr.clone(),
+                });
+            }
+        }
+        let path = self.data_dir.join("devices.json");
+        if let Ok(bytes) = serde_json::to_vec(&all) {
+            let _ = std::fs::write(&path, bytes);
+        }
+    }
+
+    fn save_roles(&self) {
+        let mut all: Vec<PersistedRole> = Vec::new();
+        for (org, roles_map) in &self.roles {
+            for (_, r) in roles_map {
+                all.push(PersistedRole {
+                    org: org.clone(),
+                    name: r.name.clone(),
+                    can_open: r.can_open.clone(),
+                    can_write: r.can_write.clone(),
+                });
+            }
+        }
+        let path = self.data_dir.join("roles.json");
+        if let Ok(bytes) = serde_json::to_vec(&all) {
+            let _ = std::fs::write(&path, bytes);
+        }
     }
 }
+
+// ------------------------------------------------------------------
+// Role defaults (unchanged)
+// ------------------------------------------------------------------
 
 pub fn default_role_grants(role: &str) -> RoleGrants {
     match role {
@@ -268,4 +471,44 @@ pub fn default_role_grants(role: &str) -> RoleGrants {
         "contabilidad" => RoleGrants { can_open: vec!["invoices".into(),"customers".into()], can_write: vec![] },
         _ => RoleGrants { can_open: vec![], can_write: vec![] },
     }
+}
+
+// ------------------------------------------------------------------
+// Admin heartbeat (same pattern as client, but scoped to one org)
+// ------------------------------------------------------------------
+
+fn start_admin_heartbeat(
+    gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>>,
+    org_id: String,
+    node_id_hex: String,
+) {
+    let broadcast: Arc<dyn Fn(&str) + Send + Sync> = {
+        let bus = gossip_bus.clone();
+        let org = org_id.clone();
+        Arc::new(move |json: &str| {
+            let mut guard = bus.blocking_write();
+            let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
+            let handle = tokio::runtime::Handle::current();
+            let _ = handle.block_on(guard.broadcast(&org, bytes));
+        })
+    };
+
+    let store: Arc<dyn Fn(i64, &str) + Send + Sync> = {
+        let bus = gossip_bus.clone();
+        Arc::new(move |ts: i64, nid: &str| {
+            // The heartbeat is already tracked by the receiver loop in AdminGossipBus
+            // when it comes back from the network, but we also want to record our own
+            // heartbeat immediately so the sync-info panel sees the admin as online.
+            let guard = bus.blocking_read();
+            if let Ok(mut map) = guard.heartbeats_ref().write() {
+                map.entry(org_id.clone())
+                    .or_default()
+                    .insert(nid.to_string(), ts);
+            }
+        })
+    };
+
+    syntrix_core::heartbeat::start_heartbeat_with_resync(
+        node_id_hex, broadcast, store,
+    );
 }

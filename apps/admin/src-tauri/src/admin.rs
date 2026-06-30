@@ -2,6 +2,7 @@ use crate::identity::AppState;
 use crate::{DeviceInfo, RoleInfo};
 pub use syntrix_core::{build_device_addr_string, SyncInfo};
 use syntrix_schema::all_schemas;
+use std::collections::HashMap;
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
     let topic_id_bytes: [u8; 32] = fastrand::u128(..).to_le_bytes().into_iter()
@@ -21,6 +22,9 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, &own_device_addr);
     state.add_org(name, topic_id_bytes);
     state.save_org_config(name, &hex::encode(topic_id_bytes))?;
+
+    // Join the gossip topic so the admin receives heartbeats and broadcasts its own.
+    state.join_gossip_and_heartbeat(name, topic_id_bytes).await?;
 
     Ok(())
 }
@@ -184,6 +188,6 @@ pub fn get_sync_info(
             "device_addr": d.device_addr,
         })
     }).collect();
-    let heartbeats = std::collections::HashMap::new();
+    let heartbeats: HashMap<String, i64> = state.get_heartbeats(org);
     syntrix_core::sync::get_sync_info(members, heartbeats, node_id)
 }

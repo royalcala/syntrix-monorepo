@@ -7,6 +7,7 @@ pub mod identity;
 pub mod admin;
 pub mod audit;
 pub mod catchup;
+pub mod gossip;
 
 use syntrix_schema::build_registry;
 
