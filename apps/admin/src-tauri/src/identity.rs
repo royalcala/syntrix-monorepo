@@ -46,6 +46,10 @@ pub struct AppState {
     #[allow(dead_code)]
     gossip: iroh_gossip::net::Gossip,
     pub gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>>,
+    /// Synchronous-access heartbeat map (std RwLock). Updated by both the gossip
+    /// receiver loop and the admin's own heartbeat store callback.  Reading this
+    /// never requires a tokio lock, so it works from sync Tauri commands and tests.
+    heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
     devices: HashMap<String, HashMap<String, DeviceInfo>>,
@@ -105,6 +109,13 @@ impl AppState {
         let gossip_bus = Arc::new(tokio::sync::RwLock::new(
             crate::gossip::AdminGossipBus::new(gossip.clone()),
         ));
+
+        // Snapshot the std::sync heartbeats Arc so we can read it synchronously
+        // without entering a tokio lock (needed by sync Tauri commands and tests).
+        let heartbeats = {
+            let guard = gossip_bus.read().await;
+            guard.heartbeats_ref()
+        };
 
         let db_path = data_dir.join("admin.redb");
         let db = Arc::new(redb::Database::create(db_path)?);
@@ -225,7 +236,7 @@ impl AppState {
                             gossip_bus.clone(),
                             org_name.clone(),
                             node_id_hex.clone(),
-                        );
+                        ).await;
                     }
                 }
             }
@@ -233,7 +244,7 @@ impl AppState {
 
         Ok(Self {
             secret, _endpoint: ep, _router: router,
-            gossip, gossip_bus, registry,
+            gossip, gossip_bus, heartbeats, registry,
             orgs, devices, roles,
             data_dir, db,
         })
@@ -252,9 +263,14 @@ impl AppState {
     pub fn gossip_bus_ref(&self) -> &Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>> { &self.gossip_bus }
 
     /// Read heartbeats for an org (used by `get_sync_info`).
+    /// Uses the std::sync::RwLock copy — fully synchronous, works from tests.
     pub fn get_heartbeats(&self, org: &str) -> HashMap<String, i64> {
-        let bus = tauri::async_runtime::block_on(self.gossip_bus.read());
-        bus.get_heartbeats(org)
+        self.heartbeats
+            .read()
+            .unwrap()
+            .get(org)
+            .cloned()
+            .unwrap_or_default()
     }
 
     // ------------------------------------------------------------------
@@ -305,7 +321,7 @@ impl AppState {
             self.gossip_bus.clone(),
             org_name.to_string(),
             node_id_hex,
-        );
+        ).await;
         Ok(())
     }
 
@@ -477,30 +493,35 @@ pub fn default_role_grants(role: &str) -> RoleGrants {
 // Admin heartbeat (same pattern as client, but scoped to one org)
 // ------------------------------------------------------------------
 
-fn start_admin_heartbeat(
+async fn start_admin_heartbeat(
     gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>>,
     org_id: String,
     node_id_hex: String,
 ) {
+    // Snapshot the heartbeats Arc while we're in async context (no block_on needed).
+    let hb = {
+        let guard = gossip_bus.read().await;
+        guard.heartbeats_ref()
+    };
+
     let broadcast: Arc<dyn Fn(&str) + Send + Sync> = {
         let bus = gossip_bus.clone();
         let org = org_id.clone();
         Arc::new(move |json: &str| {
-            let mut guard = bus.blocking_write();
+            let bus = bus.clone();
+            let org = org.clone();
             let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
-            let handle = tokio::runtime::Handle::current();
-            let _ = handle.block_on(guard.broadcast(&org, bytes));
+            tokio::spawn(async move {
+                let mut guard = bus.write().await;
+                let _ = guard.broadcast(&org, bytes).await;
+            });
         })
     };
 
     let store: Arc<dyn Fn(i64, &str) + Send + Sync> = {
-        let bus = gossip_bus.clone();
+        let heartbeats = hb; // std::sync::RwLock — safe from non-async context
         Arc::new(move |ts: i64, nid: &str| {
-            // The heartbeat is already tracked by the receiver loop in AdminGossipBus
-            // when it comes back from the network, but we also want to record our own
-            // heartbeat immediately so the sync-info panel sees the admin as online.
-            let guard = bus.blocking_read();
-            if let Ok(mut map) = guard.heartbeats_ref().write() {
+            if let Ok(mut map) = heartbeats.write() {
                 map.entry(org_id.clone())
                     .or_default()
                     .insert(nid.to_string(), ts);

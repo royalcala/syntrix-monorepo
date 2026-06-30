@@ -183,10 +183,14 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         let bus = gossip_bus.clone();
         let org = final_org_id.clone();
         Arc::new(move |json: &str| {
-            let mut guard = bus.blocking_write();
+            let bus = bus.clone();
+            let org = org.clone();
             let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
-            let handle = tokio::runtime::Handle::current();
-            let _ = handle.block_on(guard.broadcast(&org, bytes));
+            // Spawn instead of blocking: the callback runs inside a tokio task.
+            tokio::spawn(async move {
+                let mut guard = bus.write().await;
+                let _ = guard.broadcast(&org, bytes).await;
+            });
         })
     };
     let hb_store = {
