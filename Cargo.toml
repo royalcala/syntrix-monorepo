@@ -4,6 +4,7 @@ members = [
     "apps/admin/src-tauri",
     "apps/client/src-tauri",
     "crates/syntrix-core",
+    "crates/syntrix-network",
     "crates/syntrix-schema",
     "crates/syntrix-testkit",
     "crates/syntrix-logging",

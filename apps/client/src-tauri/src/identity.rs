@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, RwLock};
 
-use iroh::{Endpoint, SecretKey};
-use iroh::endpoint::presets::N0;
-use iroh::tls::CaRootsConfig;
-use iroh_gossip::net::Gossip;
+use libp2p::identity::Keypair;
+use libp2p::Multiaddr;
 use syntrix_core::NodeId;
-use syntrix_core::registry::{NamespaceRegistry, Device, RoleGrants};
+use syntrix_core::registry::{Device, NamespaceRegistry, RoleGrants};
+use syntrix_network::codecs::InvitePayload;
+use syntrix_network::P2PNode;
+use crate::invite::InviteHandler;
 use crate::OrgInfo;
 use serde::{Deserialize, Serialize};
 
@@ -26,30 +27,28 @@ pub struct ClientOrgConfig {
 }
 
 pub struct AppState {
-    secret: SecretKey,
-    _endpoint: Endpoint,
-    _router: iroh::protocol::Router,
-    gossip: Gossip,
+    keypair: Keypair,
+    p2p: P2PNode,
     hlc_counter: AtomicU64,
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
     active_org: Option<String>,
     data_dir: PathBuf,
     pub indexer: Arc<crate::indexes::RelationalEngine>,
-    pub gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::GossipEventBus>>,
-    pub invite_handler: crate::invite::InviteProtocolHandler,
-    pub invite_rx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::invite::InvitePayload>>>,
+    pub invite_handler: InviteHandler,
+    /// Maps topic string → org_id for routing gossipsub messages
+    topic_to_org: HashMap<String, String>,
 }
 
 pub struct OrgState {
     pub name: String,
     pub role: String,
-    pub topic_id: [u8; 32],
+    pub topic_id: String,
     pub admin_addr: Option<String>,
 }
 
 impl AppState {
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<(Self, Vec<InvitePayload>)> {
         let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
             PathBuf::from(custom_path)
         } else {
@@ -58,67 +57,57 @@ impl AppState {
         Self::new_with_data_dir(data_dir).await
     }
 
-    pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<Self> {
+    pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<(Self, Vec<InvitePayload>)> {
         std::fs::create_dir_all(&data_dir).ok();
 
-        let key_path = data_dir.join("keypair.bytes");
-        let secret = if key_path.exists() {
-            let bytes = std::fs::read(&key_path)?;
-            if bytes.len() == 32 {
-                let mut b = [0u8; 32];
-                b.copy_from_slice(&bytes);
-                SecretKey::from_bytes(&b)
-            } else {
-                let sk = SecretKey::generate();
-                std::fs::write(&key_path, sk.to_bytes())?;
-                sk
-            }
-        } else {
-            let sk = SecretKey::generate();
-            std::fs::write(&key_path, sk.to_bytes())?;
-            sk
+        let keypair = load_or_create_keypair(&key_path)?;
+
+        let local_peer_id = keypair.public().to_peer_id();
+        let listen_on: Vec<Multiaddr> = vec![
+            "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
+        ];
+
+        let config = syntrix_network::NetworkConfig {
+            keypair: keypair.clone(),
+            listen_on,
+            bootstrap_nodes: vec![],
+            data_dir: data_dir.clone(),
         };
 
-        let ep = Endpoint::builder(N0)
-            .secret_key(secret.clone())
-            .ca_roots_config(CaRootsConfig::insecure_skip_verify())
-            .bind_addr("0.0.0.0:0".parse::<std::net::SocketAddr>()?)?
-            .bind()
-            .await?;
-        ep.online().await;
-
-        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let (p2p, event_rx) = P2PNode::new(config).await?;
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
-
-        let (invite_handler, invite_rx) = crate::invite::InviteProtocolHandler::new();
-        let gossip_bus = Arc::new(tokio::sync::RwLock::new(crate::gossip::GossipEventBus::new(gossip.clone())));
         let indexer = Arc::new(crate::indexes::RelationalEngine::new(data_dir.clone())?);
+        let (invite_handler, _invite_rx) = InviteHandler::new();
 
-        let catchup_handler = crate::catchup::CatchupProtocol::new(indexer.clone());
-        let router = iroh::protocol::Router::builder(ep.clone())
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .accept(crate::invite::INVITE_ALPN, invite_handler.clone())
-            .accept(crate::catchup::CATCHUP_ALPN, catchup_handler)
-            .spawn();
-
+        let mut topic_to_org: HashMap<String, String> = HashMap::new();
         let mut orgs = HashMap::new();
-        let node_id = *secret.public().as_bytes();
-        let node_id_hex = hex::encode(node_id);
+        let node_id_bytes: [u8; 32] = local_peer_id.to_bytes();
+        let node_id_hex = hex::encode(node_id_bytes);
         let orgs_config_path = data_dir.join("orgs.json");
+
+        let idx_ev = indexer.clone();
+        let p2p_ev = p2p.clone();
+        let invite_handler_ev = invite_handler.clone();
+        let topic_to_org_ev = topic_to_org.clone();
+
+        // Spawn background event processor
+        tokio::spawn(async move {
+            process_event_loop(event_rx, idx_ev, p2p_ev, invite_handler_ev, topic_to_org_ev).await;
+        });
+
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<ClientOrgConfig>>(&orgs_json) {
                     for cfg in configs {
-                        let topic_id_bytes = hex::decode(&cfg.topic_id).unwrap_or_default();
-                        let mut topic_id_arr = [0u8; 32];
-                        let len = topic_id_bytes.len().min(32);
-                        topic_id_arr[..len].copy_from_slice(&topic_id_bytes[..len]);
+                        let topic_id_str = format!("syntrix-org-{}", cfg.org_id);
+                        topic_to_org.insert(topic_id_str.clone(), cfg.org_id.clone());
 
                         if let Ok(mut reg) = registry.write() {
-                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id_arr);
-                            reg.set_topic_id(cfg.org_id.clone(), iroh_topic_id);
-                            reg.upsert_device(cfg.org_id.clone(), node_id, Device {
-                                node_id, active: true, role: cfg.role.clone(),
+                            reg.set_topic_id(cfg.org_id.clone(), topic_id_str.clone());
+                            reg.upsert_device(cfg.org_id.clone(), node_id_bytes, Device {
+                                node_id: node_id_bytes,
+                                active: true,
+                                role: cfg.role.clone(),
                                 person: node_id_hex.clone(),
                                 name: format!("Device {}", &node_id_hex[..8]),
                             });
@@ -126,7 +115,6 @@ impl AppState {
                                 RoleGrants { can_open: cfg.can_open.clone(), can_write: cfg.can_write.clone() });
                         }
 
-                        // Write role to redb so frontend query_entity("roles") works
                         let role_json = serde_json::json!({
                             "name": cfg.role,
                             "can_open": cfg.can_open,
@@ -134,66 +122,47 @@ impl AppState {
                         });
                         let _ = indexer.upsert_role_cfg(&cfg.org_id, &cfg.role, &role_json);
 
-                        // Re-join gossip topic on startup
-                        {
-                            let mut bus = gossip_bus.write().await;
-                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id_arr);
-                            let bootstrap = cfg.admin_addr.as_ref()
-                                .and_then(|a| syntrix_core::parse_device_addr(a))
-                                .map(|ep| vec![ep.id])
-                                .unwrap_or_default();
-                            let _ = bus.join_org(
-                                &cfg.org_id, iroh_topic_id, bootstrap,
-                                indexer.clone(), node_id_hex.clone(),
-                                gossip_bus.clone(),
-                            ).await;
-                        }
+                        let _ = p2p.join_topic(&topic_id_str);
 
-                        // P2P catch-up on restart — recover events missed while offline.
-                        // Strategy: try admin first, then any peer with a recent heartbeat.
-                        // iroh-dns (via N0 preset) resolves node_id → current address.
+                        // Catch-up on restart
                         {
-                            let org = cfg.org_id.clone();
                             let idx = indexer.clone();
-                            let endpoint = ep.clone();
-                            let self_node = node_id_hex.clone();
+                            let node_hex = node_id_hex.clone();
+                            let org = cfg.org_id.clone();
+                            let p2p_catchup = p2p.clone();
 
-                            // 1. Try admin first (fast path — most likely to have full history).
                             let admin_ok = if let Some(ref addr_str) = cfg.admin_addr {
-                                crate::catchup::CatchupProtocol::request_catchup(
-                                    &endpoint, addr_str, &org, 0, &idx,
-                                ).await.is_ok()
+                                if let Some(peer_id) = syntrix_core::parse_device_addr(addr_str) {
+                                    p2p_catchup.request_catchup(peer_id, org.clone(), 0).await.is_ok()
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             };
 
                             if !admin_ok {
-                                // 2. Wait briefly for gossip heartbeats to arrive.
                                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-                                // 3. Find any online peer (≠ self, ≠ admin) with a recent heartbeat.
                                 let hb = idx.get_heartbeats(&org).unwrap_or_default();
                                 let now = chrono::Utc::now().timestamp_millis();
-                                let online_peer: Option<String> = hb.into_iter()
-                                    .find(|(nid, ts)| {
-                                        nid != &self_node
-                                            && *ts > 0
-                                            && now - *ts < 60_000
-                                    })
-                                    .map(|(nid, _)| nid);
-
-                                // 4. Catch-up from that peer (iroh-dns resolves node_id → address).
-                                if let Some(peer_node_id) = online_peer {
-                                    let _ = crate::catchup::CatchupProtocol::request_catchup(
-                                        &endpoint, &peer_node_id, &org, 0, &idx,
-                                    ).await;
+                                if let Some((peer_hex, _)) = hb.into_iter()
+                                    .find(|(nid, ts)| nid != &node_hex && *ts > 0 && now - *ts < 60_000)
+                                {
+                                    if let Ok(peer_bytes) = hex::decode(&peer_hex) {
+                                        if peer_bytes.len() == 32 {
+                                            let mut arr = [0u8; 32];
+                                            arr.copy_from_slice(&peer_bytes);
+                                            if let Ok(peer_id) = libp2p::PeerId::from_bytes(&arr) {
+                                                let _ = p2p_catchup.request_catchup(peer_id, org.clone(), 0).await;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
 
-                        // Write self as member to redb
                         let self_member = serde_json::json!({
-                            "node_id": node_id_hex,
+                            "node_id": node_id_hex.clone(),
                             "active": true,
                             "role": cfg.role,
                             "person": node_id_hex.clone(),
@@ -201,25 +170,21 @@ impl AppState {
                         });
                         let _ = indexer.upsert_member(&cfg.org_id, &node_id_hex, &self_member);
 
-                        // Start heartbeat per org
+                        // Start heartbeat
                         let hb_broadcast = {
-                            let bus = gossip_bus.clone();
-                            let org = cfg.org_id.clone();
-                            std::sync::Arc::new(move |json: &str| {
-                                let bus = bus.clone();
-                                let org = org.clone();
-                                let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
-                                // Spawn instead of blocking: the callback runs inside a tokio task.
-                                tokio::spawn(async move {
-                                    let mut guard = bus.write().await;
-                                    let _ = guard.broadcast(&org, bytes).await;
-                                });
+                            let p2p_hb = p2p.clone();
+                            let topic = topic_id_str.clone();
+                            Arc::new(move |json: &str| {
+                                let p2p_hb = p2p_hb.clone();
+                                let t = topic.clone();
+                                let data = json.as_bytes().to_vec();
+                                let _ = p2p_hb.publish(&t, data);
                             })
                         };
                         let hb_store = {
                             let idx = indexer.clone();
                             let org = cfg.org_id.clone();
-                            std::sync::Arc::new(move |ts: i64, nid: &str| {
+                            Arc::new(move |ts: i64, nid: &str| {
                                 let hb = serde_json::json!({"ts": ts, "status": "online", "node_id": nid});
                                 let _ = idx.upsert_heartbeat(&org, nid, &hb);
                             })
@@ -231,7 +196,7 @@ impl AppState {
                         orgs.insert(cfg.org_id.clone(), OrgState {
                             name: cfg.name,
                             role: cfg.role,
-                            topic_id: topic_id_arr,
+                            topic_id: topic_id_str,
                             admin_addr: cfg.admin_addr,
                         });
                     }
@@ -239,20 +204,27 @@ impl AppState {
             }
         }
 
-        Ok(Self {
-            secret, _endpoint: ep, _router: router,
-            gossip, hlc_counter: AtomicU64::new(0), registry,
-            orgs, active_org: None,
-            data_dir, indexer, gossip_bus,
-            invite_handler,
-            invite_rx: std::sync::Mutex::new(Some(invite_rx)),
-        })
+        Ok((
+            Self {
+                keypair,
+                p2p,
+                hlc_counter: AtomicU64::new(0),
+                registry,
+                orgs,
+                active_org: None,
+                data_dir,
+                indexer,
+                invite_handler,
+                topic_to_org,
+            },
+            vec![],
+        ))
     }
 
-    pub fn node_id(&self) -> NodeId { *self.secret.public().as_bytes() }
-    pub fn secret(&self) -> &SecretKey { &self.secret }
+    pub fn node_id(&self) -> NodeId { self.p2p.local_peer_id_bytes() }
+    pub fn keypair(&self) -> &Keypair { &self.keypair }
     pub fn counter(&self) -> &AtomicU64 { &self.hlc_counter }
-    pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
+    pub fn p2p(&self) -> &P2PNode { &self.p2p }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
     pub fn indexer(&self) -> Arc<crate::indexes::RelationalEngine> { self.indexer.clone() }
@@ -276,7 +248,8 @@ impl AppState {
         self.active_org.as_deref().ok_or_else(|| "no active org".into())
     }
 
-    pub fn add_org(&mut self, org_id: &str, name: &str, role: &str, topic_id: [u8; 32], admin_addr: Option<String>) {
+    pub fn add_org(&mut self, org_id: &str, name: &str, role: &str, topic_id: String, admin_addr: Option<String>) {
+        self.topic_to_org.insert(topic_id.clone(), org_id.to_string());
         self.orgs.insert(org_id.into(), OrgState {
             name: name.into(),
             role: role.into(),
@@ -306,4 +279,123 @@ impl AppState {
     }
 }
 
+async fn process_event_loop(
+    mut event_rx: tokio::sync::mpsc::UnboundedReceiver<syntrix_network::Event>,
+    indexer: Arc<crate::indexes::RelationalEngine>,
+    p2p: P2PNode,
+    invite_handler: InviteHandler,
+    topic_to_org: HashMap<String, String>,
+) {
+    use syntrix_network::Event;
 
+    loop {
+        tokio::select! {
+            Some(event) = event_rx.recv() => {
+                match event {
+                    Event::GossipsubMessage { source: _, topic, data } => {
+                        let org_id = topic_to_org.get(&topic).cloned().unwrap_or_else(|| {
+                            topic.strip_prefix("syntrix-org-").unwrap_or(&topic).to_string()
+                        });
+                        let content = match std::str::from_utf8(&data) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        let val: serde_json::Value = match serde_json::from_str(content) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        process_gossip_event(&org_id, &val, &indexer);
+                    }
+                    Event::InviteReceived { peer: _, payload } => {
+                        invite_handler.push(payload);
+                    }
+                    Event::CatchupRequestReceived { peer: _, org_id, since_hlc, response_id } => {
+                        if let Ok(events) = indexer.query_events_since(&org_id, since_hlc, 10000) {
+                            let event_data: Vec<serde_json::Value> = events.into_iter().map(|e| {
+                                serde_json::json!({
+                                    "type": e.event_type,
+                                    "hlc": e.hlc,
+                                    "schema_version": e.schema_version,
+                                    "payload": e.payload,
+                                })
+                            }).collect();
+                            let _ = p2p.respond_catchup(response_id, event_data);
+                        }
+                    }
+                    Event::PeerConnected(_) | Event::PeerDisconnected(_) => {}
+                }
+            }
+            else => break,
+        }
+    }
+}
+
+fn process_gossip_event(
+    org_id: &str,
+    val: &serde_json::Value,
+    indexer: &crate::indexes::RelationalEngine,
+) {
+    if val.get("type").is_none() {
+        if let Some(node_id) = val.get("node_id").and_then(|v| v.as_str()) {
+            if let Some(_ts) = val.get("ts").and_then(|v| v.as_i64()) {
+                let _ = indexer.upsert_heartbeat(org_id, node_id, val);
+            }
+        }
+        return;
+    }
+
+    let event_type = match val.get("type").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return,
+    };
+
+    if event_type == "role.updated" {
+        if let Some(payload) = val.get("payload") {
+            if let Some(role_name) = payload.get("name").and_then(|v| v.as_str()) {
+                let role_cfg = serde_json::json!({
+                    "name": role_name,
+                    "can_open": payload.get("can_open"),
+                    "can_write": payload.get("can_write"),
+                });
+                let _ = indexer.upsert_role_cfg(org_id, role_name, &role_cfg);
+                let _ = indexer.append_event(org_id, val);
+            }
+        }
+        return;
+    }
+
+    if event_type == "device.updated" {
+        if let Some(payload) = val.get("payload") {
+            if let Some(node_id) = payload.get("node_id").and_then(|v| v.as_str()) {
+                let _ = indexer.upsert_member(org_id, node_id, payload);
+                let _ = indexer.append_event(org_id, val);
+            }
+        }
+        return;
+    }
+
+    let entity = crate::events::entity_from_event_type(event_type);
+    let payload = match val.get("payload") {
+        Some(p) => p.clone(),
+        None => return,
+    };
+
+    let doc_id = payload.get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| payload.get("node_id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+
+    if let Some(hlc_val) = val.get("hlc") {
+        let hlc = crate::indexes::HlcTimestamp {
+            ts: hlc_val.get("ts").and_then(|v| v.as_u64()).unwrap_or(0),
+            count: hlc_val.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            node: hlc_val.get("node").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        };
+        let _ = indexer.upsert_document_with_hlc(org_id, entity, &doc_id, &payload, &hlc);
+    } else {
+        let _ = indexer.upsert_document(org_id, entity, &doc_id, &payload);
+    }
+
+    let _ = indexer.append_event(org_id, val);
+}

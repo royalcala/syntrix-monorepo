@@ -119,13 +119,6 @@ fn get_invites(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<invite::I
 }
 
 #[tauri::command]
-fn debug_invite_handler(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    let pending = s.invite_handler.get_pending().len();
-    Ok(format!("invite handler active, {} pending, node {}", pending, hex::encode(s.node_id())[..8].to_string()))
-}
-
-#[tauri::command]
 fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(get_endpoint_addr_impl(&s))
@@ -193,34 +186,30 @@ pub async fn join_org_impl(
     let invite: invite::InvitePayload = serde_json::from_str(invite_json)
         .map_err(|e| format!("invalid invite json: {}", e))?;
 
-    let topic_id_bytes = hex::decode(&invite.topic_id).map_err(|e| format!("invalid topic_id: {e}"))?;
-    let mut topic_id = [0u8; 32];
-    let len = topic_id_bytes.len().min(32);
-    topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
+    let topic_id_str = format!("syntrix-org-{}", &invite.org_name);
     let role = invite.role.clone();
     let admin_addr = invite.admin_addr.clone();
     let can_open = invite.can_open.clone();
     let can_write = invite.can_write.clone();
-    let final_org_id = hex::encode(&topic_id[..4]);
+    let final_org_id = invite.org_name.clone();
 
-    state.add_org(&final_org_id, &name, &role, topic_id, admin_addr.clone());
+    state.add_org(&final_org_id, &name, &role, topic_id_str.clone(), admin_addr.clone());
 
     let node_id = state.node_id();
+    let node_id_hex = hex::encode(node_id);
 
     if let Ok(mut reg) = state.registry().write() {
-        let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-        reg.set_topic_id(final_org_id.clone(), iroh_topic_id);
+        reg.set_topic_id(final_org_id.clone(), topic_id_str.clone());
         reg.upsert_device(
             final_org_id.clone(), node_id,
             syntrix_core::registry::Device {
                 node_id, active: true, role: role.clone(),
-                person: hex::encode(node_id),
-                name: format!("Device {}", &hex::encode(node_id)[..8]),
+                person: node_id_hex.clone(),
+                name: format!("Device {}", &node_id_hex[..8]),
             },
         );
         reg.upsert_role(final_org_id.clone(), role.clone(),
             syntrix_core::registry::RoleGrants { can_open: can_open.clone(), can_write: can_write.clone() });
-        eprintln!("[join_org] registered device org={} node_hex={} role={} can_open={:?}", final_org_id, hex::encode(node_id), role, can_open);
     }
 
     let role_json = serde_json::json!({
@@ -234,75 +223,66 @@ pub async fn join_org_impl(
         org_id: final_org_id.clone(),
         name: name.to_string(),
         role: role.clone(),
-        topic_id: hex::encode(topic_id),
+        topic_id: hex::encode(node_id),
         admin_addr: admin_addr.clone(),
         can_open: can_open.clone(),
         can_write: can_write.clone(),
     }).ok();
 
-    let gossip_bus = state.gossip_bus.clone();
-    let indexer = state.indexer.clone();
-    let node_id_hex = hex::encode(state.node_id());
-    let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-    let bootstrap = if let Some(ref addr) = admin_addr {
-        if let Some(ep) = syntrix_core::parse_device_addr(addr) {
-            vec![ep.id]
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
-    {
-        let mut bus = gossip_bus.write().await;
-        let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer.clone(), node_id_hex, gossip_bus.clone()).await;
-    }
+    let _ = state.p2p().join_topic(&topic_id_str);
 
-    let endpoint = state.endpoint().clone();
+    // Catch-up after joining
+    let p2p_catchup = state.p2p().clone();
+    let indexer = state.indexer.clone();
     let admin_ok = if let Some(ref addr) = admin_addr {
-        crate::catchup::CatchupProtocol::request_catchup(
-            &endpoint, addr, &final_org_id, 0, &indexer,
-        ).await.is_ok()
+        if let Some(peer_id) = syntrix_core::parse_device_addr(addr) {
+            match p2p_catchup.request_catchup(peer_id, final_org_id.clone(), 0).await {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
     } else {
         false
     };
 
     if !admin_ok {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        let node_id_hex = hex::encode(state.node_id());
         let hb = indexer.get_heartbeats(&final_org_id).unwrap_or_default();
         let now = chrono::Utc::now().timestamp_millis();
-        if let Some((peer_id, _)) = hb.into_iter()
+        if let Some((peer_hex, _)) = hb.into_iter()
             .find(|(nid, ts)| nid != &node_id_hex && *ts > 0 && now - *ts < 60_000)
         {
-            let _ = crate::catchup::CatchupProtocol::request_catchup(
-                &endpoint, &peer_id, &final_org_id, 0, &indexer,
-            ).await;
+            if let Ok(peer_bytes) = hex::decode(&peer_hex) {
+                if peer_bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&peer_bytes);
+                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(&arr) {
+                        let _ = p2p_catchup.request_catchup(peer_id, final_org_id.clone(), 0).await;
+                    }
+                }
+            }
         }
     }
 
-    let node_id_hex2 = hex::encode(state.node_id());
     let self_member = serde_json::json!({
-        "node_id": node_id_hex2,
+        "node_id": node_id_hex.clone(),
         "active": true,
-        "role": role,
-        "person": node_id_hex2,
-        "name": format!("Device {}", &node_id_hex2[..8]),
+        "role": role.clone(),
+        "person": node_id_hex.clone(),
+        "name": format!("Device {}", &node_id_hex[..8]),
     });
-    let _ = indexer.upsert_member(&final_org_id, &node_id_hex2, &self_member);
+    let _ = indexer.upsert_member(&final_org_id, &node_id_hex, &self_member);
 
     let hb_broadcast = {
-        let bus = gossip_bus.clone();
-        let org = final_org_id.clone();
+        let p2p = state.p2p().clone();
+        let topic = topic_id_str.clone();
         Arc::new(move |json: &str| {
-            let bus = bus.clone();
-            let org = org.clone();
-            let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
-            tokio::spawn(async move {
-                let mut guard = bus.write().await;
-                let _ = guard.broadcast(&org, bytes).await;
-            });
+            let p2p = p2p.clone();
+            let t = topic.clone();
+            let data = json.as_bytes().to_vec();
+            let _ = p2p.publish(&t, data);
         })
     };
     let hb_store = {
@@ -314,15 +294,15 @@ pub async fn join_org_impl(
         })
     };
     syntrix_core::heartbeat::start_heartbeat_with_resync(
-        node_id_hex2.clone(), hb_broadcast, hb_store,
+        node_id_hex.clone(), hb_broadcast, hb_store,
     );
 
     Ok(OrgInfo { id: final_org_id, name: name.to_string(), role: role.to_string() })
 }
 
 pub fn get_endpoint_addr_impl(state: &AppState) -> String {
-    let addr = state.endpoint().addr();
-    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
+    let peer_id = state.p2p().local_peer_id();
+    let addrs = tauri::async_runtime::block_on(state.p2p().listen_addrs());
     serde_json::json!({
         "node_id": hex::encode(state.node_id()),
         "addrs": addrs,
@@ -474,8 +454,8 @@ pub fn run() {
 
     let log_handle = syntrix_logging::init_logging("client", data_dir.clone());
 
-    let app_state = tauri::async_runtime::block_on(async {
-        AppState::new().await.expect("failed to initialize iroh")
+    let (app_state, _initial_invites) = tauri::async_runtime::block_on(async {
+        AppState::new().await.expect("failed to initialize libp2p")
     });
 
     tauri::Builder::default()
@@ -508,26 +488,12 @@ pub fn run() {
                     }
                 }
             });
-
-            let state = app.state::<Mutex<AppState>>();
-            let s = state.lock().unwrap();
-            if let Some(rx) = s.invite_rx.lock().unwrap().take() {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    use tokio::sync::mpsc::UnboundedReceiver;
-                    let mut rx: UnboundedReceiver<crate::invite::InvitePayload> = rx;
-                    while let Some(invite) = rx.recv().await {
-                        let _ = handle.emit("invite-received", invite);
-                    }
-                });
-            }
-            drop(s);
             Ok(())
         })
         .manage(Mutex::new(app_state))
         .manage(log_handle)
         .invoke_handler(tauri::generate_handler![
-            get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
+            get_node_id, list_orgs, set_active_org, join_org, get_invites, get_endpoint_addr,
             commit_event, sync_status, sync_push, sync_pull, sync_ping, check_entity_access,
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
             get_schema_registry, audit_query,

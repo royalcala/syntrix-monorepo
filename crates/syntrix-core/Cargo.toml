@@ -5,8 +5,10 @@ edition = "2021"
 description = "Shared P2P sync primitives for syntrix-admin and syntrix-client"
 
 [dependencies]
-iroh         = { version = "=1.0.0-rc.1" }
-iroh-gossip  = { version = "=0.100.0" }
+syntrix-network = { path = "../syntrix-network" }
+syntrix-schema = { path = "../syntrix-schema" }
+libp2p-identity = "0.2"
+libp2p = { version = "0.54", default-features = false, features = ["identify"] }
 redb         = "2.1.2"
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
@@ -15,4 +17,3 @@ chrono       = "0.4"
 anyhow       = "1"
 tokio        = { version = "1", features = ["full"] }
 futures-util = "0.3"
-syntrix-schema = { path = "../syntrix-schema" }

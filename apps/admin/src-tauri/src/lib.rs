@@ -143,7 +143,7 @@ fn send_invite(
 ) -> Result<(), String> {
     let (node_id_hex, device_addr) = parse_invite_endpoint(&endpoint_addr_json)?;
 
-    {
+    let (topic_id, admin_addr, can_open, can_write) = {
         let mut s = state.lock().map_err(|e| e.to_string())?;
         tauri::async_runtime::block_on(admin::add_device(
             &mut s,
@@ -154,10 +154,7 @@ fn send_invite(
             &role,
             &device_addr,
         )).map_err(|e| e.to_string())?;
-    }
 
-    let (endpoint, topic_id, admin_addr, can_open, can_write) = {
-        let s = state.lock().map_err(|e| e.to_string())?;
         let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
         let roles = s.list_org_roles(&org);
         let (co, cw) = roles.iter()
@@ -167,21 +164,31 @@ fn send_invite(
                 let g = default_role_grants(&role);
                 (g.can_open, g.can_write)
             });
-        (s.endpoint().clone(), org_state.topic_id, admin::build_device_addr_string(s.endpoint()), co, cw)
+        let addr = get_admin_addr_string(&s);
+        (org_state.topic_id.clone(), addr, co, cw)
     };
 
-    tauri::async_runtime::block_on(admin::send_invite(
-        endpoint,
-        &org,
-        &endpoint_addr_json,
-        &role,
-        topic_id,
-        admin_addr,
-        can_open,
-        can_write,
-    )).map_err(|e| e.to_string())?;
+    {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        tauri::async_runtime::block_on(admin::send_invite(
+            &*s,
+            &org,
+            &endpoint_addr_json,
+            &role,
+            topic_id,
+            admin_addr,
+            can_open,
+            can_write,
+        )).map_err(|e| e.to_string())?;
+    }
 
     Ok(())
+}
+
+fn get_admin_addr_string(state: &AppState) -> String {
+    let peer_id = state.p2p().local_peer_id();
+    let addrs = tauri::async_runtime::block_on(state.p2p().listen_addrs());
+    syntrix_core::build_device_addr_string(peer_id, &addrs)
 }
 
 #[tauri::command]
@@ -248,7 +255,7 @@ pub fn run() {
     let log_handle = syntrix_logging::init_logging("admin", data_dir.clone());
 
     let app_state = tauri::async_runtime::block_on(async {
-        AppState::new().await.expect("failed to initialize iroh")
+        AppState::new().await.expect("failed to initialize libp2p")
     });
 
     tauri::Builder::default()

@@ -1,127 +1,13 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
-
-use futures_util::StreamExt;
-use iroh_gossip::net::Gossip;
-use iroh_gossip::api::{GossipTopic, Event};
-use iroh_gossip::TopicId;
-
 use crate::indexes::RelationalEngine;
 
-pub struct GossipEventBus {
-    gossip: Gossip,
-    topics: HashMap<String, GossipTopic>,
-}
-
-impl GossipEventBus {
-    pub fn new(gossip: Gossip) -> Self {
-        Self {
-            gossip,
-            topics: HashMap::new(),
-        }
-    }
-
-    pub async fn join_org(
-        &mut self,
-        org_id: &str,
-        topic_id: TopicId,
-        bootstrap_peers: Vec<iroh::PublicKey>,
-        indexer: Arc<RelationalEngine>,
-        node_id_hex: String,
-        bus: Arc<tokio::sync::RwLock<GossipEventBus>>,
-    ) -> anyhow::Result<()> {
-        let topic_recv = self.gossip.subscribe(topic_id, bootstrap_peers.clone()).await?;
-        let topic_send = self.gossip.subscribe(topic_id, bootstrap_peers.clone()).await?;
-
-        let org_id_clone = org_id.to_string();
-        let indexer_clone = indexer.clone();
-        let node_id_hex_clone = node_id_hex.clone();
-        let gossip_clone = self.gossip.clone();
-        let bootstrap = bootstrap_peers.clone();
-
-        tokio::spawn(async move {
-            let mut topic_recv = topic_recv;
-            loop {
-                loop {
-                    match topic_recv.next().await {
-                        Some(Ok(Event::Received(msg))) => {
-                            let content = match std::str::from_utf8(&msg.content) {
-                                Ok(s) => s,
-                                Err(_) => continue,
-                            };
-                            let val: serde_json::Value = match serde_json::from_str(content) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-
-                            let sender_node = val.get("hlc")
-                                .and_then(|h| h.get("node"))
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("");
-
-                            if sender_node == &node_id_hex_clone[..16] {
-                                continue;
-                            }
-
-                            if let Err(e) = process_gossip_event(
-                                &org_id_clone,
-                                &val,
-                                &indexer_clone,
-                            ) {
-                                eprintln!("[gossip] process error: {e}");
-                            }
-                        }
-                        Some(Ok(_)) => {}
-                        Some(Err(e)) => {
-                            eprintln!("[gossip] error: {e}");
-                        }
-                        None => break,
-                    }
-                }
-                eprintln!("[gossip] stream ended for org={}, reconnecting in 3s...", org_id_clone);
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                match gossip_clone.subscribe(topic_id, bootstrap.clone()).await {
-                    Ok(new_recv) => {
-                        match gossip_clone.subscribe(topic_id, bootstrap.clone()).await {
-                            Ok(new_send) => {
-                                let mut guard = bus.write().await;
-                                guard.topics.insert(org_id_clone.clone(), new_send);
-                            }
-                            Err(e) => {
-                                eprintln!("[gossip] re-subscribe send failed: {e}");
-                            }
-                        }
-                        topic_recv = new_recv;
-                    }
-                    Err(e) => {
-                        eprintln!("[gossip] re-subscribe recv failed: {e}, retrying in 5s...");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                }
-            }
-        });
-
-        self.topics.insert(org_id.to_string(), topic_send);
-        Ok(())
-    }
-
-    pub async fn broadcast(&mut self, org_id: &str, event_bytes: bytes::Bytes) {
-        if let Some(topic) = self.topics.get_mut(org_id) {
-            let _ = topic.broadcast(event_bytes).await;
-        }
-    }
-
-    pub fn org_ids(&self) -> Vec<String> {
-        self.topics.keys().cloned().collect()
-    }
-}
-
-fn process_gossip_event(
+/// Process an incoming gossipsub event for a given org.
+/// Called from the main event loop in identity.rs.
+pub fn process_gossip_event(
     org_id: &str,
     val: &serde_json::Value,
     indexer: &RelationalEngine,
-) -> anyhow::Result<()> {
+) {
     // Heartbeat messages: { ts, status, node_id } — no "type" field
     if val.get("type").is_none() {
         if let Some(node_id) = val.get("node_id").and_then(|v| v.as_str()) {
@@ -129,12 +15,12 @@ fn process_gossip_event(
                 let _ = indexer.upsert_heartbeat(org_id, node_id, val);
             }
         }
-        return Ok(());
+        return;
     }
 
     let event_type = match val.get("type").and_then(|v| v.as_str()) {
         Some(t) => t,
-        None => return Ok(()),
+        None => return,
     };
 
     // Handle role.updated events
@@ -150,7 +36,7 @@ fn process_gossip_event(
                 let _ = indexer.append_event(org_id, val);
             }
         }
-        return Ok(());
+        return;
     }
 
     // Handle device.updated events
@@ -161,13 +47,13 @@ fn process_gossip_event(
                 let _ = indexer.append_event(org_id, val);
             }
         }
-        return Ok(());
+        return;
     }
 
     let entity = entity_from_event_type(event_type);
     let payload = match val.get("payload") {
         Some(p) => p.clone(),
-        None => return Ok(()),
+        None => return,
     };
 
     let doc_id = payload.get("id")
@@ -188,8 +74,6 @@ fn process_gossip_event(
     }
 
     let _ = indexer.append_event(org_id, val);
-
-    Ok(())
 }
 
 fn entity_from_event_type(event_type: &str) -> &str {

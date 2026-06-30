@@ -16,10 +16,10 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 syntrix-core = { path = "../../../crates/syntrix-core" }
+syntrix-network = { path = "../../../crates/syntrix-network" }
 syntrix-schema = { path = "../../../crates/syntrix-schema" }
 syntrix-logging = { path = "../../../crates/syntrix-logging" }
-iroh = { version = "=1.0.0-rc.1", features = ["test-utils"] }
-iroh-gossip = { version = "=0.100.0" }
+libp2p = { version = "0.54", features = ["identify"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 hex = "0.4"

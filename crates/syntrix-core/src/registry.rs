@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use iroh_gossip::TopicId;
 use crate::{NodeId, OrgId};
 
 #[derive(Debug, Clone)]
@@ -23,7 +22,7 @@ pub struct NamespaceRegistry {
     devices: HashMap<OrgId, HashMap<NodeId, Device>>,
     grants: HashMap<OrgId, HashMap<String, RoleGrants>>,
     known_namespaces: HashMap<OrgId, HashSet<String>>,
-    topic_ids: HashMap<OrgId, TopicId>,
+    topic_ids: HashMap<OrgId, String>,
 }
 
 impl NamespaceRegistry {
@@ -115,20 +114,20 @@ impl NamespaceRegistry {
         can_write.iter().any(|n| n == "*" || n == namespace)
     }
 
-    pub fn set_topic_id(&mut self, org_id: OrgId, topic_id: TopicId) {
+    pub fn set_topic_id(&mut self, org_id: OrgId, topic_id: String) {
         self.topic_ids.insert(org_id, topic_id);
     }
 
-    pub fn get_topic_id(&self, org_id: &OrgId) -> Option<TopicId> {
-        self.topic_ids.get(org_id).copied()
+    pub fn get_topic_id(&self, org_id: &OrgId) -> Option<String> {
+        self.topic_ids.get(org_id).cloned()
     }
 
-    pub fn map_topic_to_org(&mut self, topic_id: TopicId, org_id: OrgId) {
+    pub fn map_topic_to_org(&mut self, topic_id: String, org_id: OrgId) {
         self.topic_ids.insert(org_id, topic_id);
     }
 
-    pub fn lookup_org_by_topic(&self, topic_id: &TopicId) -> Option<OrgId> {
-        self.topic_ids.iter().find(|(_, t)| *t == topic_id).map(|(org, _)| org.clone())
+    pub fn lookup_org_by_topic(&self, topic_id: &str) -> Option<OrgId> {
+        self.topic_ids.iter().find(|(_, t)| t.as_str() == topic_id).map(|(org, _)| org.clone())
     }
 
     pub fn org_ids(&self) -> HashSet<OrgId> {
@@ -266,9 +265,9 @@ mod tests {
     #[test]
     fn test_topic_id_mapping() {
         let mut reg = NamespaceRegistry::new();
-        let topic_id = TopicId::from_bytes([1u8; 32]);
-        reg.set_topic_id("acme".into(), topic_id);
-        assert_eq!(reg.get_topic_id(&"acme".into()), Some(topic_id));
-        assert_eq!(reg.lookup_org_by_topic(&topic_id), Some("acme".into()));
+        let topic = "syntrix-org-acme".to_string();
+        reg.set_topic_id("acme".into(), topic.clone());
+        assert_eq!(reg.get_topic_id(&"acme".into()), Some(topic.clone()));
+        assert_eq!(reg.lookup_org_by_topic(&topic), Some("acme".into()));
     }
 }

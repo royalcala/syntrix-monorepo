@@ -1,34 +1,31 @@
 use crate::identity::AppState;
 use crate::{DeviceInfo, RoleInfo};
+use syntrix_network::codecs::InvitePayload;
 pub use syntrix_core::{build_device_addr_string, SyncInfo};
 use syntrix_schema::all_schemas;
 use std::collections::HashMap;
+use libp2p::PeerId;
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
     tracing::info!(org = %name, op = "create_org", step = "init", "generating topic id");
 
-    let topic_id_bytes: [u8; 32] = fastrand::u128(..).to_le_bytes().into_iter()
-        .chain(fastrand::u128(..).to_le_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("failed to generate topic id"))?;
-
-    let topic_id = iroh_gossip::TopicId::from_bytes(topic_id_bytes);
+    let topic_id_str = format!("syntrix-org-{}", name);
     let node_id_hex = hex::encode(state.node_id());
-    let own_device_addr = build_device_addr_string(state.endpoint());
+    let peer_id = state.p2p().local_peer_id();
+    let addrs = state.p2p().listen_addrs().await;
+    let own_device_addr = syntrix_core::build_device_addr_string(peer_id, &addrs);
 
     if let Ok(mut reg) = state.registry().write() {
-        reg.set_topic_id(name.into(), topic_id);
+        reg.set_topic_id(name.into(), topic_id_str.clone());
     }
 
     state.remember_device(name, &node_id_hex, "admin", "admin", &format!("Admin ({})", name), true, &own_device_addr);
-    state.add_org(name, topic_id_bytes);
-    state.save_org_config(name, &hex::encode(topic_id_bytes))?;
+    state.add_org(name, topic_id_str.clone());
+    state.save_org_config(name, &topic_id_str)?;
 
     tracing::info!(org = %name, op = "create_org", step = "save", "org config saved");
 
-    // Join the gossip topic so the admin receives heartbeats and broadcasts its own.
-    state.join_gossip_and_heartbeat(name, topic_id_bytes).await?;
+    state.join_gossip_and_heartbeat(name, topic_id_str).await?;
 
     tracing::info!(org = %name, op = "create_org", step = "done", node_id = %node_id_hex, "completed, gossip topic joined");
     Ok(())
@@ -57,13 +54,9 @@ pub async fn update_device(
             "role": role.unwrap_or_default(),
         },
     });
-    let bus = state.gossip_bus_ref().clone();
-    let org_id = org.to_string();
-    if let Ok(bytes) = serde_json::to_vec(&event).map(bytes::Bytes::from) {
-        tokio::spawn(async move {
-            let mut guard = bus.write().await;
-            let _ = guard.broadcast(&org_id, bytes).await;
-        });
+    let topic = format!("syntrix-org-{}", org);
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        let _ = state.p2p().publish(&topic, bytes);
     }
 
     Ok(())
@@ -78,82 +71,60 @@ pub async fn list_roles(state: &mut AppState, org: &str) -> anyhow::Result<Vec<R
 }
 
 pub fn network_status(_state: &AppState) -> String {
-    "online (iroh P2P node running)".into()
+    "online (libp2p P2P node running)".into()
 }
 
 pub async fn get_invite_info(state: &AppState, org: &str) -> anyhow::Result<serde_json::Value> {
     let org_state = state.get_org(org)
         .ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
+    let peer_id = state.p2p().local_peer_id();
+    let addrs = state.p2p().listen_addrs().await;
 
     Ok(serde_json::json!({
         "org_name": org,
-        "topic_id": hex::encode(org_state.topic_id),
-        "admin_addr": build_device_addr_string(state.endpoint()),
+        "topic_id": &org_state.topic_id,
+        "admin_addr": syntrix_core::build_device_addr_string(peer_id, &addrs),
     }))
 }
 
 pub async fn send_invite(
-    endpoint: iroh::Endpoint,
+    state: &AppState,
     org: &str,
     endpoint_addr_json: &str,
     role: &str,
-    topic_id: [u8; 32],
+    topic_id: String,
     admin_addr: String,
     can_open: Vec<String>,
     can_write: Vec<String>,
 ) -> anyhow::Result<()> {
-    let (peer, addrs, _) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
+    let (peer_id, _) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"].as_str()
             .ok_or_else(|| anyhow::anyhow!("invalid addr json: missing node_id"))?;
         let node_id_bytes = hex::decode(node_id_hex)?;
         let node_id: [u8; 32] = node_id_bytes.as_slice().try_into()
             .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
-        let peer: iroh::PublicKey = iroh::PublicKey::from_bytes(&node_id)?;
-        let addrs: Vec<iroh::TransportAddr> = addr_data["addrs"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| {
-                let s = v.as_str()?;
-                if let Some(relay_str) = s.strip_prefix("relay:") {
-                    relay_str.parse::<iroh::RelayUrl>().ok().map(iroh::TransportAddr::Relay)
-                } else {
-                    let addr_str = s.strip_prefix("ip:").unwrap_or(s);
-                    addr_str.parse::<std::net::SocketAddr>().ok().map(iroh::TransportAddr::Ip)
-                }
-            }).collect())
-            .unwrap_or_default();
-        (peer, addrs, endpoint_addr_json.to_string())
+        let peer_id = libp2p::PeerId::from_bytes(&node_id)?;
+        (peer_id, endpoint_addr_json.to_string())
     } else {
         let node_id_bytes = hex::decode(endpoint_addr_json)?;
         let node_id: [u8; 32] = node_id_bytes.as_slice().try_into()
             .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
-        let peer: iroh::PublicKey = iroh::PublicKey::from_bytes(&node_id)?;
-        (peer, vec![], endpoint_addr_json.to_string())
+        let peer_id = libp2p::PeerId::from_bytes(&node_id)?;
+        (peer_id, endpoint_addr_json.to_string())
     };
 
-    let payload = serde_json::json!({
-        "org_name": org,
-        "role": role,
-        "admin_addr": admin_addr,
-        "topic_id": hex::encode(topic_id),
-        "can_open": can_open,
-        "can_write": can_write,
-    });
-
-    tracing::info!(org = %org, op = "send_invite", step = "connect", role = %role, "connecting to peer");
-
-    let conn = match endpoint.connect(peer, b"/syntrix/invite/1").await {
-        Ok(c) => c,
-        Err(_) => {
-            let addr = iroh::EndpointAddr::from_parts(peer, addrs);
-            endpoint.connect(addr, b"/syntrix/invite/1").await.map_err(|_e| {
-                anyhow::anyhow!("Could not reach this device. It may be offline, restarted (new ID), or already a member.")
-            })?
-        }
+    let payload = InvitePayload {
+        org_name: org.to_string(),
+        role: role.to_string(),
+        admin_addr: Some(admin_addr),
+        topic_id: topic_id.clone(),
+        can_open: can_open.clone(),
+        can_write: can_write.clone(),
     };
-    let mut send = conn.open_uni().await?;
-    send.write_all(serde_json::to_vec(&payload)?.as_slice()).await?;
-    send.finish()?;
-    let _ = conn.closed().await;
+
+    tracing::info!(org = %org, op = "send_invite", step = "connect", role = %role, "sending invite to peer");
+
+    state.p2p().send_invite(peer_id, payload)?;
 
     tracing::info!(org = %org, op = "send_invite", step = "done", role = %role, "invite delivered");
     Ok(())
@@ -191,13 +162,9 @@ pub async fn create_role(
             "can_write": can_write,
         },
     });
-    let bus = state.gossip_bus_ref().clone();
-    let org_id = org.to_string();
-    if let Ok(bytes) = serde_json::to_vec(&event).map(bytes::Bytes::from) {
-        tokio::spawn(async move {
-            let mut guard = bus.write().await;
-            let _ = guard.broadcast(&org_id, bytes).await;
-        });
+    let topic = format!("syntrix-org-{}", org);
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        let _ = state.p2p().publish(&topic, bytes);
     }
 
     Ok(())
@@ -231,21 +198,17 @@ pub async fn update_role(
             "can_write": can_write,
         },
     });
-    let bus = state.gossip_bus_ref().clone();
-    let org_id = org.to_string();
-    if let Ok(bytes) = serde_json::to_vec(&event).map(bytes::Bytes::from) {
-        tokio::spawn(async move {
-            let mut guard = bus.write().await;
-            let _ = guard.broadcast(&org_id, bytes).await;
-        });
+    let topic = format!("syntrix-org-{}", org);
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        let _ = state.p2p().publish(&topic, bytes);
     }
 
     Ok(())
 }
 
 pub fn get_endpoint_addr_impl(state: &AppState) -> String {
-    let addr = state.endpoint().addr();
-    let addrs: Vec<String> = addr.addrs.iter().map(|a| a.to_string()).collect();
+    let peer_id = state.p2p().local_peer_id();
+    let addrs = tauri::async_runtime::block_on(state.p2p().listen_addrs());
     serde_json::json!({
         "node_id": hex::encode(state.node_id()),
         "addrs": addrs,

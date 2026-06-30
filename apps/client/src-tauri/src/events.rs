@@ -110,17 +110,16 @@ pub fn commit_event(
     let upcasted = upcast_payload(entity, payload_val, schema_version);
     let _ = indexer.upsert_document(org_id, entity, &doc_id, &upcasted);
 
-    if let Ok(event_bytes) = serde_json::to_vec(&value).map(bytes::Bytes::from) {
-        let bus = state.gossip_bus.clone();
-        let org = org_id.to_string();
+    // Broadcast via P2P node gossipsub
+    if let Ok(event_bytes) = serde_json::to_vec(&value) {
+        let p2p = state.p2p().clone();
+        let topic = org.topic_id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                let mut guard = bus.write().await;
-                let _ = guard.broadcast(&org, event_bytes).await;
+                let _ = p2p.publish(&topic, event_bytes);
             });
         } else {
-            let mut guard = bus.blocking_write();
-            let _ = tauri::async_runtime::block_on(guard.broadcast(&org, event_bytes));
+            let _ = p2p.publish(&topic, event_bytes);
         }
     }
 

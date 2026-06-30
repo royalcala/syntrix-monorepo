@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use iroh::{Endpoint, SecretKey};
-use iroh::endpoint::presets::N0;
-use iroh::tls::CaRootsConfig;
+use libp2p::identity::Keypair;
+use libp2p::Multiaddr;
 use syntrix_core::NodeId;
-use syntrix_core::registry::{NamespaceRegistry, Device, RoleGrants};
+use syntrix_core::registry::{Device, NamespaceRegistry, RoleGrants};
+use syntrix_network::{Event, P2PNode};
 use crate::{DeviceInfo, RoleInfo};
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +17,6 @@ pub struct OrgConfig {
     pub name: String,
     pub topic_id: String,
 }
-
-// ----- persisted device / role shapes -----
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct PersistedDevice {
@@ -40,15 +38,9 @@ struct PersistedRole {
 }
 
 pub struct AppState {
-    secret: SecretKey,
-    _endpoint: Endpoint,
-    _router: iroh::protocol::Router,
-    #[allow(dead_code)]
-    gossip: iroh_gossip::net::Gossip,
-    pub gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>>,
-    /// Synchronous-access heartbeat map (std RwLock). Updated by both the gossip
-    /// receiver loop and the admin's own heartbeat store callback.  Reading this
-    /// never requires a tokio lock, so it works from sync Tauri commands and tests.
+    keypair: Keypair,
+    p2p: P2PNode,
+    event_rx: tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Event>>>,
     heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
@@ -61,7 +53,7 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct OrgState {
     pub name: String,
-    pub topic_id: [u8; 32],
+    pub topic_id: String,
 }
 
 const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
@@ -80,62 +72,63 @@ impl AppState {
         std::fs::create_dir_all(&data_dir).ok();
 
         let key_path = data_dir.join("keypair.bytes");
-        let secret = if key_path.exists() {
+        let keypair = if key_path.exists() {
             let bytes = std::fs::read(&key_path)?;
             if bytes.len() == 32 {
-                let mut b = [0u8; 32];
-                b.copy_from_slice(&bytes);
-                SecretKey::from_bytes(&b)
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                let sk = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut arr)
+                    .map_err(|e| anyhow::anyhow!("invalid secret key: {e}"))?;
+                Keypair::ed25519_from(sk)
             } else {
-                let sk = SecretKey::generate();
-                std::fs::write(&key_path, sk.to_bytes())?;
-                sk
+                Keypair::from_protobuf_encoding(&bytes)
+                    .map_err(|e| anyhow::anyhow!("invalid keypair: {e}"))?
             }
         } else {
-            let sk = SecretKey::generate();
-            std::fs::write(&key_path, sk.to_bytes())?;
-            sk
+            let kp = Keypair::generate_ed25519();
+            std::fs::write(&key_path, kp.to_protobuf_encoding().unwrap())?;
+            kp
         };
 
-        let ep = Endpoint::builder(N0)
-            .secret_key(secret.clone())
-            .ca_roots_config(CaRootsConfig::insecure_skip_verify())
-            .bind_addr("0.0.0.0:0".parse::<std::net::SocketAddr>()?)?
-            .bind()
-            .await?;
+        let local_peer_id = keypair.public().to_peer_id();
+        let listen_on: Vec<Multiaddr> = vec![
+            "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
+        ];
 
-        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let config = syntrix_network::NetworkConfig {
+            keypair: keypair.clone(),
+            listen_on,
+            bootstrap_nodes: vec![],
+            data_dir: data_dir.clone(),
+        };
+
+        let (p2p, event_rx) = P2PNode::new(config).await?;
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
         let db_path = data_dir.join("admin.redb");
         let db = Arc::new(redb::Database::create(db_path)?);
 
-        let gossip_bus = Arc::new(tokio::sync::RwLock::new(
-            crate::gossip::AdminGossipBus::new(gossip.clone(), db.clone()),
-        ));
+        let heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>> =
+            Arc::new(std::sync::RwLock::new(HashMap::new()));
 
-        // Snapshot the std::sync heartbeats Arc so we can read it synchronously
-        // without entering a tokio lock (needed by sync Tauri commands and tests).
-        let heartbeats = {
-            let guard = gossip_bus.read().await;
-            guard.heartbeats_ref()
-        };
         {
             let write_txn = db.begin_write()?;
             let _ = write_txn.open_table(EVENT_LOG)?;
             write_txn.commit()?;
         }
 
-        let catchup_handler = crate::catchup::AdminCatchupProtocol::new(db.clone());
-        let router = iroh::protocol::Router::builder(ep.clone())
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .accept(crate::catchup::CATCHUP_ALPN, catchup_handler)
-            .spawn();
+        // Spawn background event processor
+        let hb_ev = heartbeats.clone();
+        let db_ev = db.clone();
+        let p2p_ev = p2p.clone();
+        tokio::spawn(async move {
+            process_event_loop(event_rx, hb_ev, db_ev, p2p_ev).await;
+        });
 
         let mut orgs = HashMap::new();
         let mut devices: HashMap<String, HashMap<String, DeviceInfo>> = HashMap::new();
         let mut roles: HashMap<String, HashMap<String, RoleInfo>> = HashMap::new();
 
-        // ----- load persisted devices & roles BEFORE org loop (so lookup works) -----
+        // Load persisted devices & roles
         let devices_path = data_dir.join("devices.json");
         if devices_path.exists() {
             if let Ok(json_str) = std::fs::read_to_string(&devices_path) {
@@ -199,57 +192,49 @@ impl AppState {
             }
         }
 
-        // ----- load org config -----
+        // Load org config
         let orgs_config_path = data_dir.join("orgs.json");
-        let node_id_hex = hex::encode(*secret.public().as_bytes());
+        let node_id_bytes = local_peer_id.to_bytes();
+        let node_id_hex = hex::encode(node_id_bytes);
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<OrgConfig>>(&orgs_json) {
                     for cfg in configs {
-                        let topic_id_bytes = hex::decode(&cfg.topic_id).unwrap_or_default();
-                        let mut topic_id = [0u8; 32];
-                        let len = topic_id_bytes.len().min(32);
-                        topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
+                        let topic_id_str = format!("syntrix-org-{}", cfg.name);
 
                         if let Ok(mut reg) = registry.write() {
-                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-                            reg.set_topic_id(cfg.name.clone(), iroh_topic_id);
+                            reg.set_topic_id(cfg.name.clone(), topic_id_str.clone());
                         }
 
                         let org_name = cfg.name.clone();
                         orgs.insert(org_name.clone(), OrgState {
                             name: org_name.clone(),
-                            topic_id,
+                            topic_id: topic_id_str.clone(),
                         });
                         devices.entry(org_name.clone()).or_default();
                         roles.entry(org_name.clone()).or_default();
 
-                        // Re-join gossip topic on restart
-                        {
-                            let mut bus = gossip_bus.write().await;
-                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-                            let _ = bus.join_org(&org_name, iroh_topic_id, gossip_bus.clone()).await;
-                        }
+                        let _ = p2p.join_topic(&topic_id_str);
 
                         // Start admin heartbeat for this org
                         start_admin_heartbeat(
-                            gossip_bus.clone(),
+                            p2p.clone(),
                             org_name.clone(),
                             node_id_hex.clone(),
+                            heartbeats.clone(),
                         ).await;
                     }
                 }
             }
         }
 
-        // Spawn background catchup: request missed events from online peers.
-        let catchup_ep = ep.clone();
+        // Spawn background catchup from peers on restart
+        let catchup_p2p = p2p.clone();
         let catchup_hb = heartbeats.clone();
         let catchup_db = db.clone();
         let catchup_orgs: Vec<String> = orgs.keys().cloned().collect();
         let catchup_self = node_id_hex.clone();
         tokio::spawn(async move {
-            // Wait for gossip heartbeats to arrive from peers.
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             for org in &catchup_orgs {
                 let hb_map = match catchup_hb.read() {
@@ -262,35 +247,40 @@ impl AppState {
                 for (peer_id, last_ts) in &org_hb {
                     if *peer_id == catchup_self { continue; }
                     if now - *last_ts > 120_000 { continue; }
-                    let _ = crate::catchup::admin_catchup_from_peer(
-                        &catchup_ep, peer_id, org, &catchup_db,
-                    ).await;
+                    if let Ok(peer_bytes) = hex::decode(peer_id) {
+                        if peer_bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&peer_bytes);
+                            if let Ok(peer) = libp2p::PeerId::from_bytes(&arr) {
+                                let _ = catchup_from_peer(&catchup_p2p, peer, org, &catchup_db).await;
+                            }
+                        }
+                    }
                 }
             }
         });
 
         Ok(Self {
-            secret, _endpoint: ep, _router: router,
-            gossip, gossip_bus, heartbeats, registry,
-            orgs, devices, roles,
-            data_dir, db,
+            keypair,
+            p2p,
+            event_rx: tokio::sync::Mutex::new(None),
+            heartbeats,
+            registry,
+            orgs,
+            devices,
+            roles,
+            data_dir,
+            db,
         })
     }
 
-    // ------------------------------------------------------------------
-    // Accessors
-    // ------------------------------------------------------------------
-
-    pub fn node_id(&self) -> NodeId { *self.secret.public().as_bytes() }
-    pub fn secret(&self) -> &SecretKey { &self.secret }
-    pub fn endpoint(&self) -> &Endpoint { &self._endpoint }
+    pub fn node_id(&self) -> NodeId { self.p2p.local_peer_id_bytes() }
+    pub fn keypair(&self) -> &Keypair { &self.keypair }
+    pub fn p2p(&self) -> &P2PNode { &self.p2p }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
     pub fn list_orgs(&self) -> Vec<String> { self.orgs.keys().cloned().collect() }
-    pub fn gossip_bus_ref(&self) -> &Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>> { &self.gossip_bus }
 
-    /// Read heartbeats for an org (used by `get_sync_info`).
-    /// Uses the std::sync::RwLock copy — fully synchronous, works from tests.
     pub fn get_heartbeats(&self, org: &str) -> HashMap<String, i64> {
         self.heartbeats
             .read()
@@ -300,11 +290,7 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    // ------------------------------------------------------------------
-    // Org management
-    // ------------------------------------------------------------------
-
-    pub fn add_org(&mut self, name: &str, topic_id: [u8; 32]) {
+    pub fn add_org(&mut self, name: &str, topic_id: String) {
         self.orgs.insert(name.to_string(), OrgState { name: name.to_string(), topic_id });
         self.devices.entry(name.to_string()).or_default();
         self.roles.entry(name.to_string()).or_default();
@@ -320,41 +306,31 @@ impl AppState {
                 }
             }
         }
-
         configs.push(OrgConfig {
             name: name.to_string(),
             topic_id: topic_id.to_string(),
         });
-
         std::fs::write(&orgs_config_path, serde_json::to_vec(&configs)?)?;
         Ok(())
     }
 
     pub fn get_org(&self, name: &str) -> Option<&OrgState> { self.orgs.get(name) }
 
-    /// Join the gossip topic for an org and start the admin heartbeat.
     pub async fn join_gossip_and_heartbeat(
         &self,
         org_name: &str,
-        topic_id: [u8; 32],
+        topic_id: String,
     ) -> anyhow::Result<()> {
-        let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
-        {
-            let mut bus = self.gossip_bus.write().await;
-            bus.join_org(org_name, iroh_topic_id, self.gossip_bus.clone()).await?;
-        }
+        let _ = self.p2p.join_topic(&topic_id);
         let node_id_hex = hex::encode(self.node_id());
         start_admin_heartbeat(
-            self.gossip_bus.clone(),
+            self.p2p.clone(),
             org_name.to_string(),
             node_id_hex,
+            self.heartbeats.clone(),
         ).await;
         Ok(())
     }
-
-    // ------------------------------------------------------------------
-    // Device management
-    // ------------------------------------------------------------------
 
     pub fn remember_device(&mut self, org: &str, node_id: &str, role: &str, person: &str, name: &str, active: bool, device_addr: &str) {
         self.devices.entry(org.into()).or_default().insert(node_id.into(), DeviceInfo {
@@ -433,10 +409,6 @@ impl AppState {
         self.devices.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
 
-    // ------------------------------------------------------------------
-    // Role management
-    // ------------------------------------------------------------------
-
     pub fn list_org_roles(&self, org: &str) -> Vec<RoleInfo> {
         self.roles.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
@@ -455,13 +427,8 @@ impl AppState {
                 can_write,
             });
         }
-
         self.save_roles();
     }
-
-    // ------------------------------------------------------------------
-    // Persistence helpers
-    // ------------------------------------------------------------------
 
     fn save_devices(&self) {
         let mut all: Vec<PersistedDevice> = Vec::new();
@@ -503,10 +470,6 @@ impl AppState {
     }
 }
 
-// ------------------------------------------------------------------
-// Role defaults (unchanged)
-// ------------------------------------------------------------------
-
 pub fn default_role_grants(role: &str) -> RoleGrants {
     match role {
         "admin" => RoleGrants { can_open: vec!["*".into()], can_write: vec!["*".into()] },
@@ -516,31 +479,23 @@ pub fn default_role_grants(role: &str) -> RoleGrants {
     }
 }
 
-// ------------------------------------------------------------------
-// Admin heartbeat (same pattern as client, but scoped to one org)
-// ------------------------------------------------------------------
-
 async fn start_admin_heartbeat(
-    gossip_bus: Arc<tokio::sync::RwLock<crate::gossip::AdminGossipBus>>,
+    p2p: P2PNode,
     org_id: String,
     node_id_hex: String,
+    heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
 ) {
-    // Snapshot the heartbeats Arc while we're in async context (no block_on needed).
-    let hb = {
-        let guard = gossip_bus.read().await;
-        guard.heartbeats_ref()
-    };
+    let topic = format!("syntrix-org-{}", org_id);
 
     let broadcast: Arc<dyn Fn(&str) + Send + Sync> = {
-        let bus = gossip_bus.clone();
-        let org = org_id.clone();
+        let p2p = p2p.clone();
+        let topic = topic.clone();
         Arc::new(move |json: &str| {
-            let bus = bus.clone();
-            let org = org.clone();
-            let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
+            let p2p = p2p.clone();
+            let t = topic.clone();
+            let data = json.as_bytes().to_vec();
             tokio::spawn(async move {
-                let mut guard = bus.write().await;
-                let _ = guard.broadcast(&org, bytes).await;
+                let _ = p2p.publish(&t, data);
             });
         })
     };
@@ -548,7 +503,7 @@ async fn start_admin_heartbeat(
     tracing::info!(org = %org_id, op = "heartbeat", step = "start", node_id = %node_id_hex, "heartbeat started (every 15s)");
 
     let store: Arc<dyn Fn(i64, &str) + Send + Sync> = {
-        let heartbeats = hb;
+        let heartbeats = heartbeats;
         Arc::new(move |ts: i64, nid: &str| {
             if let Ok(mut map) = heartbeats.write() {
                 map.entry(org_id.clone())
@@ -561,4 +516,145 @@ async fn start_admin_heartbeat(
     syntrix_core::heartbeat::start_heartbeat_with_resync(
         node_id_hex, broadcast, store,
     );
+}
+
+async fn process_event_loop(
+    mut event_rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
+    heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
+    db: Arc<redb::Database>,
+    p2p: P2PNode,
+) {
+    use syntrix_network::Event;
+    const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
+
+    loop {
+        tokio::select! {
+            Some(event) = event_rx.recv() => {
+                match event {
+                    Event::GossipsubMessage { source: _, topic, data } => {
+                        let org_id = topic.strip_prefix("syntrix-org-").unwrap_or(&topic).to_string();
+                        let content = match std::str::from_utf8(&data) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        let val: serde_json::Value = match serde_json::from_str(content) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        if val.get("type").is_none() {
+                            if let (Some(node_id), Some(ts)) = (
+                                val.get("node_id").and_then(|v| v.as_str()),
+                                val.get("ts").and_then(|v| v.as_i64()),
+                            ) {
+                                if let Ok(mut map) = heartbeats.write() {
+                                    map.entry(org_id.clone())
+                                        .or_default()
+                                        .insert(node_id.to_string(), ts);
+                                }
+                            }
+                            continue;
+                        }
+
+                        write_event_to_redb(&db, &org_id, &val);
+                    }
+                    Event::InviteReceived { peer: _, payload: _ } => {
+                        // Admin doesn't receive invites
+                    }
+                    Event::CatchupRequestReceived { peer: _, org_id, since_hlc, response_id } => {
+                        let events = query_events_since(&db, &org_id, since_hlc, 10000).unwrap_or_default();
+                        let _ = p2p.respond_catchup(response_id, events);
+                    }
+                    Event::PeerConnected(_) | Event::PeerDisconnected(_) => {}
+                }
+            }
+            else => break,
+        }
+    }
+}
+
+fn write_event_to_redb(db: &redb::Database, org_id: &str, val: &serde_json::Value) {
+    const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
+    let event_type = val["type"].as_str().unwrap_or("unknown");
+    let hlc_val = &val["hlc"];
+    let hlc_ts = hlc_val["ts"].as_u64().unwrap_or(0);
+    let hlc_count = hlc_val["count"].as_u64().unwrap_or(0);
+    let hlc_node = hlc_val["node"].as_str().unwrap_or("");
+
+    let key = format!(
+        "evt:{}:{:020}:{:08}:{}",
+        org_id, hlc_ts, hlc_count, hlc_node
+    );
+
+    let write_result = (|| -> anyhow::Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut event_log = write_txn.open_table(EVENT_LOG)?;
+            event_log.insert(key.as_str(), serde_json::to_vec(val)?.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_result {
+        eprintln!("[admin-gossip] failed to write event {} to EVENT_LOG: {e}", event_type);
+    } else {
+        tracing::info!(
+            target: "syntrix",
+            org = %org_id,
+            event_type = %event_type,
+            "admin-audit: stored gossip event in EVENT_LOG"
+        );
+    }
+}
+
+fn query_events_since(
+    db: &redb::Database,
+    org_id: &str,
+    cursor_ts: u64,
+    limit: usize,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
+    let read_txn = db.begin_read()?;
+    let event_log = read_txn.open_table(EVENT_LOG)?;
+
+    let prefix = format!("evt:{}:", org_id);
+    let range = event_log.range(prefix.as_str()..)?;
+
+    let mut results = Vec::new();
+    for item in range {
+        let (key, value) = item?;
+        let k = key.value();
+        if !k.starts_with(&prefix) { break; }
+
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(value.value()) {
+            let hlc_ts = val["hlc"]["ts"].as_u64().unwrap_or(0);
+            if hlc_ts <= cursor_ts { continue; }
+            results.push(val);
+        }
+
+        if results.len() >= limit { break; }
+    }
+
+    Ok(results)
+}
+
+pub async fn catchup_from_peer(
+    p2p: &P2PNode,
+    peer_id: libp2p::PeerId,
+    org_id: &str,
+    db: &Arc<redb::Database>,
+) -> anyhow::Result<()> {
+    let events = p2p.request_catchup(peer_id, org_id.to_string(), 0).await?;
+    let count = events.len();
+    for event in &events {
+        write_event_to_redb(db, org_id, event);
+    }
+    tracing::info!(
+        org = %org_id,
+        peer = %peer_id,
+        count = %count,
+        "admin-catchup: received events from peer"
+    );
+    Ok(())
 }
