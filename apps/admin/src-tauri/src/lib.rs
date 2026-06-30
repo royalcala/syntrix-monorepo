@@ -11,6 +11,7 @@ pub mod catchup;
 use syntrix_schema::build_registry;
 
 pub use identity::AppState;
+use identity::default_role_grants;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DeviceInfo {
@@ -154,10 +155,18 @@ fn send_invite(
         )).map_err(|e| e.to_string())?;
     }
 
-    let (endpoint, topic_id, admin_addr) = {
+    let (endpoint, topic_id, admin_addr, can_open, can_write) = {
         let s = state.lock().map_err(|e| e.to_string())?;
         let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
-        (s.endpoint().clone(), org_state.topic_id, admin::build_device_addr_string(s.endpoint()))
+        let roles = s.list_org_roles(&org);
+        let (co, cw) = roles.iter()
+            .find(|r| r.name == role)
+            .map(|r| (r.can_open.clone(), r.can_write.clone()))
+            .unwrap_or_else(|| {
+                let g = default_role_grants(&role);
+                (g.can_open, g.can_write)
+            });
+        (s.endpoint().clone(), org_state.topic_id, admin::build_device_addr_string(s.endpoint()), co, cw)
     };
 
     tauri::async_runtime::block_on(admin::send_invite(
@@ -167,6 +176,8 @@ fn send_invite(
         &role,
         topic_id,
         admin_addr,
+        can_open,
+        can_write,
     )).map_err(|e| e.to_string())?;
 
     Ok(())

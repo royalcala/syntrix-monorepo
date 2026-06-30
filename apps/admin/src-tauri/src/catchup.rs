@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use iroh::endpoint::Connection;
 use iroh::protocol::ProtocolHandler;
-use tokio::io::AsyncWriteExt;
-
 pub const CATCHUP_ALPN: &[u8] = b"/syntrix/catchup/1";
 
 #[derive(Debug)]

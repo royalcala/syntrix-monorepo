@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
@@ -84,53 +84,49 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
     let role = invite.role.clone();
     let admin_addr = invite.admin_addr.clone();
+    let can_open = invite.can_open.clone();
+    let can_write = invite.can_write.clone();
     let final_org_id = hex::encode(&topic_id[..4]);
 
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
 
-        s.add_org(&final_org_id, &name, &role, topic_id);
+        s.add_org(&final_org_id, &name, &role, topic_id, admin_addr.clone());
 
         let node_id = s.node_id();
+
         if let Ok(mut reg) = s.registry().write() {
             let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
             reg.set_topic_id(final_org_id.clone(), iroh_topic_id);
             reg.upsert_device(
-                final_org_id.clone(),
-                node_id,
+                final_org_id.clone(), node_id,
                 syntrix_core::registry::Device {
-                    node_id,
-                    active: true,
-                    role: role.clone(),
+                    node_id, active: true, role: role.clone(),
                     person: hex::encode(node_id),
                     name: format!("Device {}", &hex::encode(node_id)[..8]),
                 },
             );
-
-            let (can_open, can_write): (Vec<String>, Vec<String>) = match role.as_str() {
-                "admin" => (vec!["*".into()], vec!["*".into()]),
-                "sales" => (
-                    vec!["customers".into(), "products".into(), "invoices".into(), "orders".into()],
-                    vec!["customers".into(), "invoices".into(), "orders".into()],
-                ),
-                "contabilidad" => (
-                    vec!["invoices".into(), "customers".into()],
-                    vec![],
-                ),
-                _ => (vec![], vec![]),
-            };
-            reg.upsert_role(
-                final_org_id.clone(),
-                role.clone(),
-                syntrix_core::registry::RoleGrants { can_open, can_write },
-            );
+            reg.upsert_role(final_org_id.clone(), role.clone(),
+                syntrix_core::registry::RoleGrants { can_open: can_open.clone(), can_write: can_write.clone() });
+            eprintln!("[join_org] registered device org={} node_hex={} role={} can_open={:?}", final_org_id, hex::encode(node_id), role, can_open);
         }
+
+        // Write role to redb so the frontend can query it via query_entity("roles")
+        let role_json = serde_json::json!({
+            "name": role,
+            "can_open": can_open,
+            "can_write": can_write,
+        });
+        let _ = s.indexer.upsert_role_cfg(&final_org_id, &role, &role_json);
 
         s.save_org_config(identity::ClientOrgConfig {
             org_id: final_org_id.clone(),
             name: name.clone(),
             role: role.clone(),
             topic_id: hex::encode(topic_id),
+            admin_addr: admin_addr.clone(),
+            can_open: can_open.clone(),
+            can_write: can_write.clone(),
         }).ok();
     }
 
@@ -154,7 +150,7 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
     };
     {
         let mut bus = gossip_bus.write().await;
-        let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer, node_id_hex).await;
+        let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer.clone(), node_id_hex).await;
     }
 
     // Catch-up from admin
@@ -171,6 +167,39 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
             &endpoint, addr, &final_org_id, 0, &indexer,
         ).await;
     }
+
+    // Write self as member to redb and start heartbeat
+    let node_id_hex2 = hex::encode(state.lock().map_err(|e| e.to_string())?.node_id());
+    let self_member = serde_json::json!({
+        "node_id": node_id_hex2,
+        "active": true,
+        "role": role,
+        "person": node_id_hex2,
+        "name": format!("Device {}", &node_id_hex2[..8]),
+    });
+    let _ = indexer.upsert_member(&final_org_id, &node_id_hex2, &self_member);
+
+    let hb_broadcast = {
+        let bus = gossip_bus.clone();
+        let org = final_org_id.clone();
+        Arc::new(move |json: &str| {
+            let mut guard = bus.blocking_write();
+            let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
+            let handle = tokio::runtime::Handle::current();
+            let _ = handle.block_on(guard.broadcast(&org, bytes));
+        })
+    };
+    let hb_store = {
+        let idx = indexer.clone();
+        let org = final_org_id.clone();
+        Arc::new(move |ts: i64, nid: &str| {
+            let hb = serde_json::json!({"ts": ts, "status": "online", "node_id": nid});
+            let _ = idx.upsert_heartbeat(&org, nid, &hb);
+        })
+    };
+    syntrix_core::heartbeat::start_heartbeat_with_resync(
+        node_id_hex2.clone(), hb_broadcast, hb_store,
+    );
 
     Ok(OrgInfo { id: final_org_id, name, role })
 }
@@ -233,6 +262,12 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
     }).to_string())
 }
 
+#[tauri::command]
+fn check_entity_access(state: tauri::State<'_, Mutex<AppState>>, org_id: String, entity: String) -> Result<bool, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(check_read_access(&s, &org_id, &entity).is_ok())
+}
+
 fn check_read_access(state: &AppState, org_id: &str, entity: &str) -> Result<(), String> {
     if entity == "roles" { return Ok(()); }
     let node_id = state.node_id();
@@ -291,7 +326,6 @@ pub fn query_entity_impl(
     if resolved_org_id.is_empty() { return Ok(vec![]); }
 
     if entity != "roles" {
-        check_read_access(state, &resolved_org_id, entity)?;
         let mut filters = vec![];
         if let (Some(field), Some(value)) = (filter_field, filter_value) {
             filters.push(indexes::QueryFilter { field: field.to_string(), value: value.to_string() });
@@ -314,8 +348,6 @@ pub fn query_entity_advanced_impl(
     let q = query.unwrap_or_default();
     let resolved_org_id = org_id.map(String::from).or_else(|| state.active_org().ok().map(String::from)).unwrap_or_default();
     if resolved_org_id.is_empty() { return Ok(vec![]); }
-
-    check_read_access(state, &resolved_org_id, entity)?;
 
     let options = indexes::QueryOptions {
         filters: q.filters.unwrap_or_default().into_iter().map(|f| indexes::QueryFilter { field: f.field, value: f.value }).collect(),
@@ -481,7 +513,7 @@ pub fn run() {
         .manage(log_handle)
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, debug_invite_handler, get_endpoint_addr,
-            commit_event, sync_status, sync_push, sync_pull, sync_ping,
+            commit_event, sync_status, sync_push, sync_pull, sync_ping, check_entity_access,
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
             get_schema_registry, audit_query,
             query_logs, summarize_logs, start_tail_logs,

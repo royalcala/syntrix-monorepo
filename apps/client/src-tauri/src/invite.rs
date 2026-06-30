@@ -11,6 +11,8 @@ pub struct InvitePayload {
     pub role: String,
     pub admin_addr: Option<String>,
     pub topic_id: String,
+    pub can_open: Vec<String>,
+    pub can_write: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

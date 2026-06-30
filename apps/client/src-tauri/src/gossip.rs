@@ -80,13 +80,9 @@ impl GossipEventBus {
         Ok(())
     }
 
-    pub async fn broadcast(&mut self, org_id: &str, event_bytes: bytes::Bytes) -> anyhow::Result<()> {
-        match self.topics.get_mut(org_id) {
-            Some(topic) => {
-                topic.broadcast(event_bytes).await?;
-                Ok(())
-            }
-            None => Err(anyhow::anyhow!("no gossip topic for org {}", org_id)),
+    pub async fn broadcast(&mut self, org_id: &str, event_bytes: bytes::Bytes) {
+        if let Some(topic) = self.topics.get_mut(org_id) {
+            let _ = topic.broadcast(event_bytes).await;
         }
     }
 
@@ -100,6 +96,16 @@ fn process_gossip_event(
     val: &serde_json::Value,
     indexer: &RelationalEngine,
 ) -> anyhow::Result<()> {
+    // Heartbeat messages: { ts, status, node_id } — no "type" field
+    if val.get("type").is_none() {
+        if let Some(node_id) = val.get("node_id").and_then(|v| v.as_str()) {
+            if let Some(_ts) = val.get("ts").and_then(|v| v.as_i64()) {
+                let _ = indexer.upsert_heartbeat(org_id, node_id, val);
+            }
+        }
+        return Ok(());
+    }
+
     let event_type = match val.get("type").and_then(|v| v.as_str()) {
         Some(t) => t,
         None => return Ok(()),

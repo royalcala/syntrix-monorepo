@@ -261,7 +261,7 @@ impl AppState {
     }
 }
 
-fn default_role_grants(role: &str) -> RoleGrants {
+pub fn default_role_grants(role: &str) -> RoleGrants {
     match role {
         "admin" => RoleGrants { can_open: vec!["*".into()], can_write: vec!["*".into()] },
         "sales" => RoleGrants { can_open: vec!["customers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"invoices".into(),"orders".into()] },

@@ -69,6 +69,8 @@ pub async fn send_invite(
     role: &str,
     topic_id: [u8; 32],
     admin_addr: String,
+    can_open: Vec<String>,
+    can_write: Vec<String>,
 ) -> anyhow::Result<()> {
     let (peer, addrs, _) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"].as_str()
@@ -103,6 +105,8 @@ pub async fn send_invite(
         "role": role,
         "admin_addr": admin_addr,
         "topic_id": hex::encode(topic_id),
+        "can_open": can_open,
+        "can_write": can_write,
     });
 
     let conn = match endpoint.connect(peer, b"/syntrix/invite/1").await {

@@ -113,10 +113,8 @@ pub fn commit_event(
     if let Ok(event_bytes) = serde_json::to_vec(&value).map(bytes::Bytes::from) {
         let gossip_bus = state.gossip_bus.clone();
         let org = org_id.to_string();
-        let _ = tauri::async_runtime::block_on(async {
-            let mut bus = gossip_bus.write().await;
-            bus.broadcast(&org, event_bytes).await
-        });
+        let mut guard = gossip_bus.blocking_write();
+        let _ = tauri::async_runtime::block_on(guard.broadcast(&org, event_bytes));
     }
 
     Ok(key)

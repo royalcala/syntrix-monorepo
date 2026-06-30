@@ -8,7 +8,7 @@ use iroh::endpoint::presets::N0;
 use iroh::tls::CaRootsConfig;
 use iroh_gossip::net::Gossip;
 use syntrix_core::NodeId;
-use syntrix_core::registry::NamespaceRegistry;
+use syntrix_core::registry::{NamespaceRegistry, Device, RoleGrants};
 use crate::OrgInfo;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,9 @@ pub struct ClientOrgConfig {
     pub name: String,
     pub role: String,
     pub topic_id: String,
+    pub admin_addr: Option<String>,
+    pub can_open: Vec<String>,
+    pub can_write: Vec<String>,
 }
 
 pub struct AppState {
@@ -42,6 +45,7 @@ pub struct OrgState {
     pub name: String,
     pub role: String,
     pub topic_id: [u8; 32],
+    pub admin_addr: Option<String>,
 }
 
 impl AppState {
@@ -88,7 +92,6 @@ impl AppState {
 
         let (invite_handler, invite_rx) = crate::invite::InviteProtocolHandler::new();
         let gossip_bus = Arc::new(tokio::sync::RwLock::new(crate::gossip::GossipEventBus::new(gossip.clone())));
-
         let indexer = Arc::new(crate::indexes::RelationalEngine::new(data_dir.clone())?);
 
         let router = iroh::protocol::Router::builder(ep.clone())
@@ -98,34 +101,89 @@ impl AppState {
 
         let mut orgs = HashMap::new();
         let node_id = *secret.public().as_bytes();
+        let node_id_hex = hex::encode(node_id);
         let orgs_config_path = data_dir.join("orgs.json");
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<ClientOrgConfig>>(&orgs_json) {
                     for cfg in configs {
                         let topic_id_bytes = hex::decode(&cfg.topic_id).unwrap_or_default();
-                        let mut topic_id = [0u8; 32];
+                        let mut topic_id_arr = [0u8; 32];
                         let len = topic_id_bytes.len().min(32);
-                        topic_id[..len].copy_from_slice(&topic_id_bytes[..len]);
+                        topic_id_arr[..len].copy_from_slice(&topic_id_bytes[..len]);
 
                         if let Ok(mut reg) = registry.write() {
-                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id);
+                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id_arr);
                             reg.set_topic_id(cfg.org_id.clone(), iroh_topic_id);
                             reg.upsert_device(cfg.org_id.clone(), node_id, Device {
-                                node_id,
-                                active: true,
-                                role: cfg.role.clone(),
-                                person: hex::encode(node_id),
-                                name: format!("Device {}", &hex::encode(node_id)[..8]),
+                                node_id, active: true, role: cfg.role.clone(),
+                                person: node_id_hex.clone(),
+                                name: format!("Device {}", &node_id_hex[..8]),
                             });
-                            let (can_open, can_write) = default_role_grants(&cfg.role);
-                            reg.upsert_role(cfg.org_id.clone(), cfg.role.clone(), RoleGrants { can_open, can_write });
+                            reg.upsert_role(cfg.org_id.clone(), cfg.role.clone(),
+                                RoleGrants { can_open: cfg.can_open.clone(), can_write: cfg.can_write.clone() });
                         }
+
+                        // Write role to redb so frontend query_entity("roles") works
+                        let role_json = serde_json::json!({
+                            "name": cfg.role,
+                            "can_open": cfg.can_open,
+                            "can_write": cfg.can_write,
+                        });
+                        let _ = indexer.upsert_role_cfg(&cfg.org_id, &cfg.role, &role_json);
+
+                        // Re-join gossip topic on startup
+                        {
+                            let mut bus = gossip_bus.write().await;
+                            let iroh_topic_id = iroh_gossip::TopicId::from_bytes(topic_id_arr);
+                            let bootstrap = cfg.admin_addr.as_ref()
+                                .and_then(|a| syntrix_core::parse_device_addr(a))
+                                .map(|ep| vec![ep.id])
+                                .unwrap_or_default();
+                            let _ = bus.join_org(
+                                &cfg.org_id, iroh_topic_id, bootstrap,
+                                indexer.clone(), node_id_hex.clone(),
+                            ).await;
+                        }
+
+                        // Write self as member to redb
+                        let self_member = serde_json::json!({
+                            "node_id": node_id_hex,
+                            "active": true,
+                            "role": cfg.role,
+                            "person": node_id_hex.clone(),
+                            "name": format!("Device {}", &node_id_hex[..8]),
+                        });
+                        let _ = indexer.upsert_member(&cfg.org_id, &node_id_hex, &self_member);
+
+                        // Start heartbeat per org
+                        let hb_broadcast = {
+                            let bus = gossip_bus.clone();
+                            let org = cfg.org_id.clone();
+                            std::sync::Arc::new(move |json: &str| {
+                                let mut guard = bus.blocking_write();
+                                let bytes = bytes::Bytes::copy_from_slice(json.as_bytes());
+                                let handle = tokio::runtime::Handle::current();
+                                let _ = handle.block_on(guard.broadcast(&org, bytes));
+                            })
+                        };
+                        let hb_store = {
+                            let idx = indexer.clone();
+                            let org = cfg.org_id.clone();
+                            std::sync::Arc::new(move |ts: i64, nid: &str| {
+                                let hb = serde_json::json!({"ts": ts, "status": "online", "node_id": nid});
+                                let _ = idx.upsert_heartbeat(&org, nid, &hb);
+                            })
+                        };
+                        syntrix_core::heartbeat::start_heartbeat_with_resync(
+                            node_id_hex.clone(), hb_broadcast, hb_store,
+                        );
 
                         orgs.insert(cfg.org_id.clone(), OrgState {
                             name: cfg.name,
                             role: cfg.role,
-                            topic_id,
+                            topic_id: topic_id_arr,
+                            admin_addr: cfg.admin_addr,
                         });
                     }
                 }
@@ -169,11 +227,12 @@ impl AppState {
         self.active_org.as_deref().ok_or_else(|| "no active org".into())
     }
 
-    pub fn add_org(&mut self, org_id: &str, name: &str, role: &str, topic_id: [u8; 32]) {
+    pub fn add_org(&mut self, org_id: &str, name: &str, role: &str, topic_id: [u8; 32], admin_addr: Option<String>) {
         self.orgs.insert(org_id.into(), OrgState {
             name: name.into(),
             role: role.into(),
             topic_id,
+            admin_addr,
         });
     }
 
@@ -198,17 +257,4 @@ impl AppState {
     }
 }
 
-fn default_role_grants(role: &str) -> (Vec<String>, Vec<String>) {
-    match role {
-        "admin" => (vec!["*".into()], vec!["*".into()]),
-        "sales" => (
-            vec!["customers".into(), "products".into(), "invoices".into(), "orders".into()],
-            vec!["customers".into(), "invoices".into(), "orders".into()],
-        ),
-        "contabilidad" => (
-            vec!["invoices".into(), "customers".into()],
-            vec![],
-        ),
-        _ => (vec![], vec![]),
-    }
-}
+

@@ -59,6 +59,8 @@ pub struct TestInvitePayload {
     pub role: String,
     pub admin_addr: Option<String>,
     pub topic_id: String,
+    pub can_open: Vec<String>,
+    pub can_write: Vec<String>,
 }
 
 pub async fn wait_for_sync(timeout_secs: u64) {
