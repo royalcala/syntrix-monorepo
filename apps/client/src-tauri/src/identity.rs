@@ -94,9 +94,11 @@ impl AppState {
         let gossip_bus = Arc::new(tokio::sync::RwLock::new(crate::gossip::GossipEventBus::new(gossip.clone())));
         let indexer = Arc::new(crate::indexes::RelationalEngine::new(data_dir.clone())?);
 
+        let catchup_handler = crate::catchup::CatchupProtocol::new(indexer.clone());
         let router = iroh::protocol::Router::builder(ep.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(crate::invite::INVITE_ALPN, invite_handler.clone())
+            .accept(crate::catchup::CATCHUP_ALPN, catchup_handler)
             .spawn();
 
         let mut orgs = HashMap::new();
@@ -144,6 +146,48 @@ impl AppState {
                                 &cfg.org_id, iroh_topic_id, bootstrap,
                                 indexer.clone(), node_id_hex.clone(),
                             ).await;
+                        }
+
+                        // P2P catch-up on restart — recover events missed while offline.
+                        // Strategy: try admin first, then any peer with a recent heartbeat.
+                        // iroh-dns (via N0 preset) resolves node_id → current address.
+                        {
+                            let org = cfg.org_id.clone();
+                            let idx = indexer.clone();
+                            let endpoint = ep.clone();
+                            let self_node = node_id_hex.clone();
+
+                            // 1. Try admin first (fast path — most likely to have full history).
+                            let admin_ok = if let Some(ref addr_str) = cfg.admin_addr {
+                                crate::catchup::CatchupProtocol::request_catchup(
+                                    &endpoint, addr_str, &org, 0, &idx,
+                                ).await.is_ok()
+                            } else {
+                                false
+                            };
+
+                            if !admin_ok {
+                                // 2. Wait briefly for gossip heartbeats to arrive.
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                                // 3. Find any online peer (≠ self, ≠ admin) with a recent heartbeat.
+                                let hb = idx.get_heartbeats(&org).unwrap_or_default();
+                                let now = chrono::Utc::now().timestamp_millis();
+                                let online_peer: Option<String> = hb.into_iter()
+                                    .find(|(nid, ts)| {
+                                        nid != &self_node
+                                            && *ts > 0
+                                            && now - *ts < 60_000
+                                    })
+                                    .map(|(nid, _)| nid);
+
+                                // 4. Catch-up from that peer (iroh-dns resolves node_id → address).
+                                if let Some(peer_node_id) = online_peer {
+                                    let _ = crate::catchup::CatchupProtocol::request_catchup(
+                                        &endpoint, &peer_node_id, &org, 0, &idx,
+                                    ).await;
+                                }
+                            }
                         }
 
                         // Write self as member to redb

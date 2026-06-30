@@ -5,6 +5,8 @@ use syntrix_schema::all_schemas;
 use std::collections::HashMap;
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
+    tracing::info!(org = %name, op = "create_org", step = "init", "generating topic id");
+
     let topic_id_bytes: [u8; 32] = fastrand::u128(..).to_le_bytes().into_iter()
         .chain(fastrand::u128(..).to_le_bytes())
         .collect::<Vec<_>>()
@@ -23,9 +25,12 @@ pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> 
     state.add_org(name, topic_id_bytes);
     state.save_org_config(name, &hex::encode(topic_id_bytes))?;
 
+    tracing::info!(org = %name, op = "create_org", step = "save", "org config saved");
+
     // Join the gossip topic so the admin receives heartbeats and broadcasts its own.
     state.join_gossip_and_heartbeat(name, topic_id_bytes).await?;
 
+    tracing::info!(org = %name, op = "create_org", step = "done", node_id = %node_id_hex, "completed, gossip topic joined");
     Ok(())
 }
 
@@ -33,6 +38,7 @@ pub async fn add_device(
     state: &mut AppState, org: &str, node_id: &str, name: &str, person: &str, role: &str, device_addr: &str,
 ) -> anyhow::Result<()> {
     state.remember_device(org, node_id, role, person, name, true, device_addr);
+    tracing::info!(org = %org, op = "add_device", step = "register", node_id = %node_id, role = %role, name = %name, "device registered");
     Ok(())
 }
 
@@ -113,6 +119,8 @@ pub async fn send_invite(
         "can_write": can_write,
     });
 
+    tracing::info!(org = %org, op = "send_invite", step = "connect", role = %role, "connecting to peer");
+
     let conn = match endpoint.connect(peer, b"/syntrix/invite/1").await {
         Ok(c) => c,
         Err(_) => {
@@ -127,6 +135,7 @@ pub async fn send_invite(
     send.finish()?;
     let _ = conn.closed().await;
 
+    tracing::info!(org = %org, op = "send_invite", step = "done", role = %role, "invite delivered");
     Ok(())
 }
 

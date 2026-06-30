@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+
+// Re-exported so the syntrix_span! macro can reference $crate::uuid::Uuid
+pub use uuid;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -64,7 +67,7 @@ pub struct SpanContext {
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static SPAN_STACK: std::cell::RefCell<Vec<SpanContext>> =
+    pub static SPAN_STACK: std::cell::RefCell<Vec<SpanContext>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -98,7 +101,7 @@ impl Drop for SpanGuard {
 #[macro_export]
 macro_rules! syntrix_span {
     ($org:expr, $op:expr, $step:expr) => {{
-        let __corr_id = uuid::Uuid::new_v4().to_string();
+        let __corr_id = $crate::uuid::Uuid::new_v4().to_string();
         let __ctx = $crate::SpanContext {
             org: $org.to_string(),
             op: $op.to_string(),

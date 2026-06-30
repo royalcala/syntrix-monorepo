@@ -153,8 +153,8 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
         let _ = bus.join_org(&final_org_id, iroh_topic_id, bootstrap, indexer.clone(), node_id_hex).await;
     }
 
-    // Catch-up from admin
-    if let Some(ref addr) = admin_addr {
+    // P2P catch-up: try admin first, then any online peer with a recent heartbeat.
+    {
         let endpoint = {
             let s = state.lock().map_err(|e| e.to_string())?;
             s.endpoint().clone()
@@ -163,9 +163,34 @@ async fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String,
             let s = state.lock().map_err(|e| e.to_string())?;
             s.indexer.clone()
         };
-        let _ = catchup::CatchupProtocol::request_catchup(
-            &endpoint, addr, &final_org_id, 0, &indexer,
-        ).await;
+
+        let admin_ok = if let Some(ref addr) = admin_addr {
+            catchup::CatchupProtocol::request_catchup(
+                &endpoint, addr, &final_org_id, 0, &indexer,
+            ).await.is_ok()
+        } else {
+            false
+        };
+
+        if !admin_ok {
+            // Wait briefly for gossip heartbeats from other peers.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+            let node_id_hex = hex::encode({
+                let s = state.lock().map_err(|e| e.to_string())?;
+                s.node_id()
+            });
+
+            let hb = indexer.get_heartbeats(&final_org_id).unwrap_or_default();
+            let now = chrono::Utc::now().timestamp_millis();
+            if let Some((peer_id, _)) = hb.into_iter()
+                .find(|(nid, ts)| nid != &node_id_hex && *ts > 0 && now - *ts < 60_000)
+            {
+                let _ = catchup::CatchupProtocol::request_catchup(
+                    &endpoint, &peer_id, &final_org_id, 0, &indexer,
+                ).await;
+            }
+        }
     }
 
     // Write self as member to redb and start heartbeat

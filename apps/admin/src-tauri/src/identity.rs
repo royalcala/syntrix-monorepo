@@ -106,8 +106,11 @@ impl AppState {
 
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
+        let db_path = data_dir.join("admin.redb");
+        let db = Arc::new(redb::Database::create(db_path)?);
+
         let gossip_bus = Arc::new(tokio::sync::RwLock::new(
-            crate::gossip::AdminGossipBus::new(gossip.clone()),
+            crate::gossip::AdminGossipBus::new(gossip.clone(), db.clone()),
         ));
 
         // Snapshot the std::sync heartbeats Arc so we can read it synchronously
@@ -116,9 +119,6 @@ impl AppState {
             let guard = gossip_bus.read().await;
             guard.heartbeats_ref()
         };
-
-        let db_path = data_dir.join("admin.redb");
-        let db = Arc::new(redb::Database::create(db_path)?);
         {
             let write_txn = db.begin_write()?;
             let _ = write_txn.open_table(EVENT_LOG)?;
@@ -518,8 +518,10 @@ async fn start_admin_heartbeat(
         })
     };
 
+    tracing::info!(org = %org_id, op = "heartbeat", step = "start", node_id = %node_id_hex, "heartbeat started (every 15s)");
+
     let store: Arc<dyn Fn(i64, &str) + Send + Sync> = {
-        let heartbeats = hb; // std::sync::RwLock — safe from non-async context
+        let heartbeats = hb;
         Arc::new(move |ts: i64, nid: &str| {
             if let Ok(mut map) = heartbeats.write() {
                 map.entry(org_id.clone())
