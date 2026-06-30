@@ -164,6 +164,16 @@ macro_rules! syntrix_subscribe_ingest_span {
     ($org:expr) => { $crate::syntrix_span!($org, "subscribe_ingest", "ingest") };
 }
 
+#[macro_export]
+macro_rules! syntrix_ai_chat_span {
+    ($org:expr) => { $crate::syntrix_span!($org, "ai_chat", "chat") };
+}
+
+#[macro_export]
+macro_rules! syntrix_ai_tool_call_span {
+    ($org:expr) => { $crate::syntrix_span!($org, "ai_tool_call", "execute") };
+}
+
 // ---------------------------------------------------------------------------
 // Redaction
 // ---------------------------------------------------------------------------
@@ -427,6 +437,7 @@ impl tracing::field::Visit for SpanFieldCollector {
 // LogHandle
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct LogHandle {
     inner: LogInner,
     data_dir: PathBuf,

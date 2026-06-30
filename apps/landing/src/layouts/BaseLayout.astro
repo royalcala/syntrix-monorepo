@@ -1,0 +1,78 @@
+---
+import { translations, type Lang } from "../i18n/index";
+
+export interface Props {
+  lang: Lang;
+  title: string;
+  description?: string;
+}
+
+const { lang, title, description } = Astro.props;
+const t = translations[lang];
+---
+
+<!doctype html>
+<html lang={lang}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title} | Syntrix</title>
+    <meta name="description" content={description || "Syntrix - Tu Espacio Operativo Autónomo"} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body class="min-h-screen bg-white text-gray-900 antialiased">
+    <nav class="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-200">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex items-center justify-between h-16">
+          <a href={`/${lang}/`} class="flex items-center gap-2 font-bold text-lg">
+            Syntrix
+          </a>
+          <div class="hidden sm:flex items-center gap-6">
+            <a href={`/${lang}/features`} class="text-sm text-gray-600 hover:text-gray-900">{t.nav.features}</a>
+            <a href={`/${lang}/pricing`} class="text-sm text-gray-600 hover:text-gray-900">{t.nav.pricing}</a>
+            <a href={`/${lang}/download`} class="text-sm text-gray-600 hover:text-gray-900">{t.nav.download}</a>
+            <a href={`/${lang}/blog`} class="text-sm text-gray-600 hover:text-gray-900">{t.nav.blog}</a>
+            <a href={`/${lang}/contact`} class="text-sm text-gray-600 hover:text-gray-900">{t.nav.contact}</a>
+            <a href={`/${lang}/download`} class="inline-flex items-center justify-center h-9 px-4 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors">
+              {t.hero.cta}
+            </a>
+          </div>
+          <div class="flex items-center gap-2 sm:hidden">
+            <span class="text-xs text-gray-400">
+              {lang === "es" ? "ES" : lang === "en" ? "EN" : "PT"}
+            </span>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <main>
+      <slot />
+    </main>
+
+    <footer class="border-t border-gray-200 py-8">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p class="text-sm text-gray-500">
+            &copy; {new Date().getFullYear()} Syntrix. {t.footer.rights}
+          </p>
+          <div class="flex items-center gap-4 text-sm text-gray-500">
+            <a href={`/${lang}`} class="hover:text-gray-900">{t.footer.privacy}</a>
+            <a href={`/${lang}`} class="hover:text-gray-900">{t.footer.terms}</a>
+            <div class="flex items-center gap-2">
+              <a href="/es/" class="text-xs hover:text-gray-900">ES</a>
+              <span class="text-gray-300">|</span>
+              <a href="/en/" class="text-xs hover:text-gray-900">EN</a>
+              <span class="text-gray-300">|</span>
+              <a href="/pt-BR/" class="text-xs hover:text-gray-900">PT</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <style is:global>
+      @import "tailwindcss";
+    </style>
+  </body>
+</html>

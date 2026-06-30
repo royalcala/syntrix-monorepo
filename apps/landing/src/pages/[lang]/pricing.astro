@@ -1,0 +1,69 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { translations, type Lang } from "../../i18n/index";
+
+export function getStaticPaths() {
+  return [
+    { params: { lang: "es" } },
+    { params: { lang: "en" } },
+    { params: { lang: "pt-BR" } },
+  ];
+}
+
+const { lang } = Astro.params as { lang: Lang };
+const t = translations[lang];
+
+const plans = [
+  {
+    ...t.pricing.free,
+    price: "$0",
+    period: "forever",
+    featured: false,
+    cta: { es: "Descargar gratis", en: "Download free", "pt-BR": "Baixar grátis" },
+  },
+  {
+    ...t.pricing.managed,
+    price: { es: "Desde $99/mes", en: "From $99/mo", "pt-BR": "A partir de R$99/mês" },
+    period: { es: "prepago", en: "prepaid", "pt-BR": "pré-pago" },
+    featured: true,
+    cta: { es: "Ver servicios", en: "See services", "pt-BR": "Ver serviços" },
+  },
+  {
+    ...t.pricing.enterprise,
+    price: { es: "Server + $0", en: "Server + $0", "pt-BR": "Servidor + $0" },
+    period: { es: "por mes", en: "per month", "pt-BR": "por mês" },
+    featured: false,
+    cta: { es: "Más info", en: "Learn more", "pt-BR": "Saiba mais" },
+  },
+];
+---
+
+<BaseLayout lang={lang} title={t.pricing.title}>
+  <section class="pt-32 pb-20 px-4">
+    <div class="max-w-6xl mx-auto">
+      <h1 class="text-4xl font-bold text-center mb-4">{t.pricing.title}</h1>
+      <p class="text-gray-600 text-center mb-12 max-w-2xl mx-auto">{t.pricing.subtitle}</p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        {plans.map((plan) => (
+          <div class={`rounded-xl border p-6 ${plan.featured ? 'border-gray-900 ring-2 ring-gray-900' : 'border-gray-200'}`}>
+            {plan.featured && <span class="text-xs font-medium text-gray-900 bg-gray-100 px-2 py-1 rounded-full mb-3 inline-block">Popular</span>}
+            <h3 class="text-xl font-bold mb-1">{plan.name}</h3>
+            <p class="text-sm text-gray-600 mb-4">{plan.desc}</p>
+            <p class="text-2xl font-bold mb-1">{typeof plan.price === 'string' ? plan.price : plan.price[lang]}</p>
+            <p class="text-xs text-gray-500 mb-6">{typeof plan.period === 'string' ? plan.period : plan.period[lang]}</p>
+            <ul class="space-y-2 mb-8">
+              {plan.features.map((f: string) => (
+                <li class="text-sm text-gray-700 flex items-center gap-2">
+                  <span class="text-green-600">&#10003;</span> {f}
+                </li>
+              ))}
+            </ul>
+            <a href={`/${lang}/download`} class={`block text-center py-2 px-4 rounded-lg text-sm font-medium transition-colors ${plan.featured ? 'bg-gray-900 text-white hover:bg-gray-800' : 'border border-gray-300 hover:bg-gray-50'}`}>
+              {typeof plan.cta === 'string' ? plan.cta : plan.cta[lang]}
+            </a>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+</BaseLayout>

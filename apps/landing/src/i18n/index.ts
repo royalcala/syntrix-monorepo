@@ -1,0 +1,160 @@
+export const translations = {
+  es: {
+    nav: {
+      features: "Características",
+      pricing: "Precios",
+      download: "Descargar",
+      contact: "Contacto",
+      blog: "Blog",
+    },
+    hero: {
+      title: "Tu Espacio Operativo Autónomo",
+      subtitle: "No es un ERP. Es tu negocio funcionando sin depender de nadie.",
+      cta: "Iniciar mi espacio",
+      secondary: "Ver características",
+    },
+    features: {
+      title: "Hecho para funcionar sin internet",
+      items: [
+        { title: "100% offline", description: "Trabaja sin conexión. Sincroniza cuando vuelvas." },
+        { title: "Privacidad real", description: "Tus datos viven en tus dispositivos, no en la nube." },
+        { title: "Sin suscripciones", description: "Paga una vez. El software es tuyo para siempre." },
+        { title: "Rápido como pensar", description: "Sin tiempos de carga. Sin esperas." },
+      ],
+    },
+    pricing: {
+      title: "Precios transparentes",
+      subtitle: "La app es gratuita. Solo pagas por los servicios que necesites.",
+      free: { name: "Gratuito", desc: "App completa sin costo", features: ["Hasta 10 orgs", "Sincronización P2P", "Facturación básica", "Sin límite de dispositivos"] },
+      managed: { name: "Managed Services", desc: "Soberanía con respaldo", features: ["Wallet prepago", "Timbre CFDI", "Gateway IA", "Backups cifrados", "Soporte prioritario"] },
+      enterprise: { name: "Auto-hospedado", desc: "Tu propio servidor", features: ["Despliegue NixOS", "Caddy + PostgreSQL", "Infra declarativa", "Sin límite de servicios"] },
+    },
+    download: {
+      title: "Descarga Syntrix",
+      subtitle: "Disponible para escritorio. iOS y Android próximamente.",
+      forWindows: "Para Windows",
+      forMac: "Para macOS",
+      forLinux: "Para Linux",
+      comingSoon: "Próximamente en iOS y Android",
+    },
+    contact: {
+      title: "Contáctanos",
+      name: "Nombre",
+      email: "Correo electrónico",
+      message: "Mensaje",
+      send: "Enviar",
+      success: "Mensaje enviado. Te responderemos pronto.",
+    },
+    footer: {
+      rights: "Todos los derechos reservados.",
+      privacy: "Aviso de privacidad",
+      terms: "Términos de uso",
+    },
+  },
+  en: {
+    nav: {
+      features: "Features",
+      pricing: "Pricing",
+      download: "Download",
+      contact: "Contact",
+      blog: "Blog",
+    },
+    hero: {
+      title: "Your Autonomous Operating Space",
+      subtitle: "Not an ERP. Your business running independently.",
+      cta: "Start my space",
+      secondary: "See features",
+    },
+    features: {
+      title: "Built to work offline",
+      items: [
+        { title: "100% offline", description: "Work without internet. Sync when you reconnect." },
+        { title: "Real privacy", description: "Your data lives on your devices, not in the cloud." },
+        { title: "No subscriptions", description: "Pay once. Own your software forever." },
+        { title: "Instant speed", description: "No loading times. No waiting." },
+      ],
+    },
+    pricing: {
+      title: "Transparent pricing",
+      subtitle: "The app is free. Only pay for services you need.",
+      free: { name: "Free", desc: "Full app at no cost", features: ["Up to 10 orgs", "P2P sync", "Basic invoicing", "Unlimited devices"] },
+      managed: { name: "Managed", desc: "Sovereignty with support", features: ["Prepaid wallet", "CFDI stamping", "AI gateway", "Encrypted backups", "Priority support"] },
+      enterprise: { name: "Self-hosted", desc: "Your own server", features: ["NixOS deployment", "Caddy + PostgreSQL", "Declarative infra", "No service limits"] },
+    },
+    download: {
+      title: "Download Syntrix",
+      subtitle: "Available for desktop. iOS and Android coming soon.",
+      forWindows: "For Windows",
+      forMac: "For macOS",
+      forLinux: "For Linux",
+      comingSoon: "Coming soon on iOS and Android",
+    },
+    contact: {
+      title: "Contact us",
+      name: "Name",
+      email: "Email",
+      message: "Message",
+      send: "Send",
+      success: "Message sent. We'll get back to you soon.",
+    },
+    footer: {
+      rights: "All rights reserved.",
+      privacy: "Privacy policy",
+      terms: "Terms of service",
+    },
+  },
+  "pt-BR": {
+    nav: {
+      features: "Recursos",
+      pricing: "Preços",
+      download: "Baixar",
+      contact: "Contato",
+      blog: "Blog",
+    },
+    hero: {
+      title: "Seu Espaço Operacional Autônomo",
+      subtitle: "Não é um ERP. Seu negócio funcionando sem depender de ninguém.",
+      cta: "Iniciar meu espaço",
+      secondary: "Ver recursos",
+    },
+    features: {
+      title: "Feito para funcionar offline",
+      items: [
+        { title: "100% offline", description: "Trabalhe sem internet. Sincronize quando voltar." },
+        { title: "Privacidade real", description: "Seus dados vivem em seus dispositivos, não na nuvem." },
+        { title: "Sem assinaturas", description: "Pague uma vez. O software é seu para sempre." },
+        { title: "Rápido como pensar", description: "Sem tempos de carregamento. Sem esperas." },
+      ],
+    },
+    pricing: {
+      title: "Preços transparentes",
+      subtitle: "O app é gratuito. Pague apenas pelos serviços que precisar.",
+      free: { name: "Grátis", desc: "App completo sem custo", features: ["Até 10 orgs", "Sincronização P2P", "Faturamento básico", "Sem limite de dispositivos"] },
+      managed: { name: "Gerenciado", desc: "Soberania com suporte", features: ["Carteira pré-paga", "Timbre CFDI", "Gateway IA", "Backups criptografados", "Suporte prioritário"] },
+      enterprise: { name: "Auto-hospedado", desc: "Seu próprio servidor", features: ["Deploy NixOS", "Caddy + PostgreSQL", "Infra declarativa", "Sem limites de serviços"] },
+    },
+    download: {
+      title: "Baixar Syntrix",
+      subtitle: "Disponível para desktop. iOS e Android em breve.",
+      forWindows: "Para Windows",
+      forMac: "Para macOS",
+      forLinux: "Para Linux",
+      comingSoon: "Em breve no iOS e Android",
+    },
+    contact: {
+      title: "Fale conosco",
+      name: "Nome",
+      email: "Email",
+      message: "Mensagem",
+      send: "Enviar",
+      success: "Mensagem enviada. Responderemos em breve.",
+    },
+    footer: {
+      rights: "Todos os direitos reservados.",
+      privacy: "Política de privacidade",
+      terms: "Termos de uso",
+    },
+  },
+};
+
+export type Lang = keyof typeof translations;

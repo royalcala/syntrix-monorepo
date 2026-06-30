@@ -170,6 +170,50 @@ docs-kill:
     pkill -f "[n]ode.*astro" || true
 
 
+# =========================================================================
+# 7. DOCKER COMPOSE — Full local dev stack
+# =========================================================================
+
+# Levanta toda la infraestructura (postgres + backend + caddy + plausible)
+docker-up:
+	docker compose up -d
+
+# Levanta solo lo mínimo para desarrollo del backend
+docker-backend:
+	docker compose up -d postgres caddy plausible
+	@echo "Backend services ready. Run 'cargo run' from apps/backend/"
+
+# Reconstruye y reinicia el backend (tras cambios en Rust)
+docker-build-backend:
+	docker compose up -d --build backend
+
+# Stripe webhook forwarding (requiere STRIPE_SECRET_KEY en .env)
+docker-stripe:
+	docker compose --profile stripe up -d stripe-cli
+
+# Logs del backend
+docker-logs:
+	docker compose logs -f backend
+
+# Apaga todo
+docker-down:
+	docker compose down
+
+# Apaga todo + borra volúmenes (pierde datos)
+docker-down-clean:
+	docker compose down -v
+
+# Crea las entradas de /etc/hosts para los dominios locales
+docker-hosts:
+	@echo "Agregando dominios locales a /etc/hosts (requiere sudo)..."
+	@if grep -q "syntrix.mx" /etc/hosts; then \
+		echo "Ya existen entradas para syntrix.mx"; \
+	else \
+		sudo sh -c 'echo "\n# Syntrix local dev\n127.0.0.1 api.syntrix.mx syntrix.mx operator.syntrix.mx analytics.syntrix.mx" >> /etc/hosts'; \
+		echo "✅ Entradas agregadas"; \
+	fi
+
+# =========================================================================
 # Compila el sitio estático de la documentación (incluyendo rustdoc remoto y Astro Starlight)
 docs-build:
     @echo "=== Compilando Rustdoc remotamente en el servidor ==="

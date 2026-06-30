@@ -1,0 +1,27 @@
+# Local dev Caddy config — matches production routing
+# Add to /etc/hosts:
+#   127.0.0.1 api.syntrix.mx syntrix.mx operator.syntrix.mx analytics.syntrix.mx
+
+api.syntrix.mx {
+	reverse_proxy backend:3001
+	encode zstd gzip
+}
+
+syntrix.mx {
+	redir / /es/ 301
+}
+
+syntrix.mx/* {
+	reverse_proxy landing:4321
+	encode zstd gzip
+}
+
+operator.syntrix.mx {
+	reverse_proxy operator:5173
+	encode zstd gzip
+}
+
+analytics.syntrix.mx {
+	reverse_proxy plausible:8000
+	encode zstd gzip
+}

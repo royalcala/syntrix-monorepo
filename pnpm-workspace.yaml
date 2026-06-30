@@ -1,6 +1,9 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+  - 'apps/backend'
+  - 'apps/operator'
+  - 'apps/landing'
 allowBuilds:
   esbuild: true
   sharp: true

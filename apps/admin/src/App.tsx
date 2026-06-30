@@ -6,6 +6,7 @@ import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
 import { PageLayout } from "@syntrix/ui/components/PageLayout";
+import { ChatPanel } from "@syntrix/ui/components/ChatPanel";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { CreateOrg } from "./screens/CreateOrg";
 import { Logs } from "./screens/Logs";
@@ -124,6 +125,8 @@ export default function App() {
             <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />
           </Routes>
       </AppShell>
+
+      {activeOrg && <ChatPanel orgId={activeOrg} />}
 
       {newOrgOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setNewOrgOpen(false)}>

@@ -1,0 +1,99 @@
+# Full local dev stack — matches production NixOS configuration
+# Usage:
+#   docker compose up -d postgres backend    # core infra
+#   docker compose up -d                     # everything
+#   docker compose up -d --build backend     # rebuild & restart backend
+#
+# Add to /etc/hosts for Caddy routing:
+#   127.0.0.1 api.syntrix.mx syntrix.mx operator.syntrix.mx analytics.syntrix.mx
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: syntrix
+      POSTGRES_USER: syntrix
+      POSTGRES_PASSWORD: syntrix_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syntrix"]
+      interval: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    ports: ["3001:3001"]
+    environment:
+      DATABASE_URL: postgres://syntrix:syntrix_dev@postgres:5432/syntrix
+      JWT_SECRET: dev-secret-change-in-prod
+      RUST_LOG: syntrix_backend=info
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  landing:
+    image: node:22-alpine
+    working_dir: /app
+    entrypoint: sh -c "cd apps/landing && corepack enable && pnpm install && npx astro dev --host 0.0.0.0 --port 4321"
+    ports: ["4321:4321"]
+    volumes:
+      - .:/app
+      - node_modules_landing:/app/node_modules
+
+  operator:
+    image: node:22-alpine
+    working_dir: /app
+    entrypoint: sh -c "cd apps/operator && corepack enable && pnpm install && npx vite --host 0.0.0.0 --port 5173"
+    ports: ["5173:5173"]
+    volumes:
+      - .:/app
+      - node_modules_operator:/app/node_modules
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - landing
+      - operator
+
+  plausible:
+    image: plausible/analytics:latest
+    restart: unless-stopped
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgres://syntrix:syntrix_dev@postgres:5432/syntrix
+      SECRET_KEY_BASE: dev-secret-plausible
+      BASE_URL: https://analytics.syntrix.mx
+      DISABLE_REGISTRATION: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  stripe-cli:
+    image: stripe/stripe-cli:latest
+    profiles: ["stripe"]
+    command: listen --forward-to http://backend:3001/api/v1/stripe/webhook --api-key ${STRIPE_SECRET_KEY:-}
+    depends_on: [backend]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  node_modules_landing:
+  node_modules_operator:

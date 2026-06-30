@@ -9,6 +9,7 @@ import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator"
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
 import { PageLayout } from "@syntrix/ui/components/PageLayout";
 import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
+import { ChatPanel } from "@syntrix/ui/components/ChatPanel";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
 import { Inbox } from "./screens/Inbox";
@@ -228,6 +229,7 @@ export default function App() {
           <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />
         </Routes>
       </main>
+      {activeOrg && <ChatPanel orgId={activeOrg} />}
       <CommandPalette
         open={cmdOpen}
         onClose={() => { setCmdOpen(false); setCmdQuery(""); }}

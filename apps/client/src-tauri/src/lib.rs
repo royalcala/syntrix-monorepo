@@ -11,6 +11,7 @@ mod seed;
 pub mod audit;
 pub mod indexes;
 pub mod search;
+pub mod ai;
 
 use syntrix_schema::build_registry;
 use iroh_docs::api::Doc;
@@ -556,6 +557,70 @@ fn seed_dev_data(state: tauri::State<'_, Mutex<AppState>>) -> Result<usize, Stri
     seed::seed_dev_data(&s).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn ai_chat(
+    state: tauri::State<'_, Mutex<AppState>>,
+    handle: tauri::State<'_, LogHandle>,
+    app: tauri::AppHandle,
+    org_id: String,
+    messages: Vec<syntrix_ai::tool::ChatMessage>,
+    provider_config: Option<syntrix_ai::tool::ProviderConfig>,
+) -> Result<(), String> {
+    let (executor, tools, org_role) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let indexer = s.indexer.clone();
+        let role = s.get_org_docs(&org_id).map(|o| o.role.as_str()).unwrap_or("user");
+        (ai::AiToolExecutor { indexer, log_handle: handle.clone() },
+         syntrix_ai::tool::default_tool_definitions(),
+         role.to_string())
+    };
+
+    let schema_json = syntrix_schema::build_registry().export_json();
+    let schema_str = serde_json::to_string(&schema_json).unwrap_or_default();
+
+    let system_prompt = syntrix_ai::tool::ChatMessage {
+        role: "system".into(),
+        content: Some(format!(
+            r#"You are an AI assistant for Syntrix, a peer-to-peer ERP system.
+Active organization ID: {}
+Your role: {}
+You are READ-ONLY — you can query data but never create, update, or delete records.
+Always respect entity access permissions.
+
+Available entities and their schemas:
+{}
+
+When displaying data, use tables for structured results, cards for summaries, and metrics for KPIs.
+Respond in the same language the user writes in. Be concise and data-driven."#,
+            org_id, org_role, schema_str
+        )),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+
+    let mut full_messages = vec![system_prompt];
+    full_messages.extend(messages);
+
+    let config = provider_config.unwrap_or_default();
+    let provider = syntrix_ai::provider::OpenAICompatibleProvider::new(
+        config.base_url, config.model, config.api_key,
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        syntrix_ai::chat::ai_chat_impl(
+            &provider, &executor, &org_id, &full_messages, &tools, tx,
+        ).await.ok();
+    });
+
+    while let Some(event) = rx.recv().await {
+        let _ = app.emit("ai_chat_event", &event);
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
@@ -626,6 +691,7 @@ pub fn run() {
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
             get_schema_registry, audit_query,
             query_logs, summarize_logs, start_tail_logs,
+            ai_chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

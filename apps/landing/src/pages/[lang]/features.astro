@@ -1,0 +1,60 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { translations, type Lang } from "../../i18n/index";
+
+export function getStaticPaths() {
+  return [
+    { params: { lang: "es" } },
+    { params: { lang: "en" } },
+    { params: { lang: "pt-BR" } },
+  ];
+}
+
+const { lang } = Astro.params as { lang: Lang };
+const t = translations[lang];
+const features = [
+  {
+    title: { es: "Funciona sin internet", en: "Works without internet", "pt-BR": "Funciona sem internet" },
+    desc: { es: "Sigue trabajando aunque se corte la conexión. Syntrix sincroniza automáticamente cuando vuelves a estar en línea.", en: "Keep working even when offline. Syntrix syncs automatically when you reconnect.", "pt-BR": "Continue trabalhando mesmo offline. O Syntrix sincroniza automaticamente quando você reconecta." },
+  },
+  {
+    title: { es: "Tus datos son tuyos", en: "Your data is yours", "pt-BR": "Seus dados são seus" },
+    desc: { es: "La información vive en tus dispositivos. Nadie más tiene acceso. Sin servidores corporativos, sin vigilancia.", en: "Your data lives on your devices. No one else has access. No corporate servers, no surveillance.", "pt-BR": "Seus dados vivem em seus dispositivos. Ninguém mais tem acesso. Sem servidores corporativos, sem vigilância." },
+  },
+  {
+    title: { es: "Sin suscripciones", en: "No subscriptions", "pt-BR": "Sem assinaturas" },
+    desc: { es: "Paga una vez y el software es tuyo para siempre. Sin rentas mensuales, sin sorpresas.", en: "Pay once and own your software forever. No monthly fees, no surprises.", "pt-BR": "Pague uma vez e o software é seu para sempre. Sem mensalidades, sem surpresas." },
+  },
+  {
+    title: { es: "Colaboración P2P", en: "P2P collaboration", "pt-BR": "Colaboração P2P" },
+    desc: { es: "Comparte datos con tu equipo directamente, sin intermediarios. La sincronización es instantánea y segura.", en: "Share data with your team directly, no intermediaries. Sync is instant and secure.", "pt-BR": "Compartilhe dados com sua equipe diretamente, sem intermediários. A sincronização é instantânea e segura." },
+  },
+  {
+    title: { es: "Facturación CFDI", en: "CFDI invoicing", "pt-BR": "Faturamento CFDI" },
+    desc: { es: "Emite facturas electrónicas con timbrado CFDI. Cumplimiento fiscal sin complicaciones.", en: "Issue electronic invoices with CFDI stamping. Tax compliance made simple.", "pt-BR": "Emita faturas eletrônicas com timbre CFDI. Conformidade fiscal simplificada." },
+  },
+  {
+    title: { es: "AI integrado", en: "Built-in AI", "pt-BR": "IA integrada" },
+    desc: { es: "Asistente inteligente que consulta tus datos en lenguaje natural. Usa Groq, DeepSeek, u Ollama local.", en: "Smart assistant that queries your data in natural language. Uses Groq, DeepSeek, or local Ollama.", "pt-BR": "Assistente inteligente que consulta seus dados em linguagem natural. Usa Groq, DeepSeek ou Ollama local." },
+  },
+];
+---
+
+<BaseLayout lang={lang} title="Características">
+  <section class="pt-32 pb-20 px-4">
+    <div class="max-w-4xl mx-auto">
+      <h1 class="text-4xl font-bold text-center mb-4">{t.nav.features}</h1>
+      <p class="text-gray-600 text-center mb-16 max-w-2xl mx-auto">{t.hero.subtitle}</p>
+      <div class="space-y-12">
+        {features.map((f) => (
+          <div class="flex flex-col sm:flex-row gap-6 p-6 border border-gray-200 rounded-xl">
+            <div class="flex-1">
+              <h2 class="text-xl font-semibold mb-2">{f.title[lang]}</h2>
+              <p class="text-gray-600">{f.desc[lang]}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+</BaseLayout>

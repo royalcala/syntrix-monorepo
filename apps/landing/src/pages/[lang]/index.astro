@@ -1,0 +1,72 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { translations, type Lang } from "../../i18n/index";
+
+export function getStaticPaths() {
+  return [
+    { params: { lang: "es" } },
+    { params: { lang: "en" } },
+    { params: { lang: "pt-BR" } },
+  ];
+}
+
+const { lang } = Astro.params as { lang: Lang };
+const t = translations[lang];
+---
+
+<BaseLayout lang={lang} title={t.hero.title}>
+  <section class="pt-32 pb-20 px-4">
+    <div class="max-w-4xl mx-auto text-center">
+      <h1 class="text-5xl sm:text-6xl font-bold tracking-tight mb-6">
+        {t.hero.title}
+      </h1>
+      <p class="text-xl text-gray-600 mb-10 max-w-2xl mx-auto">
+        {t.hero.subtitle}
+      </p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href={`/${lang}/download`} class="inline-flex items-center justify-center h-12 px-8 text-base font-medium bg-gray-900 text-white rounded-xl hover:bg-gray-800 transition-colors">
+          {t.hero.cta}
+        </a>
+        <a href={`/${lang}/features`} class="inline-flex items-center justify-center h-12 px-8 text-base font-medium border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">
+          {t.hero.secondary}
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="py-20 bg-gray-50 px-4">
+    <div class="max-w-6xl mx-auto">
+      <h2 class="text-3xl font-bold text-center mb-12">{t.features.title}</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+        {t.features.items.map((item) => (
+          <div class="bg-white rounded-xl p-6 border border-gray-200">
+            <h3 class="font-semibold text-lg mb-2">{item.title}</h3>
+            <p class="text-sm text-gray-600">{item.description}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="py-20 px-4">
+    <div class="max-w-6xl mx-auto">
+      <h2 class="text-3xl font-bold text-center mb-4">{t.pricing.title}</h2>
+      <p class="text-gray-600 text-center mb-12">{t.pricing.subtitle}</p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        {[t.pricing.free, t.pricing.managed, t.pricing.enterprise].map((plan) => (
+          <div class="rounded-xl border border-gray-200 p-6">
+            <h3 class="font-semibold text-lg mb-1">{plan.name}</h3>
+            <p class="text-sm text-gray-600 mb-4">{plan.desc}</p>
+            <ul class="space-y-2">
+              {plan.features.map((f) => (
+                <li class="text-sm text-gray-700 flex items-center gap-2">
+                  <span class="text-green-600">&#10003;</span> {f}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+</BaseLayout>

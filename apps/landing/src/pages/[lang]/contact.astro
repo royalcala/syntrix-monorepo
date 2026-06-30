@@ -1,0 +1,41 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { translations, type Lang } from "../../i18n/index";
+
+export function getStaticPaths() {
+  return [
+    { params: { lang: "es" } },
+    { params: { lang: "en" } },
+    { params: { lang: "pt-BR" } },
+  ];
+}
+
+const { lang } = Astro.params as { lang: Lang };
+const t = translations[lang];
+---
+
+<BaseLayout lang={lang} title={t.contact.title}>
+  <section class="pt-32 pb-20 px-4">
+    <div class="max-w-lg mx-auto">
+      <h1 class="text-4xl font-bold text-center mb-4">{t.contact.title}</h1>
+      <p class="text-gray-600 text-center mb-8">{t.hero.subtitle}</p>
+      <form method="POST" action="https://api.syntrix.mx/api/v1/contact" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium mb-1">{t.contact.name}</label>
+          <input name="name" required class="w-full h-10 px-3 border border-gray-300 rounded-lg text-sm" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">{t.contact.email}</label>
+          <input name="email" type="email" required class="w-full h-10 px-3 border border-gray-300 rounded-lg text-sm" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">{t.contact.message}</label>
+          <textarea name="message" rows={5} required class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none"></textarea>
+        </div>
+        <button type="submit" class="w-full h-10 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors">
+          {t.contact.send}
+        </button>
+      </form>
+    </div>
+  </section>
+</BaseLayout>

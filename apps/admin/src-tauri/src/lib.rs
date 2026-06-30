@@ -6,8 +6,7 @@ use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
 pub mod identity;
 pub mod admin;
 pub mod audit;
-
-use syntrix_schema::build_registry;
+pub mod ai;
 
 pub use identity::AppState;
 
@@ -200,6 +199,33 @@ fn share_org(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<Ve
 }
 
 #[tauri::command]
+async fn ai_chat(
+    handle: tauri::State<'_, LogHandle>,
+    app: tauri::AppHandle,
+    org_id: String,
+    messages: Vec<syntrix_ai::tool::ChatMessage>,
+    provider_config: Option<syntrix_ai::tool::ProviderConfig>,
+) -> Result<(), String> {
+    let executor = ai::AiToolExecutor { log_handle: handle.clone() };
+    let tools = syntrix_ai::tool::default_tool_definitions();
+    let config = provider_config.unwrap_or_default();
+    let provider = syntrix_ai::provider::OpenAICompatibleProvider::new(
+        config.base_url, config.model, config.api_key,
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        syntrix_ai::chat::ai_chat_impl(
+            &provider, &executor, &org_id, &messages, &tools, tx,
+        ).await.ok();
+    });
+    while let Some(event) = rx.recv().await {
+        let _ = app_clone.emit("ai_chat_event", &event);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn query_logs(handle: tauri::State<'_, LogHandle>, query: LogQuery) -> Result<Vec<LogRecord>, String> {
     Ok(syntrix_logging::query_logs_impl(&handle, &query))
 }
@@ -305,6 +331,7 @@ pub fn run() {
             create_role, update_role, get_sync_info, get_schema_registry,
             audit_query,
             query_logs, summarize_logs, start_tail_logs,
+            ai_chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-admin");

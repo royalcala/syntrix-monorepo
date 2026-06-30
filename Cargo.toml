@@ -7,6 +7,8 @@ members = [
     "crates/syntrix-schema",
     "crates/syntrix-testkit",
     "crates/syntrix-logging",
+    "crates/syntrix-ai",
+    "apps/backend",
 ]
 
 [profile.dev]
