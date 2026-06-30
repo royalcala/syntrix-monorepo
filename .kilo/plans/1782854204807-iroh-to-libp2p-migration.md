@@ -1,4 +1,4 @@
-# Plan: Migración iroh → libp2p
+/home/alcala/Documents/github/syntrix-p2p/syntrix-monorepo/.kilo/worktrees/purple-saltopus/.kilo/plans/1782854204807-iroh-to-libp2p-migration.md# Plan: Migración iroh → libp2p
 
 ## Objetivo
 
