@@ -60,6 +60,7 @@ impl AppState {
     pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<(Self, Vec<InvitePayload>)> {
         std::fs::create_dir_all(&data_dir).ok();
 
+        let key_path = data_dir.join("keypair.bytes");
         let keypair = load_or_create_keypair(&key_path)?;
 
         let local_peer_id = keypair.public().to_peer_id();
@@ -81,7 +82,7 @@ impl AppState {
 
         let mut topic_to_org: HashMap<String, String> = HashMap::new();
         let mut orgs = HashMap::new();
-        let node_id_bytes: [u8; 32] = local_peer_id.to_bytes();
+        let node_id_bytes: [u8; 32] = peer_id_to_bytes(local_peer_id);
         let node_id_hex = hex::encode(node_id_bytes);
         let orgs_config_path = data_dir.join("orgs.json");
 
@@ -327,6 +328,33 @@ async fn process_event_loop(
             }
             else => break,
         }
+    }
+}
+
+fn peer_id_to_bytes(peer_id: libp2p::PeerId) -> [u8; 32] {
+    let bytes = peer_id.to_bytes();
+    let mut arr = [0u8; 32];
+    let len = bytes.len().min(32);
+    arr[..len].copy_from_slice(&bytes[..len]);
+    arr
+}
+
+fn load_or_create_keypair(key_path: &std::path::Path) -> anyhow::Result<Keypair> {
+    use libp2p::identity::Keypair;
+    if key_path.exists() {
+        let bytes = std::fs::read(key_path)?;
+        // Try protobuf format first
+        if let Ok(kp) = Keypair::from_protobuf_encoding(&bytes) {
+            return Ok(kp);
+        }
+        // Old 32-byte libp2p secret key — generate new, overwrite
+        let kp = Keypair::generate_ed25519();
+        std::fs::write(key_path, kp.to_protobuf_encoding().unwrap())?;
+        Ok(kp)
+    } else {
+        let kp = Keypair::generate_ed25519();
+        std::fs::write(key_path, kp.to_protobuf_encoding().unwrap())?;
+        Ok(kp)
     }
 }
 

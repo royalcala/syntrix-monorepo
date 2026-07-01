@@ -25,7 +25,7 @@ La arquitectura base está construida y probada.
 
 | Componente | Estado | Descripción |
 |-----------|--------|-------------|
-| P2P Sync (Iroh) | ✅ | Namespaces por entidad, sync P2P con HLC, accept_cb con validación criptográfica |
+| P2P Sync (libp2p) | ✅ | Sync P2P con HLC, validación criptográfica de eventos |
 | Motor Relacional (redb) | ✅ | DOCUMENTS + INDEXES + COMPOSITE, schema-driven, codificación sortable |
 | Búsqueda Full-Text (Tantivy) | ✅ | BM25, fuzzy search, snippets, integrado al indexador |
 | Registry de Esquemas | ✅ | `syntrix-schema` crate, entidades, campos, índices, relaciones, namespaces |
@@ -64,7 +64,7 @@ La arquitectura base está construida y probada.
 | Feature | Gatillo | Valor |
 |---------|---------|-------|
 | Reportes configurables | Primer cliente que pide reportes beyond dashboard | Builder visual: entidad base → joins → filtros → agrupación → exportar |
-| Adjuntar archivos | Primer cliente con facturas PDF o imágenes de producto | iroh-blobs para almacenamiento content-addressed |
+| Adjuntar archivos | Primer cliente con facturas PDF o imágenes de producto | P2P transferencia de archivos |
 | Multi-moneda | Primer cliente con operaciones internacionales | Field type `currency` con tipo de cambio |
 | Notificaciones in-app | Múltiples peers editando concurrentemente | Toast cuando otro peer modifica un registro visible |
 | Snapshots periódicos | 6+ meses de eventos acumulados | Compactar historial, startup < 2s con 10K+ registros |
@@ -104,11 +104,11 @@ La arquitectura base está construida y probada.
 
 Estas decisiones se tomaron en las fundaciones y definen el producto:
 
-1. **iroh-docs como única fuente de verdad** — redb y Tantivy son proyecciones volátiles, reconstruidas desde el log.
+1. **P2P event log como única fuente de verdad** — redb y Tantivy son proyecciones volátiles, reconstruidas desde el log.
 2. **Rust como motor de consultas** — el frontend nunca carga colecciones completas; delega a Rust vía IPC.
 3. **Registry de esquemas como source of truth** — un solo lugar define entidades, índices, relaciones, namespaces y migraciones.
 4. **Permisos puros a nivel entidad** — `can_open`/`can_write` contienen nombres de entidad o `"*"`, nunca namespaces.
-5. **Namespaces por entidad** — cada entidad del registry tiene su propio namespace Iroh. Aislamiento granular de datos sensibles.
+5. **Namespaces por entidad** — cada entidad del registry tiene su propio namespace P2P. Aislamiento granular de datos sensibles.
 6. **Sin servidor central** — todo es P2P. El "backup" es un nodo pasivo, no un servidor.
 
 ---

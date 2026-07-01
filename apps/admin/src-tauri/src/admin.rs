@@ -4,7 +4,7 @@ use syntrix_network::codecs::InvitePayload;
 pub use syntrix_core::{build_device_addr_string, SyncInfo};
 use syntrix_schema::all_schemas;
 use std::collections::HashMap;
-use libp2p::PeerId;
+
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
     tracing::info!(org = %name, op = "create_org", step = "init", "generating topic id");

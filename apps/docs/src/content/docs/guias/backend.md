@@ -11,7 +11,7 @@ El núcleo de Syntrix está construido en **Rust**, el cual provee la seguridad 
 
 - **Rust (edición 2021)**: Lenguaje del core.
 - **Tauri v2**: Framework para conectar el backend de Rust con la UI web.
-- **Iroh**: Protocolo P2P y motor de base de datos relacional de documentos (Iroh KV).
+- **libp2p**: Protocolo P2P de red y comunicación entre pares.
 - **Cargo**: Gestor de paquetes de Rust.
 
 ---

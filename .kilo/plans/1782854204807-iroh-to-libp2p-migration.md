@@ -200,6 +200,17 @@ pub enum Event {
 | `iroh::protocol::ProtocolHandler` trait | `request_response::Codec` trait |
 | `CaRootsConfig::insecure_skip_verify()` | noise handshake (seguro por defecto) |
 
+## Estado de implementación (2026-06-30)
+
+| Fase | Estado |
+|------|--------|
+| Fase 1: syntrix-network | ✅ Completo — crate con P2PNode, Event loop, Gossipsub, Kademlia, Identify, Ping, request_response |
+| Fase 2: syntrix-core | ✅ Completo — addr.rs con Multiaddr/PeerId, registry.rs con String topics, sin iroh |
+| Fase 3: syntrix-client | ✅ Completo — identity.rs, events.rs, lib.rs adaptados a P2PNode |
+| Fase 4: syntrix-admin | ✅ Completo — identity.rs, admin.rs, gossip.rs, catchup.rs adaptados a P2PNode |
+| Fase 5: Tests | ✅ Parcial — Tests compilan pero requieren red P2P real para ejecutarse |
+| Compilación | ✅ `cargo check` pasa en todo el workspace |
+
 ## Riesgos y mitigaciones
 
 | Riesgo | Mitigación |

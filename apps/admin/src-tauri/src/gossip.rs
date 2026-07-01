@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 /// Store a gossip data event into the admin's redb EVENT_LOG table.
 ///
 /// Called from the main event loop in identity.rs.

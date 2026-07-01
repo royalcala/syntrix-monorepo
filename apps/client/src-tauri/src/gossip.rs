@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::indexes::RelationalEngine;
 
 /// Process an incoming gossipsub event for a given org.

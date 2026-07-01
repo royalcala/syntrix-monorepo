@@ -11,7 +11,7 @@ apps/
 packages/
 └── syntrix-ui/      ← Componentes compartidos (@syntrix/ui)
 crates/
-└── iroh-syntrix-docs/ ← Auth wrapper para iroh-docs (Rust)
+└── syntrix-core/      ← P2P networking layer (Rust)
 syntrix-docs/        ← Documentación de diseño
 ```
 
@@ -24,9 +24,9 @@ syntrix-docs/        ← Documentación de diseño
 | Grid | TanStack Table |
 | State | TanStack DB |
 | Forms | TanStack Form + Zod |
-| Sync P2P | iroh-docs |
-| Auth | iroh-syntrix-docs |
-| Red | iroh (QUIC, relay gratis) |
+| Sync P2P | libp2p gossipsub |
+| Auth | syntrix-core |
+| Red | libp2p (QUIC, relay) |
 
 ## Desarrollo
 

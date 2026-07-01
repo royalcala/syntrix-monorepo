@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 pub use syntrix_network::codecs::InvitePayload;
 
 /// In-memory queue for pending invites received from the P2P network.
-/// Replaces the old iroh ProtocolHandler approach.
+/// Replaces the old libp2p ProtocolHandler approach.
 #[derive(Debug, Clone)]
 pub struct InviteHandler {
     queue: std::sync::Arc<std::sync::Mutex<Vec<InvitePayload>>>,

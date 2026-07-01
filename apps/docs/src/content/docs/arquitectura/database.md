@@ -5,7 +5,7 @@ description: "Persistencia local, event log en Redb, búsqueda indexada con Tant
 
 # Motor de Base de Datos
 
-Syntrix implementa una arquitectura de datos descentralizada basada en **Event Sourcing** y **Proyecciones Locales**. La capa de red P2P (iroh-gossip) solo transporta eventos; el almacenamiento durable es exclusivamente **redb**.
+Syntrix implementa una arquitectura de datos descentralizada basada en **Event Sourcing** y **Proyecciones Locales**. La capa de red P2P (libp2p gossipsub) solo transporta eventos; el almacenamiento durable es exclusivamente **redb**.
 
 ---
 
@@ -23,7 +23,7 @@ graph TD
         E[Tantivy - Search Engine]
     end
 
-    B -- Broadcast/Receive --> C[Iroh Gossip - Transporte P2P]
+    B -- Broadcast/Receive --> C[libp2p Gossipsub - Transporte P2P]
     C -- Proyección --> D
     B -- Indexación Invertida --> E
 ```

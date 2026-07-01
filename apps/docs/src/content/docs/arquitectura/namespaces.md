@@ -5,7 +5,7 @@ description: "Modelado de datos en Syntrix: topic gossip por organización, pol�
 
 # TopicIds y Autorización
 
-Syntrix utiliza **topics gossip** de Iroh para la comunicación P2P. Cada organización tiene un `TopicId` UUID que aísla su tráfico de red.
+Syntrix utiliza **topics gossip** de libp2p para la comunicación P2P. Cada organización tiene un `TopicId` UUID que aísla su tráfico de red.
 
 ---
 
@@ -69,7 +69,7 @@ Cada evento gossip recibido de un peer remoto pasa por validación de permisos a
 
 | Concepto Anterior | Equivalente Nuevo |
 |---|---|
-| NamespaceId (iroh-docs) por entidad | TopicId (iroh-gossip) por organización |
+| NamespaceId por entidad (anterior) | TopicId (libp2p gossipsub) por organización |
 | accept_cb a nivel de doc | Validación por evento en receive loop |
 | `doc.set_bytes()` para escribir | `gossip.broadcast()` + redb `EVENT_LOG.append` |
 | `doc.get_many()` para leer | redb `EVENT_LOG.query_events_since()` |

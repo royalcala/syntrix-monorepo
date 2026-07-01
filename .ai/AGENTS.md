@@ -4,7 +4,7 @@
 Monorepo for the Syntrix Peer-to-Peer (P2P) local-first application suite, featuring an admin console and a client application with decentralized synchronization.
 
 ## Tech Stack
-- **Backend**: Rust + Tauri + Iroh (P2P namespaces, blobs, and sync)
+- **Backend**: Rust + Tauri + libp2p (P2P networking via syntrix-network crate)
 - **Frontend**: React + Vite + Tailwind CSS + Radix/shadcn primitives
 - **Monorepo Manager**: `pnpm` workspaces (apps and shared package)
 - **Shared UI**: `@syntrix/ui` (under `packages/syntrix-ui/`)

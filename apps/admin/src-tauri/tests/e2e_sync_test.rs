@@ -31,7 +31,7 @@ fn node_id_from_addr(addr_json: &str) -> String {
 
 async fn invite_one_client(
     admin: &mut AdminState,
-    client: &ClientState,
+    client: &mut ClientState,
     org_name: &str,
     role: &str,
 ) -> anyhow::Result<()> {
@@ -471,9 +471,9 @@ async fn test_default_roles() {
 
     syntrix_admin_lib::admin::create_org(&mut admin, "acme").await.expect("create org");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    invite_one_client(&mut admin, &admin_c, "acme", "admin").await.expect("admin client");
-    invite_one_client(&mut admin, &sales, "acme", "sales").await.expect("sales client");
-    invite_one_client(&mut admin, &contabilidad, "acme", "contabilidad").await.expect("contabilidad client");
+    invite_one_client(&mut admin, &mut admin_c, "acme", "admin").await.expect("admin client");
+    invite_one_client(&mut admin, &mut sales, "acme", "sales").await.expect("sales client");
+    invite_one_client(&mut admin, &mut contabilidad, "acme", "contabilidad").await.expect("contabilidad client");
     let org_id = find_client_org_id(&admin_c, "acme");
 
     set_client_org(&mut admin_c, &org_id);

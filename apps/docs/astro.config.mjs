@@ -24,7 +24,7 @@ export default defineConfig({
 					label: 'Arquitectura Core',
 					items: [
 						{ label: 'Motor de Base de Datos', slug: 'arquitectura/database' },
-						{ label: 'Sincronización P2P (Iroh)', slug: 'arquitectura/sincronizacion' },
+						{ label: 'Sincronización P2P (libp2p)', slug: 'arquitectura/sincronizacion' },
 						{ label: 'Estructura de Namespaces', slug: 'arquitectura/namespaces' },
 					],
 				},
@@ -42,7 +42,7 @@ export default defineConfig({
 						{ label: 'Esquemas y Tipos', slug: 'referencia/esquemas' },
 						{ label: 'Rustdoc: Admin Core', slug: 'referencia/rustdoc-admin' },
 						{ label: 'Rustdoc: Client Core', slug: 'referencia/rustdoc-client' },
-						{ label: 'Rustdoc: Iroh Docs Engine', slug: 'referencia/rustdoc-iroh' },
+						{ label: 'Rustdoc: libp2p Network', slug: 'referencia/rustdoc-iroh' },
 					],
 				},
 				{

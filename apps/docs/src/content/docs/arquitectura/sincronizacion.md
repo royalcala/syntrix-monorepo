@@ -1,11 +1,11 @@
 ---
-title: "Sincronización P2P y Seguridad de Red (Iroh Gossip)"
+title: "Sincronización P2P y Seguridad de Red (libp2p Gossipsub)"
 description: "Mecánica detallada de sincronización mediante pub/sub gossip, reconciliación por catch-up P2P y autorización por evento."
 ---
 
-# Sincronización P2P y Seguridad de Red (Iroh Gossip)
+# Sincronización P2P y Seguridad de Red (libp2p Gossipsub)
 
-La arquitectura de comunicación colaborativa de Syntrix elimina la dependencia de `iroh-docs` y `iroh-blobs`. En su lugar, el sistema utiliza **`iroh-gossip`** para pub/sub de eventos y **redb** como único almacenamiento local persistente.
+La arquitectura de comunicación colaborativa de Syntrix utiliza **`libp2p gossipsub`** para pub/sub de eventos y **redb** como único almacenamiento local persistente.
 
 ---
 
@@ -22,13 +22,13 @@ graph TD
         B4[Cálculo de Estado: SyncInfo]
     end
 
-    B2 --> C[Red P2P - Iroh Gossip]
+    B2 --> C[Red P2P - libp2p Gossipsub]
     B3 --> D[redb: EVENT_LOG + Heartbeats]
     B4 --> D
 ```
 
 *   **`syntrix-core`**: Proporciona `NamespaceRegistry` (mapeo TopicId → OrgId, permisos de roles), heartbeats sobre gossip + redb, y cálculo de estado de peers.
-*   **`iroh-gossip`**: Reemplaza `iroh-docs` como capa de transporte. Cada org tiene un `TopicId` UUID. Los eventos se transmiten via `broadcast(Bytes)` y se reciben via `Event::Received(Message)`.
+*   **`libp2p gossipsub`**: Capa de transporte P2P. Cada org tiene un `TopicId` UUID. Los eventos se transmiten via `broadcast(Bytes)` y se reciben via `Event::Received(Message)`.
 *   **redb**: Almacenamiento único. Tablas `EVENT_LOG`, `MEMBERS`, `ROLES`, `HEARTBEATS`, `DOCUMENTS`, `INDEXES`.
 
 ---

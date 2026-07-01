@@ -72,23 +72,7 @@ impl AppState {
         std::fs::create_dir_all(&data_dir).ok();
 
         let key_path = data_dir.join("keypair.bytes");
-        let keypair = if key_path.exists() {
-            let bytes = std::fs::read(&key_path)?;
-            if bytes.len() == 32 {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&bytes);
-                let sk = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut arr)
-                    .map_err(|e| anyhow::anyhow!("invalid secret key: {e}"))?;
-                Keypair::ed25519_from(sk)
-            } else {
-                Keypair::from_protobuf_encoding(&bytes)
-                    .map_err(|e| anyhow::anyhow!("invalid keypair: {e}"))?
-            }
-        } else {
-            let kp = Keypair::generate_ed25519();
-            std::fs::write(&key_path, kp.to_protobuf_encoding().unwrap())?;
-            kp
-        };
+        let keypair = load_or_create_keypair(&key_path)?;
 
         let local_peer_id = keypair.public().to_peer_id();
         let listen_on: Vec<Multiaddr> = vec![
@@ -194,7 +178,7 @@ impl AppState {
 
         // Load org config
         let orgs_config_path = data_dir.join("orgs.json");
-        let node_id_bytes = local_peer_id.to_bytes();
+        let node_id_bytes = peer_id_to_bytes(local_peer_id);
         let node_id_hex = hex::encode(node_id_bytes);
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
@@ -637,6 +621,30 @@ fn query_events_since(
     }
 
     Ok(results)
+}
+
+fn peer_id_to_bytes(peer_id: libp2p::PeerId) -> [u8; 32] {
+    let bytes = peer_id.to_bytes();
+    let mut arr = [0u8; 32];
+    let len = bytes.len().min(32);
+    arr[..len].copy_from_slice(&bytes[..len]);
+    arr
+}
+
+fn load_or_create_keypair(key_path: &std::path::Path) -> anyhow::Result<Keypair> {
+    if key_path.exists() {
+        let bytes = std::fs::read(key_path)?;
+        if let Ok(kp) = Keypair::from_protobuf_encoding(&bytes) {
+            return Ok(kp);
+        }
+        let kp = Keypair::generate_ed25519();
+        std::fs::write(key_path, kp.to_protobuf_encoding().unwrap())?;
+        Ok(kp)
+    } else {
+        let kp = Keypair::generate_ed25519();
+        std::fs::write(key_path, kp.to_protobuf_encoding().unwrap())?;
+        Ok(kp)
+    }
 }
 
 pub async fn catchup_from_peer(

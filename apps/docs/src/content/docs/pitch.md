@@ -36,7 +36,7 @@ title: "Syntrix — No es un ERP."
 
 1. **Valida su búsqueda.** Quien llega buscando un "sistema de facturación" o un "ERP" se siente escuchado. Sabe que entiendes su problema.
 2. **Polariza al enemigo.** La nube tradicional, SAP, Oracle y los SaaS aburridos son el villano. El villano es la lentitud, la dependencia y la pérdida de soberanía.
-3. **Eleva el valor.** No vendemos una herramienta — vendemos **Independencia** y **Paz Mental.** Debajo hay Rust, iroh P2P, TanStack DB y TanStack Table. Pero lo que el usuario siente es que nadie lo va a desconectar y que todo carga al instante.
+3. **Eleva el valor.** No vendemos una herramienta — vendemos **Independencia** y **Paz Mental.** Debajo hay Rust, libp2p P2P, TanStack DB y TanStack Table. Pero lo que el usuario siente es que nadie lo va a desconectar y que todo carga al instante.
 
 ### Call to Action
 

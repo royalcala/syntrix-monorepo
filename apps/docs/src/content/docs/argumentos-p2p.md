@@ -1,8 +1,8 @@
 ---
-title: "Syntrix — Complemento P2P y Iroh (Guía Técnica y Comercial)"
+title: "Syntrix — Complemento P2P y libp2p (Guía Técnica y Comercial)"
 ---
 
-Este documento sirve como complemento al **[02-pitch.md](file:///root/Documents/github/syntrix-related-repos/syntrix-monorepo/syntrix-docs/02-pitch.md)**. Detalla el funcionamiento técnico detrás de nuestro "Espacio Operativo Autónomo" y proporciona los argumentos de venta clave para posicionar la tecnología Peer-to-Peer (P2P) y el framework **Iroh** frente a clientes de escala empresarial.
+Este documento sirve como complemento al **[02-pitch.md](file:///root/Documents/github/syntrix-related-repos/syntrix-monorepo/syntrix-docs/02-pitch.md)**. Detalla el funcionamiento técnico detrás de nuestro "Espacio Operativo Autónomo" y proporciona los argumentos de venta clave para posicionar la tecnología Peer-to-Peer (P2P) y el protocolo **libp2p** frente a clientes de escala empresarial.
 
 ---
 
@@ -19,7 +19,7 @@ graph TD
         B[Dispositivo 2] --> S
     end
 
-    subgraph "Peer-to-Peer (Syntrix + Iroh)"
+    subgraph "Peer-to-Peer (Syntrix + libp2p)"
         P1((Dispositivo 1)) <--> P2((Dispositivo 2))
         P2((Dispositivo 2)) <--> P3((Dispositivo 3))
         P3((Dispositivo 3)) <--> P1((Dispositivo 1))
@@ -33,35 +33,35 @@ graph TD
 
 ---
 
-## 2. La Pila Tecnológica: ¿Cómo funciona Iroh?
+## 2. La Pila Tecnológica: ¿Cómo funciona libp2p?
 
-**Iroh** es un motor P2P moderno escrito en Rust, diseñado específicamente para ser rápido y eficiente en dispositivos móviles y de escritorio. Se divide en tres pilares fundamentales que resuelven los retos de red, sincronización y manejo de archivos:
+**libp2p** es un framework P2P modular escrito en Rust, diseñado para ser rápido y eficiente en dispositivos móviles y de escritorio. Se compone de módulos que resuelven los retos de red, sincronización y manejo de datos:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                       Syntrix UI                        │
 ├─────────────────────────────────────────────────────────┤
-│    Iroh Docs (Sincronización de Base de Datos / K-V)    │
+│          libp2p Gossipsub (Pub/Sub de Eventos)           │
 ├─────────────────────────────────────────────────────────┤
-│      Iroh Blobs (Transferencia de Archivos Grandes)     │
+│            libp2p (Conexión Directa P2P)                 │
 ├─────────────────────────────────────────────────────────┤
-│  Iroh Net / Magic Endpoint (QUIC, Hole Punching, DERP)  │
+│  libp2p (QUIC, Hole Punching, Relay)                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### A. Conectividad Segura (Iroh Net)
-* **Identidad por NodeID**: Cada dispositivo en Syntrix se identifica mediante una llave pública criptográfica (Ed25519). Las conexiones no se hacen a IPs cambiantes, sino a identidades inmutables.
-* **Hole Punching (Perforación de Puertos)**: Iroh intenta establecer conexiones directas UDP entre dispositivos (incluso detrás de firewalls y NATs caseros) para evitar intermediarios.
-* **Servidores Relay (DERP)**: Si ambos dispositivos están detrás de firewalls corporativos muy estrictos que impiden la conexión directa, el tráfico se enruta cifrado a través de un servidor de retransmisión (DERP).
+### A. Conectividad Segura (libp2p)
+* **Identidad por PeerID**: Cada dispositivo en Syntrix se identifica mediante una llave pública criptográfica (Ed25519). Las conexiones no se hacen a IPs cambiantes, sino a identidades inmutables.
+* **Hole Punching (Perforación de Puertos)**: libp2p intenta establecer conexiones directas UDP entre dispositivos (incluso detrás de firewalls y NATs caseros) para evitar intermediarios.
+* **Servidores Relay**: Si ambos dispositivos están detrás de firewalls corporativos muy estrictos que impiden la conexión directa, el tráfico se enruta cifrado a través de un servidor de retransmisión.
   > **Nota de Seguridad**: El servidor Relay solo ve tráfico cifrado de extremo a extremo mediante QUIC (TLS 1.3). No puede leer, modificar ni interceptar los datos.
 
-### B. Sincronización en Tiempo Real (Iroh Docs)
+### B. Sincronización en Tiempo Real (libp2p Gossipsub)
 * **Gossip Protocol**: Cuando un vendedor registra un pedido offline y vuelve a conectarse, el sistema difunde el cambio a los demás peers de forma inmediata a través de un protocolo de "chisme".
-* **Set Reconciliation**: Iroh compara bases de datos usando rangos matemáticos para transmitir únicamente los registros modificados. Esto ahorra hasta un 99% de ancho de banda en comparación con replicaciones SQL tradicionales.
+* **Catch-up P2P**: Al reconectarse, los peers sincronizan los eventos faltantes mediante una conexión directa, transmitiendo únicamente los registros modificados desde el último HLC conocido.
 
-### C. Almacenamiento Eficiente (Iroh Blobs)
-* **Content-Addressed Storage**: Archivos grandes (como PDFs de facturas o imágenes de inventario) se identifican por el hash de su contenido (BLAKE3).
-* **Descarga Verificada**: Iroh descarga archivos en fragmentos verificando la integridad de cada uno en tiempo real. Si un fragmento se corrompe en la transmisión, solo se descarga esa parte, no todo el archivo.
+### C. Almacenamiento Local (redb)
+* **redb**: Base de datos embebida en Rust que almacena todos los eventos y proyecciones localmente.
+* **Integridad**: Cada evento se firma con la llave privada del nodo y se verifica al recibirlo, garantizando que no ha sido modificado en tránsito.
 
 ---
 
@@ -87,5 +87,5 @@ Esto garantiza **cero colisiones**, cumple con requerimientos de auditoría y pe
 |---|---|---|
 | **"¿Cómo se respaldan mis datos si no hay nube?"** | Cada nodo autorizado contiene una copia de la base de datos (redundancia). Además, se puede configurar un "nodo de backup pasivo" en una PC dedicada u oficina central. | **Respaldo automático e inmune**: Si una computadora se daña, conectas otra y en minutos descarga todo el historial desde los otros dispositivos de tu red local. |
 | **"Si despido a alguien, ¿se lleva los datos?"** | Se revoca la llave criptográfica del nodo del empleado despedido en el control de acceso del espacio. | **Seguridad instantánea**: Los demás dispositivos bloquean y rechazan cualquier intento de sincronización de ese nodo inmediatamente. |
-| **"Mi red de oficina tiene firewalls estrictos."** | Iroh conmuta automáticamente a servidores Relay (DERP) usando el puerto HTTPS estándar (443). | **Funciona sin configuración**: No necesitas que tu equipo de sistemas abra puertos peligrosos ni configure VPNs complejas. |
+| **"Mi red de oficina tiene firewalls estrictos."** | libp2p conmuta automáticamente a servidores Relay usando el puerto HTTPS estándar (443). | **Funciona sin configuración**: No necesitas que tu equipo de sistemas abra puertos peligrosos ni configure VPNs complejas. |
 | **"¿Cómo facturo ante el SAT de forma offline?"** | El registro comercial es inmediato y local. El timbrado XML ante el PAC autorizado se procesa en segundo plano en cuanto se detecta conexión a internet. | **Venta fluida**: El cliente recibe su ticket al instante y la factura legal se timbra automáticamente sin interrumpir tu caja. |

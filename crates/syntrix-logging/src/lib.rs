@@ -629,16 +629,8 @@ fn cleanup_old_logs(data_dir: &PathBuf, app_name: &str) {
     // Remove old files (>7 days)
     for (path, age, _size) in &entries {
         if *age > max_age_app {
-            // Skip iroh-debug.ndjson (handled separately with 2-day retention)
-            let fname = path.file_name().unwrap_or_default().to_string_lossy();
-            if fname.contains("iroh-debug") {
-                if *age > chrono::Duration::days(2) {
-                    let _ = std::fs::remove_file(path);
-                }
-            } else {
                 if *age > max_age_app {
-                    let _ = std::fs::remove_file(path);
-                }
+                let _ = std::fs::remove_file(path);
             }
         }
     }
@@ -649,7 +641,7 @@ fn cleanup_old_logs(data_dir: &PathBuf, app_name: &str) {
             .iter()
             .filter(|(p, _, _)| {
                 let fname = p.file_name().unwrap_or_default().to_string_lossy();
-                fname.contains(app_name) && !fname.contains("iroh-debug")
+                fname.contains(app_name)
             })
             .collect();
         sorted.sort_by(|a, b| b.2.cmp(&a.2));
@@ -704,38 +696,16 @@ pub fn init_logging(app_name: &str, data_dir: PathBuf) -> LogHandle {
 
     // Console layer: human-readable with EnvFilter
     let console_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| {
-        "syntrix=info,iroh=warn".to_string()
+        "syntrix=info".to_string()
     });
     let console_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_filter(EnvFilter::new(&console_filter));
 
-    // Initialize the subscriber registry
-    // We use .init() (which panics on double-init) — this is intentional for app startup
-    if std::env::var("IROH_DEBUG").as_deref() == Ok("1") {
-        let iroh_debug_path = log_dir.join("iroh-debug.ndjson");
-        if let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&iroh_debug_path)
-        {
-            let iroh_writer = std::sync::Mutex::new(BufWriter::new(file));
-            let iroh_layer = tracing_subscriber::fmt::layer()
-                .json()
-                .with_writer(iroh_writer)
-                .with_filter(EnvFilter::new("iroh=debug"));
-            tracing_subscriber::registry()
-                .with(console_layer)
-                .with(log_layer)
-                .with(iroh_layer)
-                .init();
-        }
-    } else {
-        tracing_subscriber::registry()
-            .with(console_layer)
-            .with(log_layer)
-            .init();
-    }
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(log_layer)
+        .init();
 
     // Spawn periodic cleanup (only if a tokio runtime is active — init_logging may
     // be called before the Tauri/async runtime starts; cleanup runs on every launch

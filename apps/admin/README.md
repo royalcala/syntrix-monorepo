@@ -34,7 +34,7 @@ syntrix-admin/
 │   │   ├── lib.rs          ← Tauri builder + commands
 │   │   ├── main.rs         ← Entry point
 │   │   ├── identity.rs     ← Device identity (Ed25519 keypair)
-│   │   └── admin.rs        ← org_control management (stubs — wires to iroh)
+│   │   └── admin.rs        ← org_control management (stubs — wires to libp2p)
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 └── DESIGN.md               ← Full architecture design
@@ -44,5 +44,5 @@ syntrix-admin/
 
 - Tauri v2 (desktop + iOS + Android)
 - React 19 + TypeScript + Vite 7
-- iroh-syntrix-docs v0.2.0 (authorization crate)
-- iroh + iroh-docs (P2P storage + sync)
+- syntrix-core (authorization crate)
+- libp2p (P2P networking + sync)

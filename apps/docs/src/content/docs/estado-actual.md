@@ -4,7 +4,7 @@ title: "Syntrix — Estado Actual y Documento Maestro (V1.0)"
 
 > **Nota:** Este documento consolida y reemplaza a los documentos `07-plan.md`, `08-plan-ui.md` y `09-arquitectura-final.md` como la fuente de verdad viva del proyecto.
 
-Syntrix es un ERP P2P (Peer-to-Peer) local-first construido con Tauri, Rust, React e iroh-docs. Su objetivo es ofrecer una experiencia ultra-rápida y colaborativa sin depender de servidores centralizados.
+Syntrix es un ERP P2P (Peer-to-Peer) local-first construido con Tauri, Rust, React y libp2p. Su objetivo es ofrecer una experiencia ultra-rápida y colaborativa sin depender de servidores centralizados.
 
 ---
 
@@ -13,9 +13,9 @@ Syntrix es un ERP P2P (Peer-to-Peer) local-first construido con Tauri, Rust, Rea
 El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega toda la carga computacional (almacenamiento, indexación, búsqueda) al backend Rust mediante comandos IPC de Tauri.
 
 ### 1.1 Capa de Datos (Source of Truth)
-- **Tecnología:** `iroh-docs`
+- **Tecnología:** `libp2p gossipsub` + `redb`
 - **Función:** Sincronización P2P multi-dispositivo y almacenamiento inmutable de eventos.
-- **Estructura:** Los datos se guardan como payloads JSON inmutables. El control de concurrencia se maneja mediante HLC (Hybrid Logical Clocks) en la llave del evento. Cada entidad tiene su propio namespace Iroh para aislar permisos a nivel granular.
+- **Estructura:** Los datos se guardan como payloads JSON inmutables. El control de concurrencia se maneja mediante HLC (Hybrid Logical Clocks) en la llave del evento. Cada entidad tiene su propio namespace P2P para aislar permisos a nivel granular.
 
 ### 1.2 Capa Relacional (Local Engine)
 - **Tecnología:** `redb` (Embebido en Rust)
@@ -55,7 +55,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Motor Relacional Schema-Driven:** `indexes.rs` genera índices solo para campos `#[indexed]`, con codificación sortable de números (big-endian hex), índices compuestos y paginación server-side.
 - **Tantivy Schema-Driven:** Solo indexa campos `#[searchable]` del Registry.
 - **Upcasters y Migraciones:** Eventos con `schema_version`, cadena de upcasters deterministas. Ejemplo: CustomerV1ToV2 (address string → struct).
-- **Auditoría:** Comando `audit_query` que lee directo del log de eventos iroh-docs con filtros por entidad, tipo, nodo y rango de tiempo.
+- **Auditoría:** Comando `audit_query` que lee directo del log de eventos P2P con filtros por entidad, tipo, nodo y rango de tiempo.
 - **Tauri Bridge:** Comandos `query_entity`, `query_entity_advanced`, `commit_event`, `audit_query`, `get_schema_registry` funcionales.
 - **Permisos P2P:** Aislamiento real entre roles (Sales no lee Payroll).
 - **Workspace UI Core:** `EntityGrid` y `DetailPanel` renderizando dinámicamente según la entidad.
@@ -83,14 +83,14 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 5. **Codegen Zod desde Registry:** Generar tipos TypeScript y esquemas Zod automáticamente desde `get_schema_registry()`.
 
 ### 🛠️ Pendiente (Herramientas de Consola Admin)
-- **Data Explorer (Visor JSON Crudo):** Vista especializada para diagnosticar la base de datos P2P. Muestra metadatos puros de `iroh-docs` (Doc Hash, HLC, Autor) y el JSON crudo. Permite identificar datos corruptos, visualizar estado local de índices y emitir eventos correctivos a la red.
+- **Data Explorer (Visor JSON Crudo):** Vista especializada para diagnosticar la base de datos P2P. Muestra metadatos puros de la red P2P (Doc Hash, HLC, Autor) y el JSON crudo. Permite identificar datos corruptos, visualizar estado local de índices y emitir eventos correctivos a la red.
 
 ### ❌ Pendiente (Features de Negocio)
 - Workflow de facturas (draft → open → paid).
 - Importación/Exportación de CSV.
 - Dashboard de KPIs.
 - Números de folio auto-generados (`A-0042-XA1`).
-- Adjuntar archivos (PDFs/Imágenes) vía iroh blobs.
+- Adjuntar archivos (PDFs/Imágenes) vía P2P transferencia.
 - Vistas Guardadas (Filtros y orden predefinidos persistidos).
 
 ---

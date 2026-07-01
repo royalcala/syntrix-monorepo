@@ -122,7 +122,7 @@ fields/
 │   ├── email.ts            ← email con validación
 │   ├── phone.ts            ← teléfono con formato
 │   ├── image.ts            ← imagen (thumbnail + lightbox)
-│   ├── file.ts             ← archivo adjunto (iroh-blobs)
+│   ├── file.ts             ← archivo adjunto (P2P transfer)
 │   ├── richtext.ts         ← texto enriquecido
 │   ├── tags.ts             ← etiquetas múltiples
 │   ├── lookup.ts           ← búsqueda en otra entidad (autocomplete)
@@ -207,7 +207,7 @@ Motor: Tantivy con fuzzy search, BM25 ranking, snippets con highlights. Se alime
 
 ## 4. Arquitectura de datos a escala
 
-### 4.1 Estructura de eventos en iroh-docs
+### 4.1 Estructura de eventos en P2P
 
 ```
 evt:{hlc_ts}:{hlc_count}:{node_id}
@@ -233,7 +233,7 @@ Los índices son **locales y derivados**, nunca se sincronizan P2P. Cada peer re
 
 ### 4.3 Particionamiento por sucursal (visión futura)
 
-Cuando hay 100+ sucursales escribiendo al mismo namespace, el set reconciliation de iroh-docs puede volverse pesado.
+Cuando hay 100+ sucursales escribiendo al mismo namespace, el set reconciliation P2P puede volverse pesado.
 
 Con namespaces por entidad, el aislamiento es granular y la contención se minimiza.
 
@@ -354,7 +354,7 @@ interface SyntrixPlugin {
 │  Tauri IPC (comunicación Rust ↔ React)             │
 ├───────────────────────────────────────────────────┤
 │  Backend (Rust, Tauri)                             │
-│  iroh-docs (P2P sync + log inmutable)              │
+│  libp2p (P2P networking + log inmutable)            │
 │  redb (proyección relacional local)                │
 │  Tantivy (índice de búsqueda full-text)            │
 │  syntrix-schema (registry de esquemas)             │
