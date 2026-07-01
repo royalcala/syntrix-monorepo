@@ -6,5 +6,11 @@
     "build": "pnpm --filter @syntrix/client build && pnpm --filter @syntrix/admin build",
     "docs:dev": "pnpm --filter @syntrix/docs dev",
     "docs:build": "pnpm --filter @syntrix/docs build"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2"
   }
 }

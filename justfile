@@ -134,6 +134,11 @@ lint:
     cd apps/client && pnpm lint
     cd apps/admin && pnpm lint
 
+# Genera migraciones SQL desde los schemas de Drizzle para admin y client
+drizzle-gen:
+    cd apps/admin && pnpm drizzle-kit generate
+    cd apps/client && pnpm drizzle-kit generate
+
 # Limpia los directorios locales cargo target de compilaciones de Rust
 clean-builds:
     @echo "=== Limpiando archivos temporales locales y compilaciones ==="

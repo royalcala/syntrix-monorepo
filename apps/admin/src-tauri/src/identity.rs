@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -47,7 +48,7 @@ pub struct AppState {
     devices: HashMap<String, HashMap<String, DeviceInfo>>,
     roles: HashMap<String, HashMap<String, RoleInfo>>,
     data_dir: PathBuf,
-    pub db: Arc<redb::Database>,
+    pub db: Arc<turso_core::Connection>,
 }
 
 #[derive(Clone)]
@@ -55,8 +56,6 @@ pub struct OrgState {
     pub name: String,
     pub topic_id: String,
 }
-
-const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
 
 impl AppState {
     pub async fn new() -> anyhow::Result<Self> {
@@ -88,17 +87,11 @@ impl AppState {
 
         let (p2p, event_rx) = P2PNode::new(config).await?;
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
-        let db_path = data_dir.join("admin.redb");
-        let db = Arc::new(redb::Database::create(db_path)?);
+        let db = crate::storage::open_limbo(&data_dir)?;
+        crate::storage::run_migrations(&db)?;
 
         let heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>> =
             Arc::new(std::sync::RwLock::new(HashMap::new()));
-
-        {
-            let write_txn = db.begin_write()?;
-            let _ = write_txn.open_table(EVENT_LOG)?;
-            write_txn.commit()?;
-        }
 
         // Spawn background event processor
         let hb_ev = heartbeats.clone();
@@ -505,11 +498,10 @@ async fn start_admin_heartbeat(
 async fn process_event_loop(
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
     heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
-    db: Arc<redb::Database>,
+    db: Arc<turso_core::Connection>,
     p2p: P2PNode,
 ) {
     use syntrix_network::Event;
-    const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
 
     loop {
         tokio::select! {
@@ -540,7 +532,7 @@ async fn process_event_loop(
                             continue;
                         }
 
-                        write_event_to_redb(&db, &org_id, &val);
+                        write_event_to_limbo(&db, &org_id, &val);
                     }
                     Event::InviteReceived { peer: _, payload: _ } => {
                         // Admin doesn't receive invites
@@ -557,67 +549,124 @@ async fn process_event_loop(
     }
 }
 
-fn write_event_to_redb(db: &redb::Database, org_id: &str, val: &serde_json::Value) {
-    const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
+fn write_event_to_limbo(db: &Arc<turso_core::Connection>, org_id: &str, val: &serde_json::Value) {
     let event_type = val["type"].as_str().unwrap_or("unknown");
     let hlc_val = &val["hlc"];
     let hlc_ts = hlc_val["ts"].as_u64().unwrap_or(0);
     let hlc_count = hlc_val["count"].as_u64().unwrap_or(0);
     let hlc_node = hlc_val["node"].as_str().unwrap_or("");
+    let schema_version = val["schema_version"].as_u64().unwrap_or(1);
+    let payload_str = serde_json::to_string(val).unwrap_or_default();
 
     let key = format!(
         "evt:{}:{:020}:{:08}:{}",
         org_id, hlc_ts, hlc_count, hlc_node
     );
 
-    let write_result = (|| -> anyhow::Result<()> {
-        let write_txn = db.begin_write()?;
-        {
-            let mut event_log = write_txn.open_table(EVENT_LOG)?;
-            event_log.insert(key.as_str(), serde_json::to_vec(val)?.as_slice())?;
+    let mut stmt = match db.prepare(
+        "INSERT OR IGNORE INTO event_log (key, org_id, event_type, hlc_ts, hlc_count, hlc_node, schema_version, entity, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+            return;
         }
-        write_txn.commit()?;
-        Ok(())
-    })();
+    };
 
-    if let Err(e) = write_result {
-        eprintln!("[admin-gossip] failed to write event {} to EVENT_LOG: {e}", event_type);
-    } else {
-        tracing::info!(
-            target: "syntrix",
-            org = %org_id,
-            event_type = %event_type,
-            "admin-audit: stored gossip event in EVENT_LOG"
-        );
+    if let Err(e) = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(key.clone())) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
     }
+    if let Err(e) = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(org_id.to_string())) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(event_type.to_string())) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_i64(hlc_ts as i64)) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_i64(hlc_count as i64)) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(hlc_node.to_string())) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_i64(schema_version as i64)) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(8).unwrap(), turso_core::Value::from_text("")) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+    if let Err(e) = stmt.bind_at(NonZero::new(9).unwrap(), turso_core::Value::from_text(payload_str.clone())) {
+        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+        return;
+    }
+
+    loop {
+        match stmt.step() {
+            Ok(turso_core::StepResult::Row) => continue,
+            Ok(turso_core::StepResult::Done) => break,
+            Ok(turso_core::StepResult::IO | turso_core::StepResult::Yield) => {
+                if let Err(e) = stmt._io().step() {
+                    eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+                    return;
+                }
+            }
+            Ok(turso_core::StepResult::Interrupt | turso_core::StepResult::Busy) => {
+                continue;
+            }
+            Err(e) => {
+                eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
+                return;
+            }
+        }
+    }
+
+    tracing::info!(
+        target: "syntrix",
+        org = %org_id,
+        event_type = %event_type,
+        "admin-audit: stored gossip event in event_log"
+    );
 }
 
 fn query_events_since(
-    db: &redb::Database,
+    db: &Arc<turso_core::Connection>,
     org_id: &str,
     cursor_ts: u64,
     limit: usize,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
-    let read_txn = db.begin_read()?;
-    let event_log = read_txn.open_table(EVENT_LOG)?;
-
-    let prefix = format!("evt:{}:", org_id);
-    let range = event_log.range(prefix.as_str()..)?;
+    let mut stmt = db.prepare(
+        "SELECT payload FROM event_log WHERE org_id=?1 AND hlc_ts>?2 ORDER BY hlc_ts, hlc_count LIMIT ?3"
+    )?;
+    stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+    stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_i64(cursor_ts as i64))?;
+    stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(limit as i64))?;
 
     let mut results = Vec::new();
-    for item in range {
-        let (key, value) = item?;
-        let k = key.value();
-        if !k.starts_with(&prefix) { break; }
-
-        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(value.value()) {
-            let hlc_ts = val["hlc"]["ts"].as_u64().unwrap_or(0);
-            if hlc_ts <= cursor_ts { continue; }
-            results.push(val);
+    loop {
+        match stmt.step()? {
+            turso_core::StepResult::Row => {
+                let row = stmt.row().unwrap();
+                let payload_str: String = row.get(0)?;
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                    results.push(val);
+                }
+            }
+            turso_core::StepResult::Done => break,
+            turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                stmt._io().step()?;
+            }
+            turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => continue,
         }
-
-        if results.len() >= limit { break; }
     }
 
     Ok(results)
@@ -651,12 +700,12 @@ pub async fn catchup_from_peer(
     p2p: &P2PNode,
     peer_id: libp2p::PeerId,
     org_id: &str,
-    db: &Arc<redb::Database>,
+    db: &Arc<turso_core::Connection>,
 ) -> anyhow::Result<()> {
     let events = p2p.request_catchup(peer_id, org_id.to_string(), 0).await?;
     let count = events.len();
     for event in &events {
-        write_event_to_redb(db, org_id, event);
+        write_event_to_limbo(db, org_id, event);
     }
     tracing::info!(
         org = %org_id,

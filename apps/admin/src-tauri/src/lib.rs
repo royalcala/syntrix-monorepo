@@ -8,8 +8,9 @@ pub mod admin;
 pub mod audit;
 pub mod catchup;
 pub mod gossip;
+pub mod storage;
 
-use syntrix_schema::build_registry;
+use syntrix_core::ENTITY_NAMES;
 
 pub use identity::AppState;
 use identity::default_role_grants;
@@ -232,8 +233,15 @@ fn audit_query(
 
 #[tauri::command]
 fn get_schema_registry() -> Result<serde_json::Value, String> {
-    let registry = build_registry();
-    Ok(registry.export_json())
+    let entities: Vec<serde_json::Value> = ENTITY_NAMES.iter().map(|name| {
+        serde_json::json!({
+            "name": name,
+            "version": 1,
+            "fields": [],
+            "indexes": [],
+        })
+    }).collect();
+    Ok(serde_json::to_value(entities).unwrap_or_default())
 }
 
 #[tauri::command]

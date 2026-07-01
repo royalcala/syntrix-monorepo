@@ -60,6 +60,7 @@ pub fn sync_push(state: &mut AppState, org_id: &str, batch: Vec<SyncEventEncoded
 
         let upcasted = crate::events::upcast_payload(entity, event.args.clone(), event.schema_version);
         let _ = indexer.upsert_document(org_id, entity, doc_id, &upcasted);
+        state.live_manager().notify_table_changed(&state.conn(), &[entity.to_string()]);
     }
     Ok(())
 }

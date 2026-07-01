@@ -1,11 +1,11 @@
-use crate::indexes::RelationalEngine;
+use crate::indexes::SqlEngine;
 
 /// Process an incoming gossipsub event for a given org.
 /// Called from the main event loop in identity.rs.
 pub fn process_gossip_event(
     org_id: &str,
     val: &serde_json::Value,
-    indexer: &RelationalEngine,
+    indexer: &SqlEngine,
 ) {
     // Heartbeat messages: { ts, status, node_id } — no "type" field
     if val.get("type").is_none() {

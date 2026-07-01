@@ -19,3 +19,4 @@ bytes = "1"
 hex = "0.4"
 tracing = "0.1"
 async-trait = "0.1"
+turso_core.workspace = true

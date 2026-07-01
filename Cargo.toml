@@ -5,10 +5,12 @@ members = [
     "apps/client/src-tauri",
     "crates/syntrix-core",
     "crates/syntrix-network",
-    "crates/syntrix-schema",
     "crates/syntrix-testkit",
     "crates/syntrix-logging",
 ]
+
+[workspace.dependencies]
+turso_core = { git = "https://github.com/tursodatabase/turso.git", default-features = false, features = ["fs", "uuid", "time", "json"] }
 
 [profile.dev]
 debug = "line-tables-only"

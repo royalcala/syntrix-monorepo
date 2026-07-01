@@ -159,4 +159,8 @@ const { data, status } = useLiveQuery(db.select().from(customers), ["customers"]
 | `turso_cdc` no expone columnas extra (node_id) | Extender el PRAGMA Initn para aceptar columnas adicionales |
 | LWW pierde historia en conflictos | Guardar ambas versiones en audit log antes de resolver |
 | FTS requiere recrear índice al migrar | Ejecutar `REINDEX` en migración inicial |
-| Drizzle schema y SQL de Limbo divergen | Drizzle es fuente de verdad, SQL se regenera en cada migración |
+| CDC: `turso_cdc` captura rowid interno, no `(org_id, doc_id)` | `CdcEvent` mapea CDC crudo a alto nivel (org_id, entity, doc_id, payload) consultando la tabla destino |
+| Drizzle schema y SQL de Limbo divergen | Drizzle es fuente de verdad, SQL se regenera en cada migración (`just drizzle-gen`) |
+| Migraciones duplicadas (manuscritas vs Drizzle) | Eliminar `migrations/*.sql` escritos a mano; solo conservar los generados por `drizzle-kit` (prefijo `0000_*`). `storage.rs` debe usar `include_str!("../migrations/0000_*.sql")` |
+| Peers con distinta versión de esquema | Las migraciones deben ser **forward-compatible** (solo ADD, nunca DROP/RENAME). Incluir `schema_version` en heartbeat/gossip. Si un peer recibe CDC de una tabla/columna que no existe localmente, ignorar ese cambio. Para breaking changes futuros: implementar version negotiation via gossip con `min_schema_version`; peers por debajo de ese mínimo no pueden sincronizar hasta actualizar. Esto evita corrupción de datos y asegura que todos los peers en el mesh tengan un esquema compatible. |
+| P2P: `PeerId::from_bytes` falla con `invalid multihash` en tests e2e | `local_peer_id_bytes()` trunca el encoding protobuf de PeerId a 32 bytes; `from_bytes` espera el encoding completo. Fix: usar `PeerId::from_bytes(&bytes[..len])` con la longitud real, o transmitir peer_id como string en vez de bytes truncados. Pendiente en tests e2e. |

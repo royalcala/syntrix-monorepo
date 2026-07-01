@@ -1,3 +1,4 @@
+use std::num::NonZero;
 use serde::{Deserialize, Serialize};
 use crate::identity::AppState;
 
@@ -23,8 +24,6 @@ pub struct AuditFilter {
     pub until_ts: Option<u64>,
 }
 
-const EVENT_LOG: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("event_log");
-
 pub fn audit_query(
     state: &AppState,
     org_name: &str,
@@ -32,81 +31,89 @@ pub fn audit_query(
     limit: usize,
     offset: usize,
 ) -> Vec<AuditEntry> {
-    let read_txn = match state.db.begin_read() {
-        Ok(t) => t,
-        Err(_) => return vec![],
-    };
-    let event_log = match read_txn.open_table(EVENT_LOG) {
-        Ok(t) => t,
+    let mut sql = String::from(
+        "SELECT key, event_type, hlc_ts, schema_version, entity, payload FROM event_log WHERE org_id = ?1"
+    );
+    let mut params: Vec<(usize, turso_core::Value)> = Vec::new();
+    params.push((1, turso_core::Value::from_text(org_name.to_string())));
+
+    let mut idx = 2usize;
+
+    if let Some(ref entity) = filter.entity {
+        sql.push_str(&format!(" AND entity = ?{}", idx));
+        params.push((idx, turso_core::Value::from_text(entity.clone())));
+        idx += 1;
+    }
+    if let Some(ref event_type) = filter.event_type {
+        sql.push_str(&format!(" AND event_type LIKE ?{}", idx));
+        params.push((idx, turso_core::Value::from_text(format!("%{}%", event_type))));
+        idx += 1;
+    }
+    if let Some(ref node) = filter.node {
+        sql.push_str(&format!(" AND hlc_node = ?{}", idx));
+        params.push((idx, turso_core::Value::from_text(node.clone())));
+        idx += 1;
+    }
+    if let Some(since) = filter.since_ts {
+        sql.push_str(&format!(" AND hlc_ts >= ?{}", idx));
+        params.push((idx, turso_core::Value::from_i64(since as i64)));
+        idx += 1;
+    }
+    if let Some(until) = filter.until_ts {
+        sql.push_str(&format!(" AND hlc_ts <= ?{}", idx));
+        params.push((idx, turso_core::Value::from_i64(until as i64)));
+        idx += 1;
+    }
+
+    let has_doc_filter = filter.doc_id.is_some();
+    let fetch_limit = if has_doc_filter { limit + offset + 200 } else { limit };
+    let fetch_offset = if has_doc_filter { 0 } else { offset };
+
+    sql.push_str(" ORDER BY hlc_ts DESC");
+    sql.push_str(&format!(" LIMIT ?{}", idx));
+    params.push((idx, turso_core::Value::from_i64(fetch_limit as i64)));
+    idx += 1;
+    sql.push_str(&format!(" OFFSET ?{}", idx));
+    params.push((idx, turso_core::Value::from_i64(fetch_offset as i64)));
+
+    let mut stmt = match state.db.prepare(&sql) {
+        Ok(s) => s,
         Err(_) => return vec![],
     };
 
-    let prefix = format!("evt:{}:", org_name);
-    let range = match event_log.range(prefix.as_str()..) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
+    for (i, val) in &params {
+        if stmt.bind_at(NonZero::new(*i).unwrap(), val.clone()).is_err() {
+            return vec![];
+        }
+    }
 
     let mut results: Vec<AuditEntry> = Vec::new();
+    loop {
+        match stmt.step() {
+            Ok(turso_core::StepResult::Row) => {}
+            Ok(turso_core::StepResult::Done) => break,
+            Ok(turso_core::StepResult::IO | turso_core::StepResult::Yield) => {
+                let _ = stmt._io().step();
+                continue;
+            }
+            Ok(turso_core::StepResult::Interrupt | turso_core::StepResult::Busy) => {
+                continue;
+            }
+            _ => break,
+        }
 
-    for item in range {
-        let (key, value) = match item {
-            Ok(kv) => kv,
-            Err(_) => continue,
+        let row = match stmt.row() {
+            Some(r) => r,
+            None => continue,
         };
-        let k = key.value();
-        if !k.starts_with(&prefix) {
-            break;
-        }
 
-        let val: serde_json::Value = match serde_json::from_slice(value.value()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let event_type = val["type"].as_str().unwrap_or("").to_string();
-        let hlc_ts = val["hlc"]["ts"].as_u64().unwrap_or(0);
-
-        // Apply filters
-        if let Some(ref f_entity) = filter.entity {
-            let entity = entity_from_event_type(&event_type);
-            if entity != f_entity {
-                continue;
-            }
-        }
-        if let Some(ref f_type) = filter.event_type {
-            if !event_type.contains(f_type.as_str()) {
-                continue;
-            }
-        }
-        if let Some(ref f_node) = filter.node {
-            let hlc_node = val["hlc"]["node"].as_str().unwrap_or("");
-            if hlc_node != f_node {
-                continue;
-            }
-        }
-        if let Some(since) = filter.since_ts {
-            if hlc_ts < since {
-                continue;
-            }
-        }
-        if let Some(until) = filter.until_ts {
-            if hlc_ts > until {
-                continue;
-            }
-        }
-        if let Some(ref f_doc) = filter.doc_id {
-            let payload = val.get("payload").cloned().unwrap_or_default();
-            let doc_id = payload.get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if doc_id != f_doc {
-                continue;
-            }
-        }
-
-        let entity = entity_from_event_type(&event_type);
-        let payload = val.get("payload").cloned().unwrap_or_default();
+        let key: String = match row.get(0) { Ok(v) => v, Err(_) => continue };
+        let event_type: String = match row.get(1) { Ok(v) => v, Err(_) => continue };
+        let hlc_ts: i64 = match row.get(2) { Ok(v) => v, Err(_) => continue };
+        let schema_version: i64 = match row.get(3) { Ok(v) => v, Err(_) => continue };
+        let entity: String = match row.get(4) { Ok(v) => v, Err(_) => continue };
+        let payload_str: String = match row.get(5) { Ok(v) => v, Err(_) => continue };
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap_or_default();
 
         let doc_id = payload
             .get("id")
@@ -115,33 +122,25 @@ pub fn audit_query(
             .unwrap_or("")
             .to_string();
 
-        let schema_version = val["schema_version"].as_u64().unwrap_or(1) as u32;
-
-        let event_type_owned = event_type.clone();
+        if let Some(ref f_doc) = filter.doc_id {
+            if doc_id != *f_doc {
+                continue;
+            }
+        }
 
         results.push(AuditEntry {
-            key: k.to_string(),
-            event_type: event_type_owned,
-            hlc_ts,
-            schema_version,
-            entity: entity.to_string(),
+            key,
+            event_type,
+            hlc_ts: hlc_ts as u64,
+            schema_version: schema_version as u32,
+            entity,
             doc_id,
             payload,
         });
-
-        if results.len() >= limit + offset {
-            break;
-        }
     }
 
-    // Sort by HLC timestamp descending (most recent first)
-    results.sort_by(|a, b| b.hlc_ts.cmp(&a.hlc_ts));
-
-    if offset < results.len() {
-        results = results.split_off(offset);
-    }
-    if results.len() > limit {
-        results.truncate(limit);
+    if has_doc_filter {
+        results = results.into_iter().skip(offset).take(limit).collect();
     }
 
     results

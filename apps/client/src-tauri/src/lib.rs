@@ -12,9 +12,11 @@ pub mod audit;
 pub mod indexes;
 pub mod search;
 pub mod gossip;
+pub mod storage;
 pub mod catchup;
+pub mod live;
 
-use syntrix_schema::build_registry;
+use syntrix_core::ENTITY_NAMES;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SchemaFilter {
@@ -364,7 +366,8 @@ pub fn search_entity_impl(
     if resolved_org_id.is_empty() { return Ok(vec![]); }
 
     let limit_val = limit.unwrap_or(20);
-    state.indexer.search_engine.search(&resolved_org_id, query, entities, limit_val).map_err(|e| e.to_string())
+    let engine = search::SearchEngine::new(state.conn());
+    engine.search(&resolved_org_id, query, entities, limit_val).map_err(|e| e.to_string())
 }
 
 // ===== Thin Tauri command wrappers =====
@@ -400,8 +403,15 @@ fn search_entity(
 
 #[tauri::command]
 fn get_schema_registry() -> Result<serde_json::Value, String> {
-    let registry = build_registry();
-    Ok(registry.export_json())
+    let entities: Vec<serde_json::Value> = ENTITY_NAMES.iter().map(|name| {
+        serde_json::json!({
+            "name": name,
+            "version": 1,
+            "fields": [],
+            "indexes": [],
+        })
+    }).collect();
+    Ok(serde_json::to_value(entities).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -442,6 +452,26 @@ fn seed_dev_data(state: tauri::State<'_, Mutex<AppState>>) -> Result<usize, Stri
     seed::seed_dev_data(&s).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn live_subscribe(
+    state: tauri::State<'_, Mutex<AppState>>,
+    sql: String,
+    depends_on: Vec<String>,
+) -> Result<u64, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.live_manager.subscribe(sql, depends_on))
+}
+
+#[tauri::command]
+fn live_unsubscribe(
+    state: tauri::State<'_, Mutex<AppState>>,
+    id: u64,
+) -> Result<(), String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    s.live_manager.unsubscribe(id);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
@@ -461,6 +491,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let app_state_setup = app.state::<Mutex<AppState>>();
+            if let Ok(state) = app_state_setup.lock() {
+                state.live_manager.set_app_handle(app.handle().clone());
+            }
             let handle = app.state::<LogHandle>();
             let rx = handle.subscribe_tail();
             let app_handle = app.handle().clone();
@@ -498,6 +532,7 @@ pub fn run() {
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
             get_schema_registry, audit_query,
             query_logs, summarize_logs, start_tail_logs,
+            live_subscribe, live_unsubscribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");

@@ -7,7 +7,6 @@ description = "Headless test harness helpers for syntrix-admin and syntrix-clien
 [dependencies]
 syntrix-core = { path = "../syntrix-core" }
 syntrix-network = { path = "../syntrix-network" }
-syntrix-schema = { path = "../syntrix-schema" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"

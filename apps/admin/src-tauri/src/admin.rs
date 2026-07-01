@@ -2,7 +2,7 @@ use crate::identity::AppState;
 use crate::{DeviceInfo, RoleInfo};
 use syntrix_network::codecs::InvitePayload;
 pub use syntrix_core::{build_device_addr_string, SyncInfo};
-use syntrix_schema::all_schemas;
+use syntrix_core::ENTITY_NAMES;
 use std::collections::HashMap;
 
 
@@ -131,10 +131,9 @@ pub async fn send_invite(
 }
 
 fn validate_permissions(perms: &[String]) -> Result<(), String> {
-    let schemas = all_schemas();
     for p in perms {
         if p == "*" { continue; }
-        if schemas.iter().any(|s| s.name == *p) { continue; }
+        if ENTITY_NAMES.contains(&p.as_str()) { continue; }
         return Err(format!("Permiso inválido: '{}' no es una entidad conocida ni '*'", p));
     }
     Ok(())

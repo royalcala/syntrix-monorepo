@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::identity::AppState;
-use syntrix_schema::{build_registry, can_access};
+use syntrix_core::{can_access, schema_version_for};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Hlc {
@@ -39,20 +39,12 @@ pub fn entity_from_event_type(event_type: &str) -> &str {
     }
 }
 
-fn schema_version_for(entity: &str) -> u32 {
-    build_registry()
-        .get(entity)
-        .map(|s| s.version)
-        .unwrap_or(1)
-}
-
 pub fn upcast_payload(entity: &str, payload: serde_json::Value, event_schema_version: u32) -> serde_json::Value {
-    let current_version = schema_version_for(entity);
+    let current_version = syntrix_core::schema_version_for(entity);
     if event_schema_version == current_version {
         return payload;
     }
-    let upcasters = syntrix_schema::collect_upcasters();
-    syntrix_schema::apply_upcasters(payload, event_schema_version, current_version, &upcasters)
+    syntrix_core::upcast_payload(payload, event_schema_version, current_version)
 }
 
 pub fn commit_event(
@@ -109,6 +101,8 @@ pub fn commit_event(
 
     let upcasted = upcast_payload(entity, payload_val, schema_version);
     let _ = indexer.upsert_document(org_id, entity, &doc_id, &upcasted);
+
+    state.live_manager().notify_table_changed(&state.conn(), &[entity.to_string()]);
 
     // Broadcast via P2P node gossipsub
     if let Ok(event_bytes) = serde_json::to_vec(&value) {

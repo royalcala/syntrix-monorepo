@@ -9,12 +9,12 @@ pub async fn admin_catchup_from_peer(
     p2p: &P2PNode,
     peer_id: libp2p::PeerId,
     org_id: &str,
-    db: &Arc<redb::Database>,
+    db: &Arc<turso_core::Connection>,
 ) -> anyhow::Result<()> {
     let events = p2p.request_catchup(peer_id, org_id.to_string(), 0).await?;
     let count = events.len();
     for event in &events {
-        crate::gossip::write_event_to_redb(db, org_id, event);
+        crate::gossip::write_event_to_limbo(db, org_id, event);
     }
 
     tracing::info!(

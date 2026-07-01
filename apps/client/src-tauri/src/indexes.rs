@@ -1,18 +1,30 @@
-use redb::{Database, TableDefinition, ReadableTable};
+use std::num::NonZero;
 use std::path::PathBuf;
-use serde_json::Value;
 use std::sync::Arc;
-use crate::search::SearchEngine;
-use syntrix_schema::{build_registry, SchemaRegistry, FieldType, encoded::encode_value};
 
-const HLC_TRACKER: TableDefinition<&str, &[u8]> = TableDefinition::new("hlc_tracker");
-const INDEXES: TableDefinition<&str, &[u8]> = TableDefinition::new("indexes");
-const COMPOSITE: TableDefinition<&str, &[u8]> = TableDefinition::new("composite");
-const DOCUMENTS: TableDefinition<&str, &[u8]> = TableDefinition::new("documents");
-const EVENT_LOG: TableDefinition<&str, &[u8]> = TableDefinition::new("event_log");
-const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("members");
-const ROLES: TableDefinition<&str, &[u8]> = TableDefinition::new("roles");
-const HEARTBEATS: TableDefinition<&str, &[u8]> = TableDefinition::new("heartbeats");
+fn entity_table_name(entity: &str) -> anyhow::Result<&'static str> {
+    match entity {
+        "customers" | "customer" => Ok("customers"),
+        "suppliers" | "supplier" => Ok("suppliers"),
+        "products" | "product" => Ok("products"),
+        "invoices" | "invoice" => Ok("invoices"),
+        "orders" | "order" => Ok("orders"),
+        "payroll" => Ok("payroll"),
+        _ => anyhow::bail!("unknown entity: {}", entity),
+    }
+}
+
+fn entity_from_event_type(event_type: &str) -> &str {
+    match event_type.split('.').next().unwrap_or(event_type) {
+        "invoice" | "invoices" => "invoices",
+        "order" | "orders" => "orders",
+        "product" | "products" => "products",
+        "customer" | "customers" => "customers",
+        "supplier" | "suppliers" => "suppliers",
+        "payroll" => "payroll",
+        other => other,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct QueryFilter {
@@ -62,58 +74,62 @@ pub struct EventEntry {
     pub hlc: HlcTimestamp,
     pub schema_version: u32,
     pub entity: String,
-    pub payload: Value,
+    pub payload: serde_json::Value,
 }
 
-pub struct RelationalEngine {
-    db: Arc<Database>,
-    pub search_engine: SearchEngine,
-    pub schema_registry: SchemaRegistry,
+pub struct SqlEngine {
+    pub conn: Arc<turso_core::Connection>,
 }
 
-impl RelationalEngine {
+impl SqlEngine {
     pub fn new(data_dir: PathBuf) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&data_dir)?;
-        let db_path = data_dir.join("syntrix_indexes.redb");
-        let db = Database::create(db_path)?;
-
-        let write_txn = db.begin_write()?;
-        {
-            let _ = write_txn.open_table(DOCUMENTS)?;
-            let _ = write_txn.open_table(INDEXES)?;
-            let _ = write_txn.open_table(COMPOSITE)?;
-            let _ = write_txn.open_table(HLC_TRACKER)?;
-            let _ = write_txn.open_table(EVENT_LOG)?;
-            let _ = write_txn.open_table(MEMBERS)?;
-            let _ = write_txn.open_table(ROLES)?;
-            let _ = write_txn.open_table(HEARTBEATS)?;
-        }
-        write_txn.commit()?;
-
-        let schema_registry = build_registry();
-        let search_engine = SearchEngine::new(data_dir.clone())?;
-
-        Ok(Self { db: Arc::new(db), search_engine, schema_registry })
+        let conn = crate::storage::open_limbo(&data_dir)?;
+        crate::storage::run_migrations(&conn)?;
+        Ok(Self { conn })
     }
 
-    pub fn append_event(&self, org_id: &str, event_json: &Value) -> anyhow::Result<String> {
+    pub fn with_connection(conn: Arc<turso_core::Connection>) -> Self {
+        Self { conn }
+    }
+
+    pub fn append_event(&self, org_id: &str, event_json: &serde_json::Value) -> anyhow::Result<String> {
         let event_type = event_json["type"].as_str().unwrap_or("unknown");
-        let _entity = entity_from_event_type(event_type);
+        let entity = entity_from_event_type(event_type);
 
         let hlc_val = &event_json["hlc"];
         let hlc_ts = hlc_val["ts"].as_u64().unwrap_or(0);
         let hlc_count = hlc_val["count"].as_u64().unwrap_or(0);
         let hlc_node = hlc_val["node"].as_str().unwrap_or("");
+        let schema_version = event_json["schema_version"].as_u64().unwrap_or(1);
+        let payload = event_json.get("payload").cloned().unwrap_or_default();
+        let payload_str = serde_json::to_string(&payload)?;
 
         let key = format!("evt:{}:{:020}:{:08}:{}", org_id, hlc_ts, hlc_count, hlc_node);
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut event_log = write_txn.open_table(EVENT_LOG)?;
-            let bytes = serde_json::to_vec(event_json)?;
-            event_log.insert(key.as_str(), bytes.as_slice())?;
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO event_log (key, org_id, event_type, hlc_ts, hlc_count, hlc_node, schema_version, entity, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(key.clone()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(event_type.to_string()))?;
+        stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_i64(hlc_ts as i64))?;
+        stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_i64(hlc_count as i64))?;
+        stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(hlc_node.to_string()))?;
+        stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_i64(schema_version as i64))?;
+        stmt.bind_at(NonZero::new(8).unwrap(), turso_core::Value::from_text(entity.to_string()))?;
+        stmt.bind_at(NonZero::new(9).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("append_event: database busy or interrupted");
+                }
+            }
         }
-        write_txn.commit()?;
 
         Ok(key)
     }
@@ -124,155 +140,245 @@ impl RelationalEngine {
         cursor_ts: u64,
         limit: usize,
     ) -> anyhow::Result<Vec<EventEntry>> {
-        let read_txn = self.db.begin_read()?;
-        let event_log = read_txn.open_table(EVENT_LOG)?;
-
-        let prefix = format!("evt:{}:", org_id);
-        let range = event_log.range(prefix.as_str()..)?;
-
-        let mut results = Vec::new();
-        for item in range {
-            let (key, value) = item?;
-            let k = key.value();
-            if !k.starts_with(&prefix) { break; }
-
-            if let Ok(val) = serde_json::from_slice::<Value>(value.value()) {
-                let hlc_ts = val["hlc"]["ts"].as_u64().unwrap_or(0);
-                if hlc_ts <= cursor_ts { continue; }
-
-                let event_type_str = val["type"].as_str().unwrap_or("");
-                let entity = entity_from_event_type(event_type_str);
-                let payload = val.get("payload").cloned().unwrap_or_default();
-
-                results.push(EventEntry {
-                    key: k.to_string(),
-                    event_type: event_type_str.to_string(),
-                    hlc: HlcTimestamp {
-                        ts: hlc_ts,
-                        count: val["hlc"]["count"].as_u64().unwrap_or(0) as u32,
-                        node: val["hlc"]["node"].as_str().unwrap_or("").to_string(),
-                    },
-                    schema_version: val["schema_version"].as_u64().unwrap_or(1) as u32,
-                    entity: entity.to_string(),
-                    payload,
-                });
-            }
-
-            if results.len() >= limit { break; }
-        }
-
-        Ok(results)
-    }
-
-    pub fn upsert_member(&self, org_id: &str, node_id: &str, member_json: &Value) -> anyhow::Result<()> {
-        let key = format!("members:{}:{}", org_id, node_id);
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut members = write_txn.open_table(MEMBERS)?;
-            members.insert(key.as_str(), serde_json::to_vec(member_json)?.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    pub fn get_members(&self, org_id: &str) -> anyhow::Result<Vec<Value>> {
-        let read_txn = self.db.begin_read()?;
-        let members = read_txn.open_table(MEMBERS)?;
-        let prefix = format!("members:{}:", org_id);
-        let range = members.range(prefix.as_str()..)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT key, event_type, hlc_ts, hlc_count, hlc_node, schema_version, entity, payload FROM event_log WHERE org_id=?1 AND hlc_ts>?2 ORDER BY hlc_ts, hlc_count LIMIT ?3",
+        )?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_i64(cursor_ts as i64))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(limit as i64))?;
 
         let mut results = Vec::new();
-        for item in range {
-            let (key, value) = item?;
-            if !key.value().starts_with(&prefix) { break; }
-            if let Ok(val) = serde_json::from_slice::<Value>(value.value()) {
-                results.push(val);
-            }
-        }
-        Ok(results)
-    }
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let key: String = row.get(0)?;
+                        let event_type: String = row.get(1)?;
+                        let hlc_ts: i64 = row.get(2)?;
+                        let hlc_count: i64 = row.get(3)?;
+                        let hlc_node: String = row.get(4)?;
+                        let schema_version: i64 = row.get(5)?;
+                        let entity: String = row.get(6)?;
+                        let payload_str: String = row.get(7)?;
+                        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap_or_default();
 
-    pub fn upsert_role_cfg(&self, org_id: &str, role_name: &str, role_json: &Value) -> anyhow::Result<()> {
-        let key = format!("roles:{}:{}", org_id, role_name);
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut roles = write_txn.open_table(ROLES)?;
-            roles.insert(key.as_str(), serde_json::to_vec(role_json)?.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    pub fn get_roles(&self, org_id: &str) -> anyhow::Result<Vec<Value>> {
-        let read_txn = self.db.begin_read()?;
-        let roles = read_txn.open_table(ROLES)?;
-        let prefix = format!("roles:{}:", org_id);
-        let range = roles.range(prefix.as_str()..)?;
-
-        let mut results = Vec::new();
-        for item in range {
-            let (key, value) = item?;
-            if !key.value().starts_with(&prefix) { break; }
-            if let Ok(val) = serde_json::from_slice::<Value>(value.value()) {
-                results.push(val);
-            }
-        }
-        Ok(results)
-    }
-
-    pub fn upsert_heartbeat(&self, org_id: &str, node_id: &str, hb_json: &Value) -> anyhow::Result<()> {
-        let key = format!("heartbeat:{}:{}", org_id, node_id);
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut heartbeats = write_txn.open_table(HEARTBEATS)?;
-            heartbeats.insert(key.as_str(), serde_json::to_vec(hb_json)?.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    pub fn get_heartbeats(&self, org_id: &str) -> anyhow::Result<std::collections::HashMap<String, i64>> {
-        let read_txn = self.db.begin_read()?;
-        let heartbeats = read_txn.open_table(HEARTBEATS)?;
-        let prefix = format!("heartbeat:{}:", org_id);
-        let range = heartbeats.range(prefix.as_str()..)?;
-
-        let mut results = std::collections::HashMap::new();
-        for item in range {
-            let (key, value) = item?;
-            let k = key.value();
-            if !k.starts_with(&prefix) { break; }
-            if let Some(node_id) = k.strip_prefix(&prefix) {
-                if let Ok(val) = serde_json::from_slice::<Value>(value.value()) {
-                    if let Some(ts) = val["ts"].as_i64() {
-                        results.insert(node_id.to_string(), ts);
+                        results.push(EventEntry {
+                            key,
+                            event_type,
+                            hlc: HlcTimestamp {
+                                ts: hlc_ts as u64,
+                                count: hlc_count as u32,
+                                node: hlc_node,
+                            },
+                            schema_version: schema_version as u32,
+                            entity,
+                            payload,
+                        });
                     }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("query_events_since: database busy or interrupted");
                 }
             }
         }
+
+        Ok(results)
+    }
+
+    pub fn upsert_member(&self, org_id: &str, node_id: &str, member_json: &serde_json::Value) -> anyhow::Result<()> {
+        let data = serde_json::to_string(member_json)?;
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO members (org_id, node_id, data) VALUES (?1, ?2, ?3)",
+        )?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(data.clone()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_member: database busy or interrupted");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_members(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        let mut stmt = self.conn.prepare("SELECT data FROM members WHERE org_id=?1")?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+
+        let mut results = Vec::new();
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let data_str: String = row.get(0)?;
+                        if let Ok(val) = serde_json::from_str(&data_str) {
+                            results.push(val);
+                        }
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("get_members: database busy or interrupted");
+                }
+            }
+        }
+
         Ok(results)
     }
 
     pub fn delete_member(&self, org_id: &str, node_id: &str) -> anyhow::Result<()> {
-        let key = format!("members:{}:{}", org_id, node_id);
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut members = write_txn.open_table(MEMBERS)?;
-            members.remove(key.as_str())?;
+        let mut stmt = self.conn.prepare("DELETE FROM members WHERE org_id=?1 AND node_id=?2")?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("delete_member: database busy or interrupted");
+                }
+            }
         }
-        write_txn.commit()?;
         Ok(())
     }
 
-    pub fn delete_role(&self, org_id: &str, role_name: &str) -> anyhow::Result<()> {
-        let key = format!("roles:{}:{}", org_id, role_name);
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut roles = write_txn.open_table(ROLES)?;
-            roles.remove(key.as_str())?;
+    pub fn upsert_role_cfg(&self, org_id: &str, role_name: &str, role_json: &serde_json::Value) -> anyhow::Result<()> {
+        let data = serde_json::to_string(role_json)?;
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO roles (org_id, role_name, data) VALUES (?1, ?2, ?3)",
+        )?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role_name.to_string()))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(data.clone()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_role_cfg: database busy or interrupted");
+                }
+            }
         }
-        write_txn.commit()?;
         Ok(())
+    }
+
+    pub fn get_roles(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        let mut stmt = self.conn.prepare("SELECT data FROM roles WHERE org_id=?1")?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+
+        let mut results = Vec::new();
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let data_str: String = row.get(0)?;
+                        if let Ok(val) = serde_json::from_str(&data_str) {
+                            results.push(val);
+                        }
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("get_roles: database busy or interrupted");
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn delete_role(&self, org_id: &str, role_name: &str) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare("DELETE FROM roles WHERE org_id=?1 AND role_name=?2")?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role_name.to_string()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("delete_role: database busy or interrupted");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn upsert_heartbeat(&self, org_id: &str, node_id: &str, hb_json: &serde_json::Value) -> anyhow::Result<()> {
+        let ts = hb_json["ts"].as_i64().unwrap_or(0);
+        let data = serde_json::to_string(hb_json)?;
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO heartbeats (org_id, node_id, ts, data) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(ts))?;
+        stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(data.clone()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_heartbeat: database busy or interrupted");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_heartbeats(&self, org_id: &str) -> anyhow::Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare("SELECT node_id, ts FROM heartbeats WHERE org_id=?1")?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+
+        let mut results = std::collections::HashMap::new();
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let node_id: String = row.get(0)?;
+                        let ts: i64 = row.get(1)?;
+                        results.insert(node_id, ts);
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("get_heartbeats: database busy or interrupted");
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     pub fn upsert_document(
@@ -280,9 +386,38 @@ impl RelationalEngine {
         org_id: &str,
         entity: &str,
         doc_id: &str,
-        json_payload: &Value,
+        json_payload: &serde_json::Value,
     ) -> anyhow::Result<()> {
-        self.upsert_document_internal(org_id, entity, doc_id, json_payload, None)
+        let table = entity_table_name(entity)?;
+        let payload_str = serde_json::to_string(json_payload)?;
+        let fts_title = extract_title(json_payload);
+        let fts_body = extract_body(json_payload);
+
+        let sql = format!(
+            "INSERT OR REPLACE INTO {} (org_id, doc_id, payload, fts_title, fts_body) VALUES (?1, ?2, ?3, ?4, ?5)",
+            table
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
+        stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(fts_title.clone()))?;
+        stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(fts_body.clone()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_document: database busy or interrupted");
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn upsert_document_with_hlc(
@@ -290,136 +425,102 @@ impl RelationalEngine {
         org_id: &str,
         entity: &str,
         doc_id: &str,
-        json_payload: &Value,
+        json_payload: &serde_json::Value,
         hlc: &HlcTimestamp,
     ) -> anyhow::Result<()> {
-        let hlc_key = format!("hlc:{}:{}:{}", org_id, entity, doc_id);
-        if let Ok(read_txn) = self.db.begin_read() {
-            if let Ok(hlc_table) = read_txn.open_table(HLC_TRACKER) {
-                if let Ok(Some(existing)) = hlc_table.get(hlc_key.as_str()) {
-                    if let Ok(stored) = serde_json::from_slice::<HlcTimestamp>(existing.value()) {
+        // Check existing HLC from tracker
+        let mut stmt = self.conn.prepare(
+            "SELECT hlc_ts, hlc_count, hlc_node FROM hlc_tracker WHERE org_id=?1 AND entity=?2 AND doc_id=?3",
+        )?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(entity.to_string()))?;
+        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+
+        let mut skip = false;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let stored_ts: i64 = row.get(0)?;
+                        let stored_count: i64 = row.get(1)?;
+                        let stored_node: String = row.get(2)?;
+                        let stored = HlcTimestamp {
+                            ts: stored_ts as u64,
+                            count: stored_count as u32,
+                            node: stored_node,
+                        };
                         if hlc <= &stored {
-                            return Ok(());
+                            skip = true;
                         }
                     }
                 }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_document_with_hlc: database busy or interrupted");
+                }
             }
         }
-        self.upsert_document_internal(org_id, entity, doc_id, json_payload, Some(hlc))
-    }
 
-    fn upsert_document_internal(
-        &self,
-        org_id: &str,
-        entity: &str,
-        doc_id: &str,
-        json_payload: &Value,
-        hlc: Option<&HlcTimestamp>,
-    ) -> anyhow::Result<()> {
-        let doc_key = format!("doc:{}:{}:{}", org_id, entity, doc_id);
-        let schema = self.schema_registry.get(entity);
+        drop(stmt);
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut docs = write_txn.open_table(DOCUMENTS)?;
-            let mut idx = write_txn.open_table(INDEXES)?;
-            let mut comp = write_txn.open_table(COMPOSITE)?;
-            let mut hlc_table = write_txn.open_table(HLC_TRACKER)?;
+        if skip {
+            return Ok(());
+        }
 
-            if let Some(old_bytes) = docs.get(doc_key.as_str())? {
-                if let Ok(old_json) = serde_json::from_slice::<Value>(old_bytes.value()) {
-                    remove_old_indices(&mut idx, &mut comp, org_id, entity, doc_id, &old_json, schema);
+        // Upsert document
+        let table = entity_table_name(entity)?;
+        let payload_str = serde_json::to_string(json_payload)?;
+        let fts_title = extract_title(json_payload);
+        let fts_body = extract_body(json_payload);
+
+        let sql = format!(
+            "INSERT OR REPLACE INTO {} (org_id, doc_id, payload, fts_title, fts_body) VALUES (?1, ?2, ?3, ?4, ?5)",
+            table
+        );
+        let mut stmt2 = self.conn.prepare(&sql)?;
+        stmt2.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt2.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+        stmt2.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
+        stmt2.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(fts_title.clone()))?;
+        stmt2.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(fts_body.clone()))?;
+        loop {
+            match stmt2.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt2._io().step()?;
                 }
-            }
-
-            let new_bytes = serde_json::to_vec(json_payload)?;
-            docs.insert(doc_key.as_str(), new_bytes.as_slice())?;
-
-            if let Some(s) = schema {
-                for field in &s.fields {
-                    if !field.indexed { continue; }
-                    if let Some(v) = json_payload.get(&field.name) {
-                        let val_str = encode_value(v);
-                        let idx_key = format!("idx:{}:{}:{}:{}:{}", org_id, entity, field.name, val_str, doc_id);
-                        let _ = idx.insert(idx_key.as_str(), &[] as &[u8]);
-                    }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_document_with_hlc: database busy or interrupted");
                 }
-
-                for index_def in &s.indexes {
-                    let parts: Vec<String> = index_def.fields
-                        .iter()
-                        .filter_map(|f| json_payload.get(f))
-                        .map(encode_value)
-                        .collect();
-                    if parts.len() == index_def.fields.len() {
-                        let comp_key = format!("compidx:{}:{}:{}:{}:{}",
-                            org_id, entity, index_def.name, parts.join(":"), doc_id);
-                        let _ = comp.insert(comp_key.as_str(), &[] as &[u8]);
-                    }
-                }
-            } else {
-                if let Some(obj) = json_payload.as_object() {
-                    for (k, v) in obj {
-                        if v.is_string() || v.is_number() || v.is_boolean() {
-                            let val_str = encode_value(v);
-                            let idx_key = format!("idx:{}:{}:{}:{}:{}", org_id, entity, k, val_str, doc_id);
-                            let _ = idx.insert(idx_key.as_str(), &[] as &[u8]);
-                        }
-                    }
-                }
-            }
-
-            if let Some(hlc_val) = hlc {
-                let hlc_key = format!("hlc:{}:{}:{}", org_id, entity, doc_id);
-                let _ = hlc_table.insert(hlc_key.as_str(), serde_json::to_vec(hlc_val)?.as_slice());
             }
         }
-        write_txn.commit()?;
+        drop(stmt2);
 
-        if let Some(s) = schema {
-            let searchable: Vec<&syntrix_schema::FieldSchema> = s.fields.iter().filter(|f| f.searchable).collect();
-            let mut title = doc_id.to_string();
-            let mut body_parts = Vec::new();
-
-            for field in &searchable {
-                if field.name == "name" || field.name == "title" {
-                    if let Some(v) = json_payload.get(&field.name).and_then(|v| v.as_str()) {
-                        title = v.to_string();
-                        break;
-                    }
+        // Update HLC tracker
+        let mut stmt3 = self.conn.prepare(
+            "INSERT OR REPLACE INTO hlc_tracker (org_id, entity, doc_id, hlc_ts, hlc_count, hlc_node) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        stmt3.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt3.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(entity.to_string()))?;
+        stmt3.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+        stmt3.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_i64(hlc.ts as i64))?;
+        stmt3.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_i64(hlc.count as i64))?;
+        stmt3.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(hlc.node.clone()))?;
+        loop {
+            match stmt3.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt3._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("upsert_document_with_hlc: database busy or interrupted");
                 }
             }
-
-            for field in &searchable {
-                if let Some(v) = json_payload.get(&field.name) {
-                    if v.is_string() || v.is_number() || v.is_boolean() {
-                        body_parts.push(encode_value(v));
-                    }
-                }
-            }
-
-            let body = body_parts.join(" ");
-            self.search_engine.index_document(org_id, entity, doc_id, &title, &body)?;
-        } else {
-            let mut title = doc_id.to_string();
-            let mut body_parts = Vec::new();
-
-            if let Some(obj) = json_payload.as_object() {
-                for key in &["name", "title", "label"] {
-                    if let Some(v) = obj.get(*key).and_then(|v| v.as_str()) {
-                        title = v.to_string();
-                        break;
-                    }
-                }
-                for (_k, v) in obj {
-                    if v.is_string() || v.is_number() || v.is_boolean() {
-                        body_parts.push(encode_value(v));
-                    }
-                }
-            }
-
-            let body = body_parts.join(" ");
-            self.search_engine.index_document(org_id, entity, doc_id, &title, &body)?;
         }
 
         Ok(())
@@ -430,215 +531,168 @@ impl RelationalEngine {
         org_id: &str,
         entity: &str,
         options: &QueryOptions,
-    ) -> anyhow::Result<Vec<Value>> {
-        let read_txn = self.db.begin_read()?;
-        let docs_table = read_txn.open_table(DOCUMENTS)?;
-        let idx_table = read_txn.open_table(INDEXES)?;
-        let comp_table = read_txn.open_table(COMPOSITE)?;
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let table = entity_table_name(entity)?;
 
-        let mut doc_ids: Vec<String> = Vec::new();
+        let mut sql = format!("SELECT payload FROM {} WHERE org_id=?1", table);
+        let mut param_idx = 2u32;
 
-        if options.filters.is_empty() {
-            let prefix = format!("doc:{}:{}:", org_id, entity);
-            let range = docs_table.range(prefix.as_str()..)?;
-            for item in range {
-                let (key, _) = item?;
-                let k = key.value();
-                if !k.starts_with(&prefix) { break; }
-                if let Some(did) = k.rsplit(':').next() {
-                    doc_ids.push(did.to_string());
-                }
-            }
-        } else if let Some(comp_match) = self.try_composite_index(org_id, entity, &options.filters) {
-            let prefix = format!("compidx:{}:{}:{}:", org_id, entity, comp_match);
-            let range = comp_table.range(prefix.as_str()..)?;
-            for item in range {
-                let (key, _) = item?;
-                let k = key.value();
-                if !k.starts_with(&prefix) { break; }
-                if let Some(did) = k.rsplit(':').next() {
-                    doc_ids.push(did.to_string());
-                }
-            }
-        } else {
-            for filter in &options.filters {
-                let prefix = format!("idx:{}:{}:{}:{}:", org_id, entity, filter.field, filter.value);
-                let mut ids = Vec::new();
-                let range = idx_table.range(prefix.as_str()..)?;
-                for item in range {
-                    let (key, _) = item?;
-                    let k = key.value();
-                    if !k.starts_with(&prefix) { break; }
-                    if let Some(did) = k.rsplit(':').next() {
-                        ids.push(did.to_string());
-                    }
-                }
-                if doc_ids.is_empty() {
-                    doc_ids = ids;
-                } else {
-                    doc_ids = intersect_sorted(&doc_ids, &ids);
-                }
-                if doc_ids.is_empty() { break; }
-            }
-        }
+        let filter_clauses: Vec<String> = options.filters.iter().map(|f| {
+            let clause = format!("json_extract(payload, '$.{}') = ?{}", f.field, param_idx);
+            param_idx += 1;
+            clause
+        }).collect();
 
-        let mut results: Vec<Value> = Vec::new();
-        for did in &doc_ids {
-            let doc_key = format!("doc:{}:{}:{}", org_id, entity, did);
-            if let Some(bytes) = docs_table.get(doc_key.as_str())? {
-                if let Ok(json) = serde_json::from_slice::<Value>(bytes.value()) {
-                    results.push(json);
-                }
-            }
+        for clause in &filter_clauses {
+            sql.push_str(" AND ");
+            sql.push_str(clause);
         }
 
         if let Some(ref sort_field) = options.sort {
-            let is_numeric = self.schema_registry.get(entity)
-                .and_then(|s| s.field(&sort_field))
-                .map(|f| f.field_type == FieldType::Number)
-                .unwrap_or(false);
-            if is_numeric {
-                results.sort_by(|a, b| {
-                    let a_val = a.get(sort_field).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let b_val = b.get(sort_field).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    a_val.total_cmp(&b_val)
-                });
-            } else {
-                results.sort_by(|a, b| {
-                    let a_val = a.get(sort_field).and_then(|v| v.as_str()).unwrap_or("");
-                    let b_val = b.get(sort_field).and_then(|v| v.as_str()).unwrap_or("");
-                    a_val.cmp(b_val)
-                });
-            }
+            sql.push_str(&format!(" ORDER BY json_extract(payload, '$.{}')", sort_field));
         }
 
-        let offset = options.offset.unwrap_or(0);
-        let limit = options.limit.unwrap_or(usize::MAX);
-        if offset > 0 && offset < results.len() {
-            results = results.split_off(offset);
+        if let Some(limit) = options.limit {
+            sql.push_str(&format!(" LIMIT ?{}", param_idx));
+            param_idx += 1;
         }
-        if results.len() > limit {
-            results.truncate(limit);
+
+        if let Some(offset) = options.offset {
+            sql.push_str(&format!(" OFFSET ?{}", param_idx));
+            param_idx += 1;
+        }
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+
+        let mut bind_idx = 2u32;
+        for filter in &options.filters {
+            stmt.bind_at(
+                NonZero::new(bind_idx as usize).unwrap(),
+                turso_core::Value::from_text(filter.value.clone()),
+            )?;
+            bind_idx += 1;
+        }
+
+        if let Some(limit) = options.limit {
+            stmt.bind_at(
+                NonZero::new(bind_idx as usize).unwrap(),
+                turso_core::Value::from_i64(limit as i64),
+            )?;
+            bind_idx += 1;
+        }
+
+        if let Some(offset) = options.offset {
+            stmt.bind_at(
+                NonZero::new(bind_idx as usize).unwrap(),
+                turso_core::Value::from_i64(offset as i64),
+            )?;
+        }
+
+        let mut results = Vec::new();
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let payload_str: String = row.get(0)?;
+                        if let Ok(val) = serde_json::from_str(&payload_str) {
+                            results.push(val);
+                        }
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("query: database busy or interrupted");
+                }
+            }
         }
 
         Ok(results)
     }
 
-    fn try_composite_index(&self, _org_id: &str, entity: &str, filters: &[QueryFilter]) -> Option<String> {
-        let schema = self.schema_registry.get(entity)?;
-        let filter_fields: std::collections::HashSet<&str> = filters.iter().map(|f| f.field.as_str()).collect();
-        for index_def in &schema.indexes {
-            if index_def.fields.len() != filters.len() { continue; }
-            let index_fields: std::collections::HashSet<&str> = index_def.fields.iter().map(|f| f.as_str()).collect();
-            if filter_fields == index_fields {
-                return Some(index_def.name.clone());
+    pub fn get_document(
+        &self,
+        org_id: &str,
+        entity: &str,
+        doc_id: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let table = entity_table_name(entity)?;
+        let sql = format!("SELECT payload FROM {} WHERE org_id=?1 AND doc_id=?2", table);
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let payload_str: String = row.get(0)?;
+                        if let Ok(val) = serde_json::from_str(&payload_str) {
+                            return Ok(Some(val));
+                        }
+                    }
+                    return Ok(None);
+                }
+                turso_core::StepResult::Done => return Ok(None),
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("get_document: database busy or interrupted");
+                }
             }
         }
-        None
-    }
-
-    pub fn get_document(&self, org_id: &str, entity: &str, doc_id: &str) -> anyhow::Result<Option<Value>> {
-        let read_txn = self.db.begin_read()?;
-        let docs_table = read_txn.open_table(DOCUMENTS)?;
-        let doc_key = format!("doc:{}:{}:{}", org_id, entity, doc_id);
-        Ok(docs_table.get(doc_key.as_str())?
-            .and_then(|v| serde_json::from_slice::<Value>(v.value()).ok()))
     }
 
     pub fn delete_document(&self, org_id: &str, entity: &str, doc_id: &str) -> anyhow::Result<()> {
-        let doc_key = format!("doc:{}:{}:{}", org_id, entity, doc_id);
-        let schema = self.schema_registry.get(entity);
+        let table = entity_table_name(entity)?;
+        let sql = format!("DELETE FROM {} WHERE org_id=?1 AND doc_id=?2", table);
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut docs = write_txn.open_table(DOCUMENTS)?;
-            let mut idx = write_txn.open_table(INDEXES)?;
-            let mut comp = write_txn.open_table(COMPOSITE)?;
-
-            if let Some(old_bytes) = docs.get(doc_key.as_str())? {
-                if let Ok(old_json) = serde_json::from_slice::<Value>(old_bytes.value()) {
-                    remove_old_indices(&mut idx, &mut comp, org_id, entity, doc_id, &old_json, schema);
+        let mut stmt = self.conn.prepare(&sql)?;
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("delete_document: database busy or interrupted");
                 }
             }
-            docs.remove(doc_key.as_str())?;
         }
-        write_txn.commit()?;
 
-        self.search_engine.delete_document(doc_id)?;
         Ok(())
     }
 }
 
-fn remove_old_indices(
-    idx: &mut redb::Table<&str, &[u8]>,
-    comp: &mut redb::Table<&str, &[u8]>,
-    org_id: &str, entity: &str, doc_id: &str,
-    old_json: &Value,
-    schema: Option<&syntrix_schema::EntitySchema>,
-) {
-    match schema {
-        Some(s) => {
-            for field in &s.fields {
-                if !field.indexed { continue; }
-                if let Some(v) = old_json.get(&field.name) {
-                    let val_str = encode_value(v);
-                    let idx_key = format!("idx:{}:{}:{}:{}:{}", org_id, entity, field.name, val_str, doc_id);
-                    let _ = idx.remove(idx_key.as_str());
-                }
-            }
-            for index_def in &s.indexes {
-                let parts: Vec<String> = index_def.fields
-                    .iter()
-                    .filter_map(|f| old_json.get(f))
-                    .map(encode_value)
-                    .collect();
-                if parts.len() == index_def.fields.len() {
-                    let comp_key = format!("compidx:{}:{}:{}:{}:{}",
-                        org_id, entity, index_def.name, parts.join(":"), doc_id);
-                    let _ = comp.remove(comp_key.as_str());
-                }
-            }
-        }
-        None => {
-            if let Some(obj) = old_json.as_object() {
-                for (k, v) in obj {
-                    if v.is_string() || v.is_number() || v.is_boolean() {
-                        let val_str = encode_value(v);
-                        let idx_key = format!("idx:{}:{}:{}:{}:{}", org_id, entity, k, val_str, doc_id);
-                        let _ = idx.remove(idx_key.as_str());
-                    }
-                }
+fn extract_title(payload: &serde_json::Value) -> String {
+    if let Some(obj) = payload.as_object() {
+        for key in &["name", "title", "label"] {
+            if let Some(v) = obj.get(*key).and_then(|v| v.as_str()) {
+                return v.to_string();
             }
         }
     }
+    String::new()
 }
 
-fn intersect_sorted(a: &[String], b: &[String]) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    let mut j = 0;
-    while i < a.len() && j < b.len() {
-        match a[i].cmp(&b[j]) {
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
-            std::cmp::Ordering::Equal => {
-                result.push(a[i].clone());
-                i += 1;
-                j += 1;
+fn extract_body(payload: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(obj) = payload.as_object() {
+        for (_k, v) in obj {
+            if v.is_string() {
+                parts.push(v.as_str().unwrap().to_string());
+            } else if v.is_number() || v.is_boolean() {
+                parts.push(v.to_string());
             }
         }
     }
-    result
-}
-
-fn entity_from_event_type(event_type: &str) -> &str {
-    match event_type.split('.').next().unwrap_or(event_type) {
-        "invoice" | "invoices" => "invoices",
-        "order" | "orders" => "orders",
-        "product" | "products" => "products",
-        "customer" | "customers" => "customers",
-        "supplier" | "suppliers" => "suppliers",
-        "payroll" => "payroll",
-        other => other,
-    }
+    parts.join(" ")
 }

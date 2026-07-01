@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use syntrix_network::P2PNode;
-use crate::indexes::RelationalEngine;
+use crate::indexes::SqlEngine;
 
 /// Request catchup from a peer using the libp2p request_response protocol.
 pub async fn request_catchup(
@@ -9,7 +9,7 @@ pub async fn request_catchup(
     peer_id: libp2p::PeerId,
     org_id: &str,
     since_hlc: u64,
-    indexer: &RelationalEngine,
+    indexer: &SqlEngine,
 ) -> anyhow::Result<()> {
     let events = p2p.request_catchup(peer_id, org_id.to_string(), since_hlc).await?;
     for event in &events {

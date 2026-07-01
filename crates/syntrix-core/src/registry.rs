@@ -1,6 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{NodeId, OrgId};
+use crate::{NodeId, OrgId, ENTITY_NAMES};
+
+pub fn can_access(allowed: &[String], entity: &str) -> bool {
+    allowed.iter().any(|a| a == entity || a == "*")
+}
 
 #[derive(Debug, Clone)]
 pub struct Device {
@@ -80,8 +84,7 @@ impl NamespaceRegistry {
             if let Some(known) = self.known_namespaces.get(org_id) {
                 known.clone()
             } else {
-                let registry = syntrix_schema::build_registry();
-                registry.entity_names().into_iter().map(|s| s.to_string()).collect()
+                ENTITY_NAMES.iter().map(|s| s.to_string()).collect()
             }
         } else {
             can_open.into_iter().collect()

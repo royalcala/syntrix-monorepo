@@ -17,7 +17,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 syntrix-core = { path = "../../../crates/syntrix-core" }
 syntrix-network = { path = "../../../crates/syntrix-network" }
-syntrix-schema = { path = "../../../crates/syntrix-schema" }
 syntrix-logging = { path = "../../../crates/syntrix-logging" }
 libp2p = { version = "0.54", features = ["identify"] }
 tokio = { version = "1", features = ["full"] }
@@ -27,9 +26,9 @@ chrono = "0.4"
 tracing = "0.1"
 dirs-next = "2"
 futures-util = "0.3"
-redb = "2.1.2"
 bytes = "1"
 fastrand = "2"
+turso_core = { workspace = true }
 
 [dev-dependencies]
 syntrix-testkit = { path = "../../../crates/syntrix-testkit" }

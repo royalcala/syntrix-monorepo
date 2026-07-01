@@ -29,13 +29,22 @@ fn node_id_from_addr(addr_json: &str) -> String {
     v["node_id"].as_str().unwrap().to_string()
 }
 
+async fn get_client_addr(client: &ClientState) -> String {
+    let peer_id = client.p2p().local_peer_id();
+    let addrs = client.p2p().listen_addrs().await;
+    serde_json::json!({
+        "node_id": hex::encode(client.node_id()),
+        "addrs": addrs,
+    }).to_string()
+}
+
 async fn invite_one_client(
     admin: &mut AdminState,
     client: &mut ClientState,
     org_name: &str,
     role: &str,
 ) -> anyhow::Result<()> {
-    let client_addr = syntrix_client_lib::get_endpoint_addr_impl(client);
+    let client_addr = get_client_addr(client).await;
     let node_id_hex = node_id_from_addr(&client_addr);
 
     syntrix_admin_lib::admin::add_device(
@@ -547,7 +556,7 @@ async fn test_device_reassignment_propagates() {
         .await
         .expect("invite and join");
 
-    let client_addr = syntrix_client_lib::get_endpoint_addr_impl(&c1);
+    let client_addr = get_client_addr(&c1).await;
     let node_id_hex = node_id_from_addr(&client_addr);
 
     syntrix_admin_lib::admin::update_device(
@@ -585,7 +594,7 @@ async fn test_device_deactivation_blocks_access() {
         .await
         .expect("invite and join");
 
-    let client_addr = syntrix_client_lib::get_endpoint_addr_impl(&c1);
+    let client_addr = get_client_addr(&c1).await;
     let node_id_hex = node_id_from_addr(&client_addr);
 
     syntrix_admin_lib::admin::update_device(

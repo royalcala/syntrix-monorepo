@@ -1,12 +1,7 @@
-use tantivy::schema::*;
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term, SnippetGenerator, TantivyDocument};
-use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
-use tantivy::collector::TopDocs;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use serde::{Serialize, Deserialize};
+use std::num::NonZero;
+use std::sync::Arc;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct SearchResult {
     pub doc_id: String,
     pub entity: String,
@@ -15,96 +10,39 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-#[derive(Clone)]
 pub struct SearchEngine {
-    index: Index,
-    reader: IndexReader,
-    writer: Arc<Mutex<IndexWriter>>,
-    org_id: Field,
-    entity: Field,
-    doc_id: Field,
-    title: Field,
-    body: Field,
+    pub conn: Arc<turso_core::Connection>,
 }
 
+const ALL_FTS_TABLES: &[&str] = &[
+    "customers",
+    "suppliers",
+    "products",
+    "invoices",
+    "orders",
+    "payroll",
+];
+
 impl SearchEngine {
-    pub fn new(data_dir: PathBuf) -> anyhow::Result<Self> {
-        let index_dir = data_dir.join("search_index");
-        std::fs::create_dir_all(&index_dir)?;
-
-        let mut schema_builder = Schema::builder();
-        let org_id = schema_builder.add_text_field("org_id", STRING | STORED);
-        let entity = schema_builder.add_text_field("entity", STRING | STORED);
-        let doc_id = schema_builder.add_text_field("doc_id", STRING | STORED);
-        let title = schema_builder.add_text_field("title", TEXT | STORED);
-        let body = schema_builder.add_text_field("body", TEXT | STORED);
-        let schema = schema_builder.build();
-
-        let index = Index::open_or_create(tantivy::directory::MmapDirectory::open(&index_dir)?, schema)?;
-        
-        // Initialize reader
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
-            .try_into()?;
-
-        // Initialize single writer (15MB heap memory budget)
-        let writer = index.writer(15_000_000)?;
-
-        Ok(Self {
-            index,
-            reader,
-            writer: Arc::new(Mutex::new(writer)),
-            org_id,
-            entity,
-            doc_id,
-            title,
-            body,
-        })
+    pub fn new(conn: Arc<turso_core::Connection>) -> Self {
+        Self { conn }
     }
 
-    /// Indexes or updates a document.
     pub fn index_document(
         &self,
-        org_id: &str,
-        entity: &str,
-        doc_id: &str,
-        title: &str,
-        body: &str,
+        _org_id: &str,
+        _entity: &str,
+        _doc_id: &str,
+        _title: &str,
+        _body: &str,
     ) -> anyhow::Result<()> {
-        let mut writer = self.writer.lock().map_err(|e| anyhow::anyhow!("writer lock failed: {}", e))?;
-
-        // 1. Delete previous version (based on the unique key combination)
-        // Tantivy deletes are done via Terms. We can build a term representing org_id + entity + doc_id.
-        // Since we want to delete exactly this document, we delete by doc_id term.
-        // In our case, doc_id is unique across the org/entity. Let's delete by doc_id.
-        let term = Term::from_field_text(self.doc_id, doc_id);
-        writer.delete_term(term);
-
-        // 2. Insert new document
-        writer.add_document(doc!(
-            self.org_id => org_id,
-            self.entity => entity,
-            self.doc_id => doc_id,
-            self.title => title,
-            self.body => body,
-        ))?;
-
-        // Commit immediately so changes are visible in real-time
-        writer.commit()?;
         Ok(())
     }
 
-    /// Removes a document from the index.
-    pub fn delete_document(&self, doc_id: &str) -> anyhow::Result<()> {
-        let mut writer = self.writer.lock().map_err(|e| anyhow::anyhow!("writer lock failed: {}", e))?;
-        let term = Term::from_field_text(self.doc_id, doc_id);
-        writer.delete_term(term);
-        writer.commit()?;
+    pub fn delete_document(&self, _doc_id: &str) -> anyhow::Result<()> {
         Ok(())
     }
 
-    /// Performs search with exact/fuzzy terms and highlights
     pub fn search(
         &self,
         org_id: &str,
@@ -112,92 +50,97 @@ impl SearchEngine {
         entities: Option<Vec<String>>,
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
-        let searcher = self.reader.searcher();
-        let mut subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = vec![];
+        let tables: Vec<&str> = match entities {
+            Some(ref ents) if !ents.is_empty() => {
+                ents.iter().map(|e| e.as_str()).collect()
+            }
+            _ => ALL_FTS_TABLES.to_vec(),
+        };
 
-        // 1. Must belong to the active organization
-        subqueries.push((
-            Occur::Must,
-            Box::new(TermQuery::new(
-                Term::from_field_text(self.org_id, org_id),
-                IndexRecordOption::Basic,
-            )),
-        ));
+        let mut results: Vec<SearchResult> = Vec::new();
 
-        // 2. Must belong to one of the specified entities (if provided)
-        if let Some(ents) = entities {
-            if !ents.is_empty() {
-                let mut entity_queries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = vec![];
-                for ent in ents {
-                    entity_queries.push((
-                        Occur::Should,
-                        Box::new(TermQuery::new(
-                            Term::from_field_text(self.entity, &ent),
-                            IndexRecordOption::Basic,
-                        )),
-                    ));
+        for table in tables {
+            let sql = format!(
+                "SELECT doc_id, fts_title, fts_body FROM {} WHERE (fts_title, fts_body) MATCH ? AND org_id = ?",
+                table
+            );
+
+            let mut stmt = match self.conn.prepare(&sql) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("search: prepare failed for table {}: {}", table, e);
+                    continue;
                 }
-                subqueries.push((Occur::Must, Box::new(BooleanQuery::new(entity_queries))));
+            };
+
+            if let Err(e) = stmt.bind_at(
+                NonZero::new(1).unwrap(),
+                turso_core::Value::from_text(query_str.to_string()),
+            ) {
+                tracing::warn!("search: bind query failed for table {}: {}", table, e);
+                continue;
+            }
+
+            if let Err(e) = stmt.bind_at(
+                NonZero::new(2).unwrap(),
+                turso_core::Value::from_text(org_id.to_string()),
+            ) {
+                tracing::warn!("search: bind org_id failed for table {}: {}", table, e);
+                continue;
+            }
+
+            loop {
+                match stmt.step() {
+                    Ok(turso_core::StepResult::Row) => {}
+                    Ok(turso_core::StepResult::IO) | Ok(turso_core::StepResult::Yield) => {
+                        continue;
+                    }
+                    Ok(turso_core::StepResult::Done) => break,
+                    Ok(turso_core::StepResult::Interrupt) | Ok(turso_core::StepResult::Busy) => {
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!("search: step failed for table {}: {}", table, e);
+                        break;
+                    }
+                }
+
+                let row = match stmt.row() {
+                    Some(r) => r,
+                    None => continue,
+                };
+
+                let doc_id: String = match row.get(0) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let fts_title: String = match row.get(1) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let fts_body: String = match row.get(2) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let snippet = if fts_body.len() > 200 {
+                    format!("{}...", &fts_body[..200])
+                } else {
+                    fts_body.clone()
+                };
+
+                results.push(SearchResult {
+                    doc_id,
+                    entity: table.to_string(),
+                    title: fts_title,
+                    snippet,
+                    score: 1.0,
+                });
             }
         }
 
-        // 3. User query matching
-        let trimmed_query = query_str.trim();
-        if !trimmed_query.is_empty() {
-            let query_parser = QueryParser::for_index(&self.index, vec![self.title, self.body]);
-            
-            // Try parsing normal query syntax. If it fails, fallback to simple term search
-            let user_query = if let Ok(q) = query_parser.parse_query(trimmed_query) {
-                q
-            } else {
-                Box::new(TermQuery::new(
-                    Term::from_field_text(self.body, trimmed_query),
-                    IndexRecordOption::WithFreqsAndPositions,
-                ))
-            };
-            subqueries.push((Occur::Must, user_query));
-        }
-
-        let final_query = BooleanQuery::new(subqueries);
-
-        // Execute search
-        let top_docs = searcher.search(&final_query, &TopDocs::with_limit(limit))?;
-        let mut results = vec![];
-
-        for (score, doc_address) in top_docs {
-            let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
-            
-            let doc_id_val = retrieved_doc
-                .get_first(self.doc_id)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let entity_val = retrieved_doc
-                .get_first(self.entity)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let title_val = retrieved_doc
-                .get_first(self.title)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Generate highlighted snippet from the body field
-            let snippet_generator = SnippetGenerator::create(&searcher, &final_query, self.body)?;
-            let snippet = snippet_generator.snippet_from_doc(&retrieved_doc);
-            let snippet_html = snippet.to_html();
-
-            results.push(SearchResult {
-                doc_id: doc_id_val,
-                entity: entity_val,
-                title: title_val,
-                snippet: snippet_html,
-                score,
-            });
-        }
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
 
         Ok(results)
     }

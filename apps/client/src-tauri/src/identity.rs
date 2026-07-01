@@ -10,10 +10,13 @@ use syntrix_core::registry::{Device, NamespaceRegistry, RoleGrants};
 use syntrix_network::codecs::InvitePayload;
 use syntrix_network::P2PNode;
 use crate::invite::InviteHandler;
+use crate::live::LiveManager;
 use crate::OrgInfo;
 use serde::{Deserialize, Serialize};
 
 pub use syntrix_core::parse_device_addr;
+
+use crate::indexes::{HlcTimestamp, SqlEngine};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientOrgConfig {
@@ -34,7 +37,9 @@ pub struct AppState {
     orgs: HashMap<String, OrgState>,
     active_org: Option<String>,
     data_dir: PathBuf,
-    pub indexer: Arc<crate::indexes::RelationalEngine>,
+    pub indexer: Arc<crate::indexes::SqlEngine>,
+    pub conn: Arc<turso_core::Connection>,
+    pub live_manager: LiveManager,
     pub invite_handler: InviteHandler,
     /// Maps topic string → org_id for routing gossipsub messages
     topic_to_org: HashMap<String, String>,
@@ -77,7 +82,10 @@ impl AppState {
 
         let (p2p, event_rx) = P2PNode::new(config).await?;
         let registry = Arc::new(RwLock::new(NamespaceRegistry::new()));
-        let indexer = Arc::new(crate::indexes::RelationalEngine::new(data_dir.clone())?);
+        let conn = crate::storage::open_limbo(&data_dir)?;
+        crate::storage::run_migrations(&conn)?;
+        let conn_arc = conn;
+        let indexer = Arc::new(crate::indexes::SqlEngine::with_connection(conn_arc.clone()));
         let (invite_handler, _invite_rx) = InviteHandler::new();
 
         let mut topic_to_org: HashMap<String, String> = HashMap::new();
@@ -215,6 +223,8 @@ impl AppState {
                 active_org: None,
                 data_dir,
                 indexer,
+                conn: conn_arc,
+                live_manager: LiveManager::new(),
                 invite_handler,
                 topic_to_org,
             },
@@ -226,9 +236,11 @@ impl AppState {
     pub fn keypair(&self) -> &Keypair { &self.keypair }
     pub fn counter(&self) -> &AtomicU64 { &self.hlc_counter }
     pub fn p2p(&self) -> &P2PNode { &self.p2p }
+    pub fn live_manager(&self) -> &LiveManager { &self.live_manager }
     pub fn registry(&self) -> &Arc<RwLock<NamespaceRegistry>> { &self.registry }
     pub fn data_dir(&self) -> &PathBuf { &self.data_dir }
-    pub fn indexer(&self) -> Arc<crate::indexes::RelationalEngine> { self.indexer.clone() }
+    pub fn indexer(&self) -> Arc<crate::indexes::SqlEngine> { self.indexer.clone() }
+    pub fn conn(&self) -> Arc<turso_core::Connection> { self.conn.clone() }
 
     pub fn list_orgs(&self) -> Vec<OrgInfo> {
         self.orgs.iter().map(|(id, o)| OrgInfo {
@@ -282,7 +294,7 @@ impl AppState {
 
 async fn process_event_loop(
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<syntrix_network::Event>,
-    indexer: Arc<crate::indexes::RelationalEngine>,
+    indexer: Arc<crate::indexes::SqlEngine>,
     p2p: P2PNode,
     invite_handler: InviteHandler,
     topic_to_org: HashMap<String, String>,
@@ -361,7 +373,7 @@ fn load_or_create_keypair(key_path: &std::path::Path) -> anyhow::Result<Keypair>
 fn process_gossip_event(
     org_id: &str,
     val: &serde_json::Value,
-    indexer: &crate::indexes::RelationalEngine,
+    indexer: &crate::indexes::SqlEngine,
 ) {
     if val.get("type").is_none() {
         if let Some(node_id) = val.get("node_id").and_then(|v| v.as_str()) {
