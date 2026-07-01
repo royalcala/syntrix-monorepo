@@ -112,6 +112,52 @@ pub fn sync_status(state: &AppState) -> String {
     format!("online · {} orgs · node {}", state.list_orgs().len(), hex::encode(state.node_id())[..8].to_string())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hlc_cursor_serialization() {
+        let cursor = HlcCursor { ts: 1000, count: 5, node: "node1".into() };
+        let json = serde_json::to_string(&cursor).unwrap();
+        assert!(json.contains("\"ts\":1000"));
+        assert!(json.contains("\"count\":5"));
+        assert!(json.contains("\"node\":\"node1\""));
+    }
+
+    #[test]
+    fn test_sync_entry_serialization() {
+        let entry = SyncEntry {
+            event_encoded: serde_json::json!({"type": "customer.created", "payload": {"id": "c1"}}),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("customer.created"));
+    }
+
+    #[test]
+    fn test_connection_state() {
+        let cs = ConnectionState { connected: true, peers: 3 };
+        assert!(cs.connected);
+        assert_eq!(cs.peers, 3);
+    }
+
+    #[test]
+    fn test_default_schema_version() {
+        assert_eq!(default_schema_version(), 1);
+    }
+
+    #[test]
+    fn test_sync_pull_result_has_more() {
+        let result = SyncPullResult {
+            batch: vec![],
+            has_more: false,
+            cursor: None,
+        };
+        assert!(!result.has_more);
+        assert!(result.cursor.is_none());
+    }
+}
+
 pub async fn get_sync_info_impl(
     state: &AppState,
     org: &str,

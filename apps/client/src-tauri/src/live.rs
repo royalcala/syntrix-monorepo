@@ -78,6 +78,53 @@ impl LiveManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subscribe_and_unsubscribe() {
+        let mgr = LiveManager::new();
+        let id = mgr.subscribe("SELECT * FROM customers".into(), vec!["customers".into()]);
+        assert_eq!(id, 0);
+        let id2 = mgr.subscribe("SELECT * FROM invoices".into(), vec!["invoices".into()]);
+        assert_eq!(id2, 1);
+
+        mgr.unsubscribe(id);
+        let subs = mgr.subscriptions.read().unwrap();
+        assert!(!subs.contains_key(&id));
+        assert!(subs.contains_key(&id2));
+    }
+
+    #[test]
+    fn test_subscription_id_increments() {
+        let mgr = LiveManager::new();
+        let ids: Vec<u64> = (0..5).map(|i| {
+            mgr.subscribe(format!("query_{}", i), vec!["customers".into()])
+        }).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_unsubscribe_nonexistent() {
+        let mgr = LiveManager::new();
+        mgr.unsubscribe(42);
+        let subs = mgr.subscriptions.read().unwrap();
+        assert!(subs.is_empty());
+    }
+
+    #[test]
+    fn test_live_subscription_struct() {
+        let sub = LiveSubscription {
+            id: 1,
+            sql: "SELECT * FROM t".into(),
+            depends_on: vec!["customers".into(), "invoices".into()],
+        };
+        assert_eq!(sub.id, 1);
+        assert!(sub.depends_on.contains(&"customers".into()));
+    }
+}
+
 fn execute_live_query(
     conn: &Arc<turso_core::Connection>,
     sql: &str,

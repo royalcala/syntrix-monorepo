@@ -1,44 +1,52 @@
 ---
-title: "Registry de Esquemas"
-description: "Definición centralizada de entidades, campos, índices y relaciones — source of truth para toda la aplicación."
+title: "Esquemas y Drizzle ORM"
+description: "Definición centralizada de entidades, campos, índices y relaciones mediante Drizzle ORM — source of truth para toda la aplicación."
 ---
 
-# Registry de Esquemas
+# Esquemas y Drizzle ORM
 
-Syntrix utiliza un **registry de esquemas centralizado** definido en el crate `syntrix-schema` (Rust). Este registry es la **única fuente de verdad** para generación de índices, búsqueda Tantivy, migraciones y exportación JSON.
+Syntrix define sus entidades, campos, índices y relaciones mediante **esquemas Drizzle** (TypeScript). Estos esquemas son la **única fuente de verdad** para la generación de tablas SQL, índices, búsqueda FTS, migraciones y exportación JSON.
 
 ---
 
 ## Arquitectura
 
+Cada aplicación (`apps/*/`) define sus esquemas en un archivo `drizzle/schema.ts`:
+
 ```
-syntrix-schema/
-├── src/
-│   ├── lib.rs        # Re-export público
-│   ├── schema.rs     # Tipos: EntitySchema, FieldSchema, FieldType, IndexDef, RelationDef, SchemaRegistry
-│   ├── entities.rs   # Definiciones de entidades (customers, invoices, etc.)
-│   ├── encoded.rs    # Codificación sortable de valores para claves de índice
-│   └── upcast.rs     # Trait Upcaster y cadena de migraciones
+apps/
+├── admin/
+│   └── drizzle/
+│       └── schema.ts       ← entidades: orgs, members, roles, devices
+├── app/
+│   └── drizzle/
+│       └── schema.ts       ← entidades: customers, products, invoices, orders, payroll
 ```
+
+Los esquemas se compilan a SQL mediante `just drizzle-gen`, que genera:
+- Sentencias `CREATE TABLE` con tipos, constraints y defaults
+- `CREATE INDEX` para cada columna marcada con `@index()`
+- Tablas virtuales FTS5 para búsqueda full-text
+- Relaciones entre entidades
 
 ---
 
 ## Entidades Registradas
 
-| Entidad | Versión | Campos Indexados | Campos Buscables | Relaciones |
-|---------|---------|-----------------|------------------|------------|
-| customers | 1 | name | name, email, phone, rfc, address | — |
-| suppliers | 1 | name | name, email, phone, rfc, address | — |
-| products | 1 | name, price, cost, sku, category, stock | name, description | — |
-| invoices | 1 | folio, customer_id, date, total, status | notes | customer_id → customers.id |
-| orders | 1 | folio, customer_id, date, total, status | notes | customer_id → customers.id |
-| payroll | 1 | name, department, salary, role, active | name, payment_method | — |
+| Entidad | Campos Indexados | Campos Buscables | Relaciones |
+|---------|-----------------|------------------|------------|
+| customers | name | name, email, phone, rfc, address | — |
+| suppliers | name | name, email, phone, rfc, address | — |
+| products | name, price, cost, sku, category, stock | name, description | — |
+| invoices | folio, customer_id, date, total, status | notes | customer_id → customers.id |
+| orders | folio, customer_id, date, total, status | notes | customer_id → customers.id |
+| payroll | name, department, salary, role, active | name, payment_method | — |
 
 ---
 
 ## Permisos y Entidades
 
-Los permisos operan directamente sobre nombres de entidad. A diferencia del modelo anterior (namespace por entidad), ahora **todas las entidades comparten un topic gossip por org**:
+Los permisos operan directamente sobre nombres de entidad. Todas las entidades comparten un topic gossip por org:
 
 1. **Resolución directa**: `can_open`/`can_write` contienen nombres de entidad (o `"*"`). Se resuelve con `can_access(lista, entidad)` → `lista.contains(entidad) || lista.contains("*")`.
 2. **Validación por evento**: Cada evento recibido via gossip se valida contra `can_write` del rol del autor antes de indexarse.

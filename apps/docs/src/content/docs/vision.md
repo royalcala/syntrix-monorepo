@@ -179,7 +179,7 @@ Layouts disponibles:
 
 ### 3.5 Búsqueda global (tipo Spotlight/Linear)
 
-Ya implementada con **Tantivy** (Rust embebido):
+Ya implementada con **Limbo FTS** (Rust embebido):
 
 ```
 Ctrl+K → Command Palette
@@ -201,7 +201,7 @@ Resultados:
   └─────────────────────────────────────┘
 ```
 
-Motor: Tantivy con fuzzy search, BM25 ranking, snippets con highlights. Se alimenta automáticamente desde el indexador en `indexes.rs`.
+Motor: Limbo FTS con fuzzy search, BM25 ranking, snippets con highlights. Se alimenta automáticamente desde el indexador FTS.
 
 ---
 
@@ -214,7 +214,7 @@ evt:{hlc_ts}:{hlc_count}:{node_id}
   → valor: { type, hlc, schema_version, payload }
 ```
 
-El log es append-only e inmutable. La proyección a redb (estado actual consolidado) es volátil y reconstruible.
+El log es append-only e inmutable. La proyección a Limbo SQL (estado actual consolidado) es volátil y reconstruible.
 
 **Snapshots periódicos** (visión futura) para evitar replay de miles de eventos al arrancar:
 - Cada 100 eventos o 24h, se escribe un snapshot del estado actual del registro
@@ -223,11 +223,7 @@ El log es append-only e inmutable. La proyección a redb (estado actual consolid
 
 ### 4.2 Índices secundarios (ya implementado)
 
-redb es key-value, no soporta índices secundarios nativos. Syntrix los implementa de forma **schema-driven**:
-
-- **INDEXES**: `idx:{org}:{entity}:{field}:{encoded_value}:{doc_id}` — solo campos `#[indexed]`
-- **COMPOSITE**: `compidx:{org}:{entity}:{name}:{v1}:{v2}:...:{doc_id}` — índices compuestos
-- **Codificación sortable**: números como big-endian hex con inversión de signo para orden correcto
+Los índices se definen en esquemas Drizzle y se traducen a sentencias `CREATE INDEX` sobre Limbo SQL. Las columnas con `@index()` en el schema Drizzle generan índices simples; los índices compuestos se declaran explícitamente en el schema.
 
 Los índices son **locales y derivados**, nunca se sincronizan P2P. Cada peer reconstruye sus índices del event log.
 
@@ -330,8 +326,8 @@ interface SyntrixPlugin {
 |---------|--------|---------------|
 | Grid scroll FPS | 60 FPS con 100,000 filas | ⚠️ Falta virtualización |
 | Apertura detail panel | < 50ms | ✅ Instantáneo |
-| Búsqueda global | < 100ms | ✅ Tantivy |
-| Commit event | < 10ms | ✅ redb |
+| Búsqueda global | < 100ms | ✅ Limbo FTS |
+| Commit event | < 10ms | ✅ Limbo SQL |
 | Sync P2P (2 peers, LAN) | < 500ms | ✅ |
 | Startup (org con 10,000 registros) | < 2s | ⚠️ Falta snapshots |
 | Tamaño de app (Tauri) | < 50MB | ✅ |
@@ -354,11 +350,9 @@ interface SyntrixPlugin {
 │  Tauri IPC (comunicación Rust ↔ React)             │
 ├───────────────────────────────────────────────────┤
 │  Backend (Rust, Tauri)                             │
-│  libp2p (P2P networking + log inmutable)            │
-│  redb (proyección relacional local)                │
-│  Tantivy (índice de búsqueda full-text)            │
-│  syntrix-schema (registry de esquemas)             │
-│  syntrix-core (P2P auth, sync, heartbeats)         │
+│  libp2p (P2P networking)                          │
+│  turso_core (SQL + FTS + CDC)                     │
+│  syntrix-core (P2P auth, sync, heartbeats)        │
 │  (futuro) Almacenamiento descentralizado (Arweave) │
 └───────────────────────────────────────────────────┘
 ```
@@ -375,10 +369,10 @@ interface SyntrixPlugin {
 | Permisos | Entidad-level (can_open/can_write) | **Entidad + campo + registro** |
 | Workflows | No | **Motor de estados + transiciones + side effects** |
 | Reporting | Auditoría de eventos | **Dashboards + report builder visual** |
-| Búsqueda | ✅ Tantivy (Ctrl+K) | ✅ (completo) |
+| Búsqueda | ✅ Limbo FTS (Ctrl+K) | ✅ (completo) |
 | i18n | No | **Multi-idioma con lazy loading** |
 | Offline | Básico (LWW por HLC) | **Cola offline + conflict resolution + snapshots** |
-| Índices | ✅ Schema-driven (redb + composite) | ✅ (completo) |
+| Índices | ✅ Schema-driven (Drizzle + SQL) | ✅ (completo) |
 | Plugins | No | **Sistema de plugins para módulos de terceros** |
 | Web client | Tauri solamente | **Web client vía HTTP API** |
 | Mobile | No | **Android/iOS vía Tauri mobile** |

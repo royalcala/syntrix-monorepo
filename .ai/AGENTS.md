@@ -5,6 +5,8 @@ Monorepo for the Syntrix Peer-to-Peer (P2P) local-first application suite, featu
 
 ## Tech Stack
 - **Backend**: Rust + Tauri + libp2p (P2P networking via syntrix-network crate)
+- **Database**: Limbo (`turso_core`) — SQL embebido + FTS nativo + CDC (Change Data Capture)
+- **Migrations**: Drizzle ORM (TypeScript schemas → `.sql` generado por `drizzle-kit`)
 - **Frontend**: React + Vite + Tailwind CSS + Radix/shadcn primitives
 - **Monorepo Manager**: `pnpm` workspaces (apps and shared package)
 - **Shared UI**: `@syntrix/ui` (under `packages/syntrix-ui/`)
@@ -40,6 +42,7 @@ Use the predefined tasks in the `justfile` for running/testing:
 - **`just test`**: Runs client/admin frontend test suites.
 - **`just test-rust`**: Runs all Rust tests via the bridge (`cargo test --workspace` on `server-1`).
 - **`just lint`**: Runs TypeScript/Eslint checks.
+- **`just drizzle-gen`**: Regenerates SQL migration files from Drizzle TypeScript schemas.
 - **`just kill-local`**: Kills all local Tauri apps, Vite dev servers, and bridge processes.
 - **`just kill-remote`**: Kills compilation processes on `server-1` and `server-2` via SSH.
 - **`just clean-remote-targets`**: Removes leftover `target-*` session directories on remote servers.
@@ -85,8 +88,7 @@ Every `#[tauri::command]` **must** be a thin wrapper around a public `*_impl(sta
 
 ### Convention
 - **New `#[tauri::command]`** → expose a pure `*_impl` function + integration test.
-- **New entity→namespace mapping** → covered by a multi-node propagation test.
-- **New `#[indexed]`/`#[searchable]` field** → covered by query/search tests.
+- **New entity/table** → includes migration SQL (via Drizzle), SqlEngine methods, and an integration test.
 
 ### Running tests
 Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. Do **not** run `cargo test` locally (laptop CPU restriction).

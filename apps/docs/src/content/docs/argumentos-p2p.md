@@ -59,8 +59,8 @@ graph TD
 * **Gossip Protocol**: Cuando un vendedor registra un pedido offline y vuelve a conectarse, el sistema difunde el cambio a los demás peers de forma inmediata a través de un protocolo de "chisme".
 * **Catch-up P2P**: Al reconectarse, los peers sincronizan los eventos faltantes mediante una conexión directa, transmitiendo únicamente los registros modificados desde el último HLC conocido.
 
-### C. Almacenamiento Local (redb)
-* **redb**: Base de datos embebida en Rust que almacena todos los eventos y proyecciones localmente.
+### C. Almacenamiento Local (Limbo SQL)
+* **Limbo (turso_core)**: Base de datos SQL embebida en Rust que almacena todos los eventos y proyecciones localmente.
 * **Integridad**: Cada evento se firma con la llave privada del nodo y se verifica al recibirlo, garantizando que no ha sido modificado en tránsito.
 
 ---

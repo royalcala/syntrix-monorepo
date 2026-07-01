@@ -696,3 +696,77 @@ fn extract_body(payload: &serde_json::Value) -> String {
     }
     parts.join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_entity_table_name_valid() {
+        assert_eq!(entity_table_name("customers").unwrap(), "customers");
+        assert_eq!(entity_table_name("customer").unwrap(), "customers");
+        assert_eq!(entity_table_name("payroll").unwrap(), "payroll");
+    }
+
+    #[test]
+    fn test_entity_table_name_invalid() {
+        assert!(entity_table_name("unknown").is_err());
+    }
+
+    #[test]
+    fn test_entity_from_event_type() {
+        assert_eq!(entity_from_event_type("customer.created"), "customers");
+        assert_eq!(entity_from_event_type("invoice.paid"), "invoices");
+        assert_eq!(entity_from_event_type("payroll.processed"), "payroll");
+        assert_eq!(entity_from_event_type("unknown.action"), "unknown");
+    }
+
+    #[test]
+    fn test_hlc_timestamp_ordering() {
+        let a = HlcTimestamp { ts: 100, count: 0, node: "a".into() };
+        let b = HlcTimestamp { ts: 200, count: 0, node: "a".into() };
+        assert!(a < b);
+
+        let c = HlcTimestamp { ts: 100, count: 1, node: "a".into() };
+        assert!(a < c);
+
+        let d = HlcTimestamp { ts: 100, count: 0, node: "b".into() };
+        assert!(a < d);
+    }
+
+    #[test]
+    fn test_hlc_timestamp_eq() {
+        let a = HlcTimestamp { ts: 100, count: 5, node: "node1".into() };
+        let b = HlcTimestamp { ts: 100, count: 5, node: "node1".into() };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_extract_title_customers() {
+        let payload = serde_json::json!({"name": "Acme Corp"});
+        assert_eq!(extract_title(&payload), "Acme Corp");
+    }
+
+    #[test]
+    fn test_extract_title_fallback() {
+        let payload = serde_json::json!({"title": "Dr."});
+        assert_eq!(extract_title(&payload), "Dr.");
+    }
+
+    #[test]
+    fn test_extract_body_with_strings() {
+        let payload = serde_json::json!({"name": "Alice", "email": "a@b.com"});
+        let body = extract_body(&payload);
+        assert!(body.contains("Alice"));
+        assert!(body.contains("a@b.com"));
+    }
+
+    #[test]
+    fn test_query_options_default() {
+        let opts = QueryOptions::default();
+        assert!(opts.filters.is_empty());
+        assert!(opts.sort.is_none());
+        assert!(opts.limit.is_none());
+        assert!(opts.offset.is_none());
+    }
+}

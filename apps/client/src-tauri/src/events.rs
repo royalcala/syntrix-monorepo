@@ -47,6 +47,51 @@ pub fn upcast_payload(entity: &str, payload: serde_json::Value, event_schema_ver
     syntrix_core::upcast_payload(payload, event_schema_version, current_version)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn test_entity_from_event_type() {
+        assert_eq!(entity_from_event_type("customer.created"), "customers");
+        assert_eq!(entity_from_event_type("invoice.paid"), "invoices");
+        assert_eq!(entity_from_event_type("order.shipped"), "orders");
+        assert_eq!(entity_from_event_type("product.updated"), "products");
+        assert_eq!(entity_from_event_type("payroll.processed"), "payroll");
+        assert_eq!(entity_from_event_type("unknown.action"), "unknown");
+    }
+
+    #[test]
+    fn test_hlc_next_monotonic() {
+        let node_id = "abcdef1234567890abcdef1234567890";
+        let counter = AtomicU64::new(0);
+        let a = Hlc::next(node_id, &counter);
+        let b = Hlc::next(node_id, &counter);
+        assert!(b.ts >= a.ts, "timestamps should be monotonic");
+        assert_eq!(b.count, 1);
+        assert_eq!(a.node, "abcdef1234567890".to_string());
+    }
+
+    #[test]
+    fn test_hlc_next_different_nodes() {
+        let counter = AtomicU64::new(0);
+        let a = Hlc::next("aaaa1111aaaa1111aaaa1111aaaa1111", &counter);
+        let b = Hlc::next("bbbb2222bbbb2222bbbb2222bbbb2222", &counter);
+        assert_eq!(a.count, 0);
+        assert_eq!(b.count, 1);
+        assert_eq!(a.node, "aaaa1111aaaa1111");
+        assert_eq!(b.node, "bbbb2222bbbb2222");
+    }
+
+    #[test]
+    fn test_upcast_payload_same_version() {
+        let payload = serde_json::json!({"id": "c1", "name": "test"});
+        let result = upcast_payload("customers", payload.clone(), 1);
+        assert_eq!(result, payload);
+    }
+}
+
 pub fn commit_event(
     state: &AppState, event_type: &str, payload: &str,
 ) -> anyhow::Result<String> {

@@ -120,14 +120,42 @@ kill-all: kill-local kill-remote clean-remote-targets
 # 5. PRUEBAS, CALIDAD Y LIMPIEZA
 # =========================================================================
 
-# Corre todas las pruebas unitarias e integración de ambas aplicaciones
-test:
+# Tests Rust unitarios (rápidos, sin P2P) — solo #[cfg(test)] inline
+test-unit:
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace --lib'
+
+# Tests Rust integración (admin/client, con P2P)
+test-integration:
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace --tests'
+
+# Tests Rust completos (unit + integration)
+test-rust:
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace'
+
+# Tests frontend Vitest (admin + client)
+test-frontend:
     cd apps/client && pnpm test
     cd apps/admin && pnpm test
 
-# Ejecuta pruebas Rust headless via el bridge remoto en server-1 (con failover a server-2)
-test-rust:
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace'
+# Tests completos sin E2E
+test: test-frontend
+
+# Tests E2E con Playwright/WebDriver (requiere app compilada y corriendo)
+test-e2e-admin:
+    cd apps/admin && npx playwright test --config src/__tests__/e2e/playwright.config.ts
+
+test-e2e-client:
+    cd apps/client && npx playwright test --config src/__tests__/e2e/playwright.config.ts
+
+# Tests completos (todo incluyendo E2E)
+test-all: test test-e2e-admin test-e2e-client
+
+# Setup WebDriver para E2E
+e2e-setup:
+    @echo "=== Instalando WebKitWebDriver ==="
+    @nix --extra-experimental-features "nix-command flakes" shell nixpkgs#webkitgtk_4_1 --command bash -c 'which WebKitWebDriver && echo "WebDriver OK"'
+    cd apps/admin && npx playwright install webkit
+    cd apps/client && npx playwright install webkit
 
 # Valida sintaxis y formato (linter) de ambas aplicaciones
 lint:

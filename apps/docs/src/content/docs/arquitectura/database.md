@@ -1,67 +1,106 @@
 ---
-title: "Motor de Base de Datos"
-description: "Persistencia local, event log en Redb, búsqueda indexada con Tantivy."
+title: "Motor de Base de Datos (Limbo)"
+description: "Limbo (turso_core) como motor SQL único — embedded SQL + FTS + CDC"
 ---
 
 # Motor de Base de Datos
 
-Syntrix implementa una arquitectura de datos descentralizada basada en **Event Sourcing** y **Proyecciones Locales**. La capa de red P2P (libp2p gossipsub) solo transporta eventos; el almacenamiento durable es exclusivamente **redb**.
+Syntrix usa **Limbo** (crate `turso_core`) como motor de base de datos SQL embebido, reemplazando la arquitectura anterior basada en redb + tantivy + syntrix-schema.
 
----
+## Stack
 
-## 1. Arquitectura de Dos Capas
-
-```mermaid
-graph TD
-    A[React UI / Frontend] -- Tauri IPC --> B[Rust App State]
-    
-    subgraph Capa de Almacenamiento y Consulta
-        D[Redb - Relational Engine + EVENT_LOG]
-    end
-    
-    subgraph Capa de Búsqueda Libre
-        E[Tantivy - Search Engine]
-    end
-
-    B -- Broadcast/Receive --> C[libp2p Gossipsub - Transporte P2P]
-    C -- Proyección --> D
-    B -- Indexación Invertida --> E
+```
+┌─ Aplicación (Rust/Tauri) ─────────────────────┐
+│  Drizzle ORM (schemas TypeScript → SQL .sql)   │
+│  include_str!("../migrations/*.sql")            │
+│  turso_core::Connection (SQL embebido)          │
+└────────────────────────────────────────────────┘
 ```
 
-### Capa 1: El Log de Eventos (redb EVENT_LOG + Gossip Broadcast)
-- **Persistencia de Eventos**: Toda escritura se guarda como un evento inmutable en la tabla `EVENT_LOG` de redb.
-- **Claves**: `evt:{org_id}:{hlc_ts:020}:{hlc_count:08}:{hlc_node}`.
-- **Transmisión**: El evento se broadcast al topic gossip de la org inmediatamente después de escribirlo en redb.
-- **Hybrid Logical Clocks (HLC)**: Orden causal estricto sin servidor central.
+## Esquemas con Drizzle
 
-### Capa 2: La Proyección Relacional (Redb)
-- **`DOCUMENTS`**: Mapea `doc:{org_id}:{entity}:{doc_id}` → Payload JSON.
-- **`INDEXES`**: Índices secundarios: `idx:{org_id}:{entity}:{field}:{encoded_value}:{doc_id}`.
-- **`COMPOSITE`**: Índices compuestos: `compidx:{org_id}:{entity}:{name}:{v1_enc}:...:{doc_id}`.
-- **`HLC_TRACKER`**: Último HLC por doc: `hlc:{org_id}:{entity}:{doc_id}` → `{ ts, count, node }`.
-- **`MEMBERS`**: Miembros de org: `members:{org_id}:{node_id}` → `{ active, role, person, name, device_addr }`.
-- **`ROLES`**: Roles de org: `roles:{org_id}:{role_name}` → `{ can_open, can_write }`.
-- **`HEARTBEATS`**: Heartbeats: `heartbeat:{org_id}:{node_id}` → `{ ts, status }`.
+Los schemas SQL se definen en TypeScript con Drizzle ORM en cada app:
 
-### Capa 3: Búsqueda de Texto Completo (Tantivy)
-- Índice invertido local. Solo campos `#[searchable]` son indexados.
+- `apps/admin/drizzle/schema.ts`
+- `apps/client/drizzle/schema.ts`
 
----
+Para generar migraciones: `just drizzle-gen`
 
-## 2. Ciclo de Vida de las Mutaciones
+Esto produce archivos `.sql` en `apps/*/src-tauri/migrations/` que se ejecutan al arrancar via `include_str!`.
 
-| Operación | redb (Almacenamiento Local) |
-|---|---|
-| **Crear (Insert)** | `append_event()` en `EVENT_LOG`, `upsert_document()` en `DOCUMENTS`, broadcast gossip |
-| **Editar (Update)** | Nuevo evento en `EVENT_LOG`, upsert en `DOCUMENTS` (LWW por HLC), broadcast gossip |
-| **Borrar (Delete)` | `delete_document()` en `DOCUMENTS` + índices |
+## Tablas
 
----
+### Entity tables (cliente)
 
-## 3. Reconstrucción de Proyecciones
+Cada entidad tiene su propia tabla SQL con estructura uniforme:
 
-El archivo `syntrix_indexes.redb` y `search_index/` son reconstruibles desde `EVENT_LOG`:
+```sql
+CREATE TABLE customers (
+    org_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    fts_title TEXT NOT NULL DEFAULT '',
+    fts_body TEXT NOT NULL DEFAULT '',
+    change_time INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+    node_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, doc_id)
+);
+```
 
-1. Limpiar directorios de redb y Tantivy.
-2. Escanear `EVENT_LOG` en orden HLC.
-3. Reprocesar cada evento con `upsert_document`.
+Entidades: customers, suppliers, products, invoices, orders, payroll.
+
+### Tablas de sistema
+
+- `members` — miembros del colectivo
+- `roles` — roles y permisos (can_open/can_write)
+- `heartbeats` — latidos de presencia P2P
+- `event_log` — auditoría de eventos con HLC
+- `hlc_tracker` — deduplicación Last-Write-Wins
+
+## CDC (Change Data Capture)
+
+Limbo expone CDC nativo via `PRAGMA capture_data_changes_conn='full'`. Esto crea la tabla `turso_cdc` que captura automáticamente todo INSERT/UPDATE/DELETE.
+
+El CDC se usa para:
+- **Sync P2P**: el módulo `syntrix-network::cdc::read_cdc_events()` lee cambios desde `turso_cdc` y los envía a pares via libp2p request_response
+- **Live Queries**: cuando hay cambios en una tabla, el `LiveManager` re-ejecuta SQL de suscripciones activas y emite eventos Tauri `live_update`
+- **Auditoría**: el `event_log` mantiene un historial de eventos con HLC para compatibilidad con peers anteriores
+
+## FTS (Full-Text Search)
+
+Limbo soporta índices FTS nativos via tantivy integrado:
+
+```sql
+CREATE INDEX idx_customers_fts ON customers USING fts (fts_title, fts_body);
+```
+
+La búsqueda se realiza con `MATCH`:
+
+```sql
+SELECT doc_id, fts_title FROM customers WHERE (fts_title, fts_body) MATCH ? AND org_id = ?
+```
+
+## Consultas SQL
+
+Todas las consultas van directo a SQL:
+
+```rust
+let mut stmt = conn.prepare("SELECT payload FROM customers WHERE org_id=?1 AND doc_id=?2")?;
+stmt.bind_at(NonZero::new(1).unwrap(), Value::from_text(org_id.to_string()))?;
+// ...
+```
+
+## Migraciones
+
+Las migraciones son generadas por Drizzle y ejecutadas al arrancar en `storage.rs`:
+
+```rust
+pub fn run_migrations(conn: &Arc<turso_core::Connection>) -> anyhow::Result<()> {
+    let sql = include_str!("../migrations/0000_*.sql");
+    conn.execute(sql)?;
+    conn.execute("PRAGMA capture_data_changes_conn='full'")?;
+    Ok(())
+}
+```
+
+Desde cliente, el `SqlEngine` envuelve la conexión y expone métodos equivalentes al anterior `RelationalEngine`.

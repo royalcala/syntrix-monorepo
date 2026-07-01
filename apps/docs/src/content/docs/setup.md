@@ -51,8 +51,7 @@ syntrix-monorepo/
 ├── packages/
 │   └── syntrix-ui/     ← Componentes UI compartidos (@syntrix/ui)
 ├── crates/
-│   ├── syntrix-core/   ← P2P auth, sync, heartbeats
-│   └── syntrix-schema/ ← Registry de esquemas (source of truth)
+│   └── syntrix-core/   ← P2P auth, sync, heartbeats
 ├── bin/                ← Scripts (cargo bridge)
 └── justfile            ← Automatización
 ```

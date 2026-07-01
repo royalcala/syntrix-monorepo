@@ -1,222 +1,19 @@
-use std::path::PathBuf;
-use std::time::Duration;
-
-use syntrix_testkit::{temp_node_dir, poll_until, PollConfig};
-
-use syntrix_admin_lib::identity::AppState as AdminState;
-use syntrix_client_lib::identity::AppState as ClientState;
-
-const POLL: PollConfig = PollConfig {
-    max_retries: 60,
-    base_delay: Duration::from_millis(200),
-    max_delay: Duration::from_secs(5),
+mod common;
+use common::{
+    spawn_admin, spawn_client, invite_one_client, invite_and_join, invite_and_join_two_clients,
+    find_client_org_id, wait_for_document, count_events, wait_for_audit_entry, set_client_org,
+    get_client_addr, node_id_from_addr,
 };
 
 // ===========================================================================
-// Test Helpers
+// Layer 1 — Sync básico
 // ===========================================================================
 
-pub async fn spawn_admin(data_dir: PathBuf) -> AdminState {
-    AdminState::new_with_data_dir(data_dir).await.unwrap()
-}
-
-pub async fn spawn_client(data_dir: PathBuf) -> ClientState {
-    ClientState::new_with_data_dir(data_dir).await.unwrap().0
-}
-
-fn node_id_from_addr(addr_json: &str) -> String {
-    let v: serde_json::Value = serde_json::from_str(addr_json).unwrap();
-    v["node_id"].as_str().unwrap().to_string()
-}
-
-async fn get_client_addr(client: &ClientState) -> String {
-    let peer_id = client.p2p().local_peer_id();
-    let addrs = client.p2p().listen_addrs().await;
-    serde_json::json!({
-        "node_id": hex::encode(client.node_id()),
-        "peer_id": peer_id.to_base58(),
-        "addrs": addrs,
-    }).to_string()
-}
-
-async fn invite_one_client(
-    admin: &mut AdminState,
-    client: &mut ClientState,
-    org_name: &str,
-    role: &str,
-) -> anyhow::Result<()> {
-    let client_addr = get_client_addr(client).await;
-    let node_id_hex = node_id_from_addr(&client_addr);
-
-    syntrix_admin_lib::admin::add_device(
-        admin,
-        org_name,
-        &node_id_hex,
-        &format!("Device {}", &node_id_hex[..8]),
-        &node_id_hex,
-        role,
-        &client_addr,
-    )
-    .await?;
-
-    let peer_id = admin.p2p().local_peer_id();
-    let addrs = admin.p2p().listen_addrs().await;
-    let admin_addr = syntrix_core::build_device_addr_string(peer_id, &addrs);
-    let org_state = admin.get_org(org_name).unwrap();
-    let topic_id = org_state.topic_id.clone();
-
-    let roles = admin.list_org_roles(org_name);
-    let (can_open, can_write) = roles
-        .iter()
-        .find(|r| r.name == role)
-        .map(|r| (r.can_open.clone(), r.can_write.clone()))
-        .unwrap_or_else(|| {
-            let g = syntrix_admin_lib::identity::default_role_grants(role);
-            (g.can_open, g.can_write)
-        });
-
-    syntrix_admin_lib::admin::send_invite(
-        admin,
-        org_name,
-        &client_addr,
-        role,
-        topic_id,
-        admin_addr,
-        can_open,
-        can_write,
-    )
-    .await?;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let invites = syntrix_client_lib::get_invites_impl(client);
-    if invites.is_empty() {
-        anyhow::bail!("no invites received by client for role {}", role);
-    }
-    let invite_json = serde_json::to_string(&invites[0])?;
-
-    syntrix_client_lib::join_org_impl(client, &invite_json, Some(org_name))
-        .await
-        .map_err(|e| anyhow::anyhow!("join_org failed: {}", e))?;
-
-    Ok(())
-}
-
-pub async fn invite_and_join(
-    admin: &mut AdminState,
-    client: &mut ClientState,
-    org_name: &str,
-    role: &str,
-) -> anyhow::Result<String> {
-    syntrix_admin_lib::admin::create_org(admin, org_name).await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    invite_one_client(admin, client, org_name, role).await?;
-    Ok(find_client_org_id(client, org_name))
-}
-
-pub async fn invite_and_join_two_clients(
-    admin: &mut AdminState,
-    client1: &mut ClientState,
-    client2: &mut ClientState,
-    org_name: &str,
-    role: &str,
-) -> anyhow::Result<String> {
-    syntrix_admin_lib::admin::create_org(admin, org_name).await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    invite_one_client(admin, client1, org_name, role).await?;
-    invite_one_client(admin, client2, org_name, role).await?;
-    let id = find_client_org_id(client1, org_name);
-    Ok(id)
-}
-
-pub fn find_client_org_id(state: &ClientState, name: &str) -> String {
-    syntrix_client_lib::list_orgs_impl(state)
-        .into_iter()
-        .find(|o| o.name == name)
-        .map(|o| o.id)
-        .expect("org not found in client state")
-}
-
-pub async fn wait_for_document(
-    state: &ClientState,
-    org_id: &str,
-    entity: &str,
-    doc_id: &str,
-) -> anyhow::Result<serde_json::Value> {
-    let idx = state.indexer();
-    poll_until(
-        || {
-            let idx = idx.clone();
-            let did = doc_id.to_string();
-            async move {
-                match idx.get_document(org_id, entity, &did).map_err(|e| e.to_string()) {
-                    Ok(Some(doc)) => Ok(doc),
-                    Ok(None) => Err("not found".to_string()),
-                    Err(e) => Err(e),
-                }
-            }
-        },
-        &POLL,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("wait_for_document({} in {}:{}): {}", doc_id, org_id, entity, e))
-}
-
-pub fn count_events(state: &ClientState, org_id: &str) -> usize {
-    state
-        .indexer()
-        .query_events_since(org_id, 0, 10000)
-        .map(|e| e.len())
-        .unwrap_or(0)
-}
-
-pub async fn wait_for_audit_entry(
-    state: &AdminState,
-    org_name: &str,
-    doc_id: &str,
-) -> anyhow::Result<syntrix_admin_lib::audit::AuditEntry> {
-    poll_until(
-        || {
-            let did = doc_id.to_string();
-            let o = org_name.to_string();
-            async move {
-                let entries = syntrix_admin_lib::audit::audit_query(
-                    state,
-                    &o,
-                    &syntrix_admin_lib::audit::AuditFilter {
-                        doc_id: Some(did.clone()),
-                        ..Default::default()
-                    },
-                    10,
-                    0,
-                );
-                match entries.into_iter().next() {
-                    Some(entry) => Ok(entry),
-                    None => Err("not found".to_string()),
-                }
-            }
-        },
-        &POLL,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("wait_for_audit_entry({}): {}", doc_id, e))
-}
-
-fn set_client_org(client: &mut ClientState, org_id: &str) {
-    ClientState::set_active_org(client, org_id)
-        .unwrap_or_else(|e| panic!("set_active_org({}): {}", org_id, e));
-}
-
-// ===========================================================================
-// Layer 1 — Sync básico (7 tests)
-// ===========================================================================
-
-/// Test 1: Admin + client1 + client2. Client1 commits, client2 receives via gossip.
 #[tokio::test]
 async fn test_two_clients_sync_via_gossip() {
-    let (_adir, adir) = temp_node_dir("t1_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t1_client1");
-    let (_c2dir, c2dir) = temp_node_dir("t1_client2");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t1_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t1_client1");
+    let (_c2dir, c2dir) = syntrix_testkit::temp_node_dir("t1_client2");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -241,14 +38,10 @@ async fn test_two_clients_sync_via_gossip() {
     assert_eq!(admin_entry.event_type, "customer.created");
 }
 
-// ... remaining tests follow same pattern as original, all existing test functions preserved ...
-// (The file will be compressed since the tests are structurally identical but with updated imports)
-
-/// Test 3: Admin audit sees events propagated from client.
 #[tokio::test]
 async fn test_admin_audit_sees_propagated_events() {
-    let (_adir, adir) = temp_node_dir("t3_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t3_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t3_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t3_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -267,11 +60,10 @@ async fn test_admin_audit_sees_propagated_events() {
     assert_eq!(entry.event_type, "customer.created");
 }
 
-/// Test 4: Events appended manually are distinct (per-event, not per-document).
 #[tokio::test]
 async fn test_duplicate_event_prevention() {
-    let (_adir, adir) = temp_node_dir("t4_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t4_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t4_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t4_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -300,12 +92,11 @@ async fn test_duplicate_event_prevention() {
     assert_eq!(count_after, 2, "manual append adds distinct event (HLC dedup is per-document)");
 }
 
-/// Test 6: Multi-org isolation — events in org A do not leak to org B.
 #[tokio::test]
 async fn test_multi_org_isolation() {
-    let (_adir, adir) = temp_node_dir("t6_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t6_client1");
-    let (_c2dir, c2dir) = temp_node_dir("t6_client2");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t6_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t6_client1");
+    let (_c2dir, c2dir) = syntrix_testkit::temp_node_dir("t6_client2");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -324,7 +115,7 @@ async fn test_multi_org_isolation() {
     syntrix_client_lib::commit_event_impl(&c1, "customer.created", r#"{"id":"c-acme","name":"AcmeInc"}"#)
         .expect("commit in acme");
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let c2_docs = syntrix_client_lib::query_entity_impl(&c2, Some(&org_b), "customers", None, None)
         .expect("query client2 beta customers");
@@ -336,7 +127,7 @@ async fn test_multi_org_isolation() {
     syntrix_client_lib::commit_event_impl(&c2, "customer.created", r#"{"id":"c-beta","name":"BetaCust"}"#)
         .expect("commit in beta");
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let c1_docs = syntrix_client_lib::query_entity_impl(&c1, Some(&org_a), "customers", None, None)
         .expect("query client1 acme customers");
@@ -368,8 +159,8 @@ async fn test_multi_org_isolation() {
 
 #[tokio::test]
 async fn test_write_allowed() {
-    let (_adir, adir) = temp_node_dir("t8_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t8_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t8_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t8_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -389,8 +180,8 @@ async fn test_write_allowed() {
 
 #[tokio::test]
 async fn test_write_denied() {
-    let (_adir, adir) = temp_node_dir("t9_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t9_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t9_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t9_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -410,8 +201,8 @@ async fn test_write_denied() {
 
 #[tokio::test]
 async fn test_write_wildcard() {
-    let (_adir, adir) = temp_node_dir("t10_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t10_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t10_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t10_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -431,8 +222,8 @@ async fn test_write_wildcard() {
 
 #[tokio::test]
 async fn test_read_allowed() {
-    let (_adir, adir) = temp_node_dir("t11_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t11_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t11_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t11_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -450,8 +241,8 @@ async fn test_read_allowed() {
 
 #[tokio::test]
 async fn test_read_denied() {
-    let (_adir, adir) = temp_node_dir("t12_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t12_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t12_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t12_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -469,10 +260,10 @@ async fn test_read_denied() {
 
 #[tokio::test]
 async fn test_default_roles() {
-    let (_adir, adir) = temp_node_dir("t13_admin");
-    let (_a2dir, a2dir) = temp_node_dir("t13_admin2");
-    let (_sdir, sdir) = temp_node_dir("t13_sales");
-    let (_cdir, cdir) = temp_node_dir("t13_contabilidad");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t13_admin");
+    let (_a2dir, a2dir) = syntrix_testkit::temp_node_dir("t13_admin2");
+    let (_sdir, sdir) = syntrix_testkit::temp_node_dir("t13_sales");
+    let (_cdir, cdir) = syntrix_testkit::temp_node_dir("t13_contabilidad");
 
     let mut admin = spawn_admin(adir).await;
     let mut admin_c = spawn_client(a2dir).await;
@@ -480,7 +271,7 @@ async fn test_default_roles() {
     let mut contabilidad = spawn_client(cdir).await;
 
     syntrix_admin_lib::admin::create_org(&mut admin, "acme").await.expect("create org");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     invite_one_client(&mut admin, &mut admin_c, "acme", "admin").await.expect("admin client");
     invite_one_client(&mut admin, &mut sales, "acme", "sales").await.expect("sales client");
     invite_one_client(&mut admin, &mut contabilidad, "acme", "contabilidad").await.expect("contabilidad client");
@@ -513,8 +304,8 @@ async fn test_default_roles() {
 
 #[tokio::test]
 async fn test_role_update_propagates() {
-    let (_adir, adir) = temp_node_dir("t14_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t14_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t14_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t14_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -531,7 +322,7 @@ async fn test_role_update_propagates() {
         .await
         .expect("update role");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     let result_ok = syntrix_client_lib::commit_event_impl(
         &c1,
@@ -547,8 +338,8 @@ async fn test_role_update_propagates() {
 #[tokio::test]
 #[ignore]
 async fn test_device_reassignment_propagates() {
-    let (_adir, adir) = temp_node_dir("t15_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t15_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t15_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t15_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -572,7 +363,7 @@ async fn test_device_reassignment_propagates() {
     .await
     .expect("reassign device to admin");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     set_client_org(&mut c1, &org_id);
     let result = syntrix_client_lib::commit_event_impl(
@@ -585,8 +376,8 @@ async fn test_device_reassignment_propagates() {
 
 #[tokio::test]
 async fn test_device_deactivation_blocks_access() {
-    let (_adir, adir) = temp_node_dir("t16_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t16_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t16_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t16_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -610,7 +401,7 @@ async fn test_device_deactivation_blocks_access() {
     .await
     .expect("deactivate device");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     set_client_org(&mut c1, &org_id);
     let result = syntrix_client_lib::commit_event_impl(
@@ -623,8 +414,8 @@ async fn test_device_deactivation_blocks_access() {
 
 #[tokio::test]
 async fn test_role_deletion_revokes_access() {
-    let (_adir, adir) = temp_node_dir("t17_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t17_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t17_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t17_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -647,7 +438,7 @@ async fn test_role_deletion_revokes_access() {
         .await
         .expect("revoke write");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     let result_after = syntrix_client_lib::commit_event_impl(
         &c1,
@@ -666,8 +457,8 @@ async fn test_role_deletion_revokes_access() {
 
 #[tokio::test]
 async fn test_schema_upcast() {
-    let (_adir, adir) = temp_node_dir("t18_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t18_client1");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t18_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t18_client1");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -693,9 +484,9 @@ async fn test_schema_upcast() {
 #[tokio::test]
 #[ignore]
 async fn test_concurrent_commits() {
-    let (_adir, adir) = temp_node_dir("t19_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t19_client1");
-    let (_c2dir, c2dir) = temp_node_dir("t19_client2");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t19_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t19_client1");
+    let (_c2dir, c2dir) = syntrix_testkit::temp_node_dir("t19_client2");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
@@ -722,7 +513,7 @@ async fn test_concurrent_commits() {
     )
     .expect("c2 commit");
 
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
     let c1_doc = wait_for_document(&c1, &org_id, "customers", "c-concurrent")
         .await
@@ -739,9 +530,9 @@ async fn test_concurrent_commits() {
 
 #[tokio::test]
 async fn test_large_payload() {
-    let (_adir, adir) = temp_node_dir("t20_admin");
-    let (_c1dir, c1dir) = temp_node_dir("t20_client1");
-    let (_c2dir, c2dir) = temp_node_dir("t20_client2");
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t20_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t20_client1");
+    let (_c2dir, c2dir) = syntrix_testkit::temp_node_dir("t20_client2");
 
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;

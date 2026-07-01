@@ -13,23 +13,22 @@ Syntrix es un ERP P2P (Peer-to-Peer) local-first construido con Tauri, Rust, Rea
 El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega toda la carga computacional (almacenamiento, indexación, búsqueda) al backend Rust mediante comandos IPC de Tauri.
 
 ### 1.1 Capa de Datos (Source of Truth)
-- **Tecnología:** `libp2p gossipsub` + `redb`
+- **Tecnología:** `libp2p gossipsub` + `Limbo SQL`
 - **Función:** Sincronización P2P multi-dispositivo y almacenamiento inmutable de eventos.
 - **Estructura:** Los datos se guardan como payloads JSON inmutables. El control de concurrencia se maneja mediante HLC (Hybrid Logical Clocks) en la llave del evento. Cada entidad tiene su propio namespace P2P para aislar permisos a nivel granular.
 
-### 1.2 Capa Relacional (Local Engine)
-- **Tecnología:** `redb` (Embebido en Rust)
-- **Función:** Proveer consultas eficientes y lookups O(1).
-- **Schema-Driven:** Los índices se generan exclusivamente para campos marcados como `#[indexed]` en el [Registry de Esquemas](/referencia/esquemas/) (`crates/syntrix-schema/`).
-- **Índices compuestos:** Soportados mediante tabla `COMPOSITE` con formato `compidx:{org}:{entity}:{name}:{v1}:{v2}:...:{doc_id}`.
-- **Codificación sortable:** Números codificados como big-endian hex con inversión de signo para rangos correctos (`2 < 10`).
-- **Paginación server-side:** `query_entity_advanced` acepta `filters`, `sort`, `limit`, `offset`.
+### 1.2 Capa SQL (Limbo)
+- **Tecnología:** `turso_core` (fork de Limbo, basado en SQLite)
+- **Función:** Proveer consultas SQL eficientes con índices, joins y FTS.
+- **Schema-Driven:** Las tablas se generan desde el Registry de Esquemas, con columnas tipadas, índices y constraints.
+- **Migraciones:** Drizzle Kit genera los archivos SQL de migración; `turso_core` los aplica al iniciar.
+- **CDC Sync:** Cada mutación se captura en `_cdc_log` y se replica a los peers vía libp2p.
 
-### 1.3 Capa de Búsqueda (Completada e Integrada)
-- **Tecnología:** `Tantivy` (Motor Full-Text embebido en Rust)
-- **Función:** Búsqueda difusa (fuzzy search), BM25 ranking y snippets.
-- **Schema-Driven:** Solo indexa campos declarados como `#[searchable]` en el Registry de Esquemas (no todo el JSON a ciegas).
-- **Cómo funciona:** Índice paralelo a redb. Se actualiza automáticamente desde `upsert_document` después de realizar la confirmación transaccional indexando únicamente los campos relevantes para búsqueda de texto. El frontend consume esto mediante la query reactiva que invoca a `search_entity` por IPC para búsqueda en el grid y para búsqueda global en el Command Palette (Ctrl+K) con snippets resaltados en HTML.
+### 1.3 FTS Nativo (Limbo)
+- **Tecnología:** FTS5 embebido en Limbo / SQLite
+- **Función:** Búsqueda full-text con ranking BM25, fuzzy search y snippets.
+- **Schema-Driven:** Solo indexa columnas declaradas como `#[searchable]` en el Registry de Esquemas.
+- **Integración:** El motor FTS se actualiza automáticamente desde CDC, usando los cambios del log para re-indexar únicamente las columnas relevantes. El frontend consume esto mediante `search_entity` por IPC para búsqueda en grid y para búsqueda global en el Command Palette (Ctrl+K) con snippets resaltados en HTML.
 
 ---
 
@@ -37,8 +36,8 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 
 ### 2.1 Stack Core
 - **Framework:** React + Vite + TypeScript
-- **Capa de Transporte:** `@tanstack/react-query` (Reemplazó a TanStack DB).
-- **Tablas y UI:** `@tanstack/react-table` + `shadcn/ui` + `Tailwind CSS`.
+- **Capa de Transporte:** `@tanstack/react-query`
+- **Tablas y UI:** `@tanstack/react-table` + `shadcn/ui` + `Tailwind CSS`
 
 ### 2.2 Patrones de Diseño UI
 - **FieldRegistry:** Un registro central (`fields.ts`) que define cómo se renderiza, formatea y valida cada tipo de dato (text, number, currency, status, relation, etc.) tanto en el Grid como en el DetailPanel.
@@ -51,19 +50,20 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 
 ### ✅ Completado y en Producción
 - **Infraestructura Core:** Admin crea organización con namespaces por entidad, agrega dispositivos y comparte tickets selectivos por rol.
-- **Registry de Esquemas (`crates/syntrix-schema/`):** Definición centralizada de entidades, campos, tipos, índices, relaciones y versiones. Exportable a JSON para frontend.
-- **Motor Relacional Schema-Driven:** `indexes.rs` genera índices solo para campos `#[indexed]`, con codificación sortable de números (big-endian hex), índices compuestos y paginación server-side.
-- **Tantivy Schema-Driven:** Solo indexa campos `#[searchable]` del Registry.
+- **Registry de Esquemas:** Definición centralizada de entidades, campos, tipos, índices, relaciones y versiones. Exportable a JSON para frontend.
+- **Motor SQL Schema-Driven:** Generación de tablas SQL con columnas tipadas, índices sortables y FTS desde el Registry.
+- **FTS Nativo (Limbo):** Indexación automática de columnas `#[searchable]` mediante FTS5, con BM25, fuzzy search y snippets.
 - **Upcasters y Migraciones:** Eventos con `schema_version`, cadena de upcasters deterministas. Ejemplo: CustomerV1ToV2 (address string → struct).
+- **CDC Sync + Live Queries:** Captura de cambios en `_cdc_log`, replicación P2P, y suscripciones SQL en vivo desde el frontend.
 - **Auditoría:** Comando `audit_query` que lee directo del log de eventos P2P con filtros por entidad, tipo, nodo y rango de tiempo.
-- **Tauri Bridge:** Comandos `query_entity`, `query_entity_advanced`, `commit_event`, `audit_query`, `get_schema_registry` funcionales.
+- **Tauri Bridge:** Comandos `query_entity`, `query_entity_advanced`, `commit_event`, `audit_query`, `get_schema_registry`, `live_subscribe`, `live_unsubscribe` funcionales.
 - **Permisos P2P:** Aislamiento real entre roles (Sales no lee Payroll).
 - **Workspace UI Core:** `EntityGrid` y `DetailPanel` renderizando dinámicamente según la entidad.
 - **Reactividad de UI:** Edición de celdas/formularios actualiza la UI y sincroniza a otros peers.
 - **Field Types Base:** Text, number, currency, date, select, status, boolean implementados en Grid y Forms.
-- **Motor de Búsqueda Híbrido Tantivy + redb:** Búsqueda difusa, BM25 y snippets en Rust (`search.rs`), indexación automática en writes, y comando `search_entity` expuesto.
-- **Búsqueda Dinámica en Grids:** Filtro del `EntityGrid` conectado a Tantivy vía debounce + IPC.
-- **Búsqueda Global y Command Palette (Ctrl+K):** Cross-entity search en `App.tsx` conectado a Tantivy, mostrando snippets de coincidencia.
+- **Motor de Búsqueda Full-Text:** Búsqueda difusa, BM25 y snippets en Rust, indexación automática mediante CDC, y comando `search_entity` expuesto.
+- **Búsqueda Dinámica en Grids:** Filtro del `EntityGrid` conectado al motor FTS vía debounce + IPC.
+- **Búsqueda Global y Command Palette (Ctrl+K):** Cross-entity search en `App.tsx` conectado al motor FTS, mostrando snippets de coincidencia.
 - **Navegación e Interacción Integrada (Deep Linking):** Seleccionar un resultado del Command Palette redirige a la vista de la entidad, selecciona la fila y abre el panel de detalles automáticamente usando `useSearchParams`.
 - **Detail Panel Responsivo:** Bottom sheet para móviles y panel lateral para desktop implementado.
 - **Explorador de Esquemas (`/schemas`):** Vista en Admin Console de entidades, campos, índices y relaciones desde el Registry.
@@ -83,7 +83,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 5. **Codegen Zod desde Registry:** Generar tipos TypeScript y esquemas Zod automáticamente desde `get_schema_registry()`.
 
 ### 🛠️ Pendiente (Herramientas de Consola Admin)
-- **Data Explorer (Visor JSON Crudo):** Vista especializada para diagnosticar la base de datos P2P. Muestra metadatos puros de la red P2P (Doc Hash, HLC, Autor) y el JSON crudo. Permite identificar datos corruptos, visualizar estado local de índices y emitir eventos correctivos a la red.
+- **Data Explorer (Visor JSON Crudo):** Vista especializada para diagnosticar la base de datos P2P. Muestra metadatos puros de la red P2P (Doc Hash, HLC, Autor) y el JSON crudo. Permite identificar datos corruptos, visualizar estado local de la base SQL y emitir eventos correctivos a la red.
 
 ### ❌ Pendiente (Features de Negocio)
 - Workflow de facturas (draft → open → paid).
@@ -96,7 +96,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 ---
 
 ## 4. Definición de MVP (Listo para Lanzamiento)
-- Motor Tantivy implementado y Command Palette funcional.
+- Motor FTS nativo implementado y Command Palette funcional.
 - Grid scrollea 10,000 registros a 60 FPS (Virtualización).
 - Sincronización multi-peer totalmente reactiva.
 - Recuperación offline probada y robusta.

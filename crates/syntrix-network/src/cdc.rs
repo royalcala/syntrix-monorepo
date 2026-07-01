@@ -236,3 +236,100 @@ fn entity_table_from_str(name: &str) -> &'static str {
         _ => "customers",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_entity_table_name_valid() {
+        assert_eq!(entity_table_name("customers").unwrap(), "customers");
+        assert_eq!(entity_table_name("customer").unwrap(), "customers");
+        assert_eq!(entity_table_name("suppliers").unwrap(), "suppliers");
+        assert_eq!(entity_table_name("supplier").unwrap(), "suppliers");
+        assert_eq!(entity_table_name("products").unwrap(), "products");
+        assert_eq!(entity_table_name("product").unwrap(), "products");
+        assert_eq!(entity_table_name("invoices").unwrap(), "invoices");
+        assert_eq!(entity_table_name("invoice").unwrap(), "invoices");
+        assert_eq!(entity_table_name("orders").unwrap(), "orders");
+        assert_eq!(entity_table_name("order").unwrap(), "orders");
+        assert_eq!(entity_table_name("payroll").unwrap(), "payroll");
+    }
+
+    #[test]
+    fn test_entity_table_name_invalid() {
+        assert!(entity_table_name("unknown").is_err());
+        assert!(entity_table_name("widgets").is_err());
+        assert!(entity_table_name("").is_err());
+    }
+
+    #[test]
+    fn test_entity_from_table() {
+        assert_eq!(entity_from_table("customers"), "customers");
+        assert_eq!(entity_from_table("payroll"), "payroll");
+        assert_eq!(entity_from_table("nonexistent"), "unknown");
+    }
+
+    #[test]
+    fn test_entity_tables_no_filter() {
+        let tables = entity_tables(None);
+        assert_eq!(tables.len(), 6);
+        assert!(tables.contains(&"customers"));
+        assert!(tables.contains(&"payroll"));
+    }
+
+    #[test]
+    fn test_entity_tables_with_filter() {
+        let tables = entity_tables(Some("customers"));
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0], "customers");
+    }
+
+    #[test]
+    fn test_entity_tables_invalid_filter() {
+        let tables = entity_tables(Some("invalid"));
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn test_extract_title_from_payload() {
+        let payload = serde_json::json!({"name": "Alice", "title": "CEO"});
+        assert_eq!(extract_title(&payload), "Alice");
+
+        let payload = serde_json::json!({"title": "Manager"});
+        assert_eq!(extract_title(&payload), "Manager");
+
+        let payload = serde_json::json!({"label": "Important"});
+        assert_eq!(extract_title(&payload), "Important");
+
+        let payload = serde_json::json!({"no": "title"});
+        assert_eq!(extract_title(&payload), "");
+    }
+
+    #[test]
+    fn test_extract_body_from_payload() {
+        let payload = serde_json::json!({"name": "Alice", "email": "alice@test.com", "age": 30});
+        let body = extract_body(&payload);
+        assert!(body.contains("Alice"));
+        assert!(body.contains("alice@test.com"));
+    }
+
+    #[test]
+    fn test_extract_body_empty_on_non_object() {
+        let payload = serde_json::json!("just a string");
+        assert_eq!(extract_body(&payload), "");
+    }
+
+    #[test]
+    fn test_extract_body_empty_on_empty_object() {
+        let payload = serde_json::json!({});
+        assert_eq!(extract_body(&payload), "");
+    }
+
+    #[test]
+    fn test_entity_table_from_str() {
+        assert_eq!(entity_table_from_str("customers"), "customers");
+        assert_eq!(entity_table_from_str("payroll"), "payroll");
+        assert_eq!(entity_table_from_str("unknown"), "customers");
+    }
+}

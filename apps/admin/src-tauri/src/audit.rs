@@ -146,6 +146,45 @@ pub fn audit_query(
     results
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_entity_from_event_type() {
+        assert_eq!(entity_from_event_type("customer.created"), "customers");
+        assert_eq!(entity_from_event_type("invoice.paid"), "invoices");
+        assert_eq!(entity_from_event_type("order.shipped"), "orders");
+        assert_eq!(entity_from_event_type("product.updated"), "products");
+        assert_eq!(entity_from_event_type("payroll.processed"), "payroll");
+        assert_eq!(entity_from_event_type("supplier.added"), "suppliers");
+    }
+
+    #[test]
+    fn test_audit_filter_default() {
+        let filter = AuditFilter::default();
+        assert!(filter.entity.is_none());
+        assert!(filter.since_ts.is_none());
+        assert!(filter.until_ts.is_none());
+    }
+
+    #[test]
+    fn test_audit_entry_serialization() {
+        let entry = AuditEntry {
+            key: "evt:org1:00000000000000010000:00000000:node1".into(),
+            event_type: "invoices.created".into(),
+            hlc_ts: 200,
+            schema_version: 1,
+            entity: "invoices".into(),
+            doc_id: "inv-1".into(),
+            payload: serde_json::json!({"id": "inv-1", "total": 500}),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("invoices.created"));
+        assert!(json.contains("inv-1"));
+    }
+}
+
 fn entity_from_event_type(event_type: &str) -> &str {
     match event_type.split('.').next().unwrap_or(event_type) {
         "invoice" | "invoices" => "invoices",

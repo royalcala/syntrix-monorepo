@@ -32,7 +32,7 @@ graph TD
 
 ## 2. Definición y Estructura de Roles
 
-Las políticas de acceso se almacenan en redb bajo `roles:{org_id}:{role_name}`:
+Las políticas de acceso se almacenan en la tabla SQL `roles`:
 
 ```json
 {
@@ -59,7 +59,7 @@ Roles predeterminados:
 Cada evento gossip recibido de un peer remoto pasa por validación de permisos antes de ser indexado:
 
 1. El `hlc.node` del evento identifica al autor (primeros 16 chars de su PublicKey hex).
-2. Se busca el rol del autor en redb `MEMBERS`.
+2. Se busca el rol del autor en la tabla SQL `members`.
 3. Se verifica `can_write(entity)` para el rol del autor.
 4. Si no tiene permiso, el evento se descarta.
 
@@ -71,6 +71,6 @@ Cada evento gossip recibido de un peer remoto pasa por validación de permisos a
 |---|---|
 | NamespaceId por entidad (anterior) | TopicId (libp2p gossipsub) por organización |
 | accept_cb a nivel de doc | Validación por evento en receive loop |
-| `doc.set_bytes()` para escribir | `gossip.broadcast()` + redb `EVENT_LOG.append` |
-| `doc.get_many()` para leer | redb `EVENT_LOG.query_events_since()` |
+| `doc.set_bytes()` para escribir | `gossip.broadcast()` + `event_log.append` |
+| `doc.get_many()` para leer | `event_log.query_events_since()` |
 | `doc.subscribe()` para eventos remotos | `GossipTopic` stream de `Event::Received` |

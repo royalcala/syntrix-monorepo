@@ -26,15 +26,16 @@ La arquitectura base está construida y probada.
 | Componente | Estado | Descripción |
 |-----------|--------|-------------|
 | P2P Sync (libp2p) | ✅ | Sync P2P con HLC, validación criptográfica de eventos |
-| Motor Relacional (redb) | ✅ | DOCUMENTS + INDEXES + COMPOSITE, schema-driven, codificación sortable |
-| Búsqueda Full-Text (Tantivy) | ✅ | BM25, fuzzy search, snippets, integrado al indexador |
-| Registry de Esquemas | ✅ | `syntrix-schema` crate, entidades, campos, índices, relaciones, namespaces |
+| Motor SQL (Limbo) | ✅ | Tablas SQL schema-driven, índices sortables, joins, paginación |
+| FTS nativo (Limbo) | ✅ | FTS5 embebido, BM25, fuzzy search, snippets |
+| Registry de Esquemas | ✅ | Entidades, campos, índices, relaciones, namespaces |
 | Migraciones (Upcasters) | ✅ | `schema_version` en eventos, cadena de upcasters deterministas |
+| CDC Sync + Live Queries | ✅ | Captura de cambios, replicación P2P, suscripciones SQL en vivo |
 | Permisos Schema-Driven | ✅ | `can_open`/`can_write` a nivel entidad, enforcement en queries y commits |
 | Workspace UI | ✅ | EntityGrid + DetailPanel, 8 field types, CRUD reactivo |
 | Admin Console | ✅ | Gestión de dispositivos, roles (matriz de permisos), orgs, esquemas, auditoría |
 | Auditoría de Eventos | ✅ | Feed cronológico del log de eventos con filtros |
-| Command Palette (Ctrl+K) | ✅ | Búsqueda global cross-entity con Tantivy |
+| Command Palette (Ctrl+K) | ✅ | Búsqueda global cross-entity con FTS |
 
 ---
 
@@ -104,7 +105,7 @@ La arquitectura base está construida y probada.
 
 Estas decisiones se tomaron en las fundaciones y definen el producto:
 
-1. **P2P event log como única fuente de verdad** — redb y Tantivy son proyecciones volátiles, reconstruidas desde el log.
+1. **P2P event log como única fuente de verdad** — Limbo SQL es una proyección volátil reconstruida desde el log.
 2. **Rust como motor de consultas** — el frontend nunca carga colecciones completas; delega a Rust vía IPC.
 3. **Registry de esquemas como source of truth** — un solo lugar define entidades, índices, relaciones, namespaces y migraciones.
 4. **Permisos puros a nivel entidad** — `can_open`/`can_write` contienen nombres de entidad o `"*"`, nunca namespaces.
