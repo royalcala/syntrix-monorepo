@@ -34,6 +34,7 @@ async fn get_client_addr(client: &ClientState) -> String {
     let addrs = client.p2p().listen_addrs().await;
     serde_json::json!({
         "node_id": hex::encode(client.node_id()),
+        "peer_id": peer_id.to_base58(),
         "addrs": addrs,
     }).to_string()
 }

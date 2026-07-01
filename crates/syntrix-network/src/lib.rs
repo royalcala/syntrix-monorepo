@@ -171,8 +171,9 @@ impl P2PNode {
 fn peer_id_to_bytes(peer_id: PeerId) -> [u8; 32] {
     let bytes = peer_id.to_bytes();
     let mut arr = [0u8; 32];
-    let len = bytes.len().min(32);
-    arr[..len].copy_from_slice(&bytes[..len]);
+    let start = bytes.len().saturating_sub(32);
+    let len = bytes.len().saturating_sub(start);
+    arr[..len].copy_from_slice(&bytes[start..start + len]);
     arr
 }
 

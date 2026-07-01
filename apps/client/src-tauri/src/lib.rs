@@ -307,6 +307,7 @@ pub fn get_endpoint_addr_impl(state: &AppState) -> String {
     let addrs = tauri::async_runtime::block_on(state.p2p().listen_addrs());
     serde_json::json!({
         "node_id": hex::encode(state.node_id()),
+        "peer_id": peer_id.to_base58(),
         "addrs": addrs,
     }).to_string()
 }

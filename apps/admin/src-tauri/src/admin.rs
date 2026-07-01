@@ -4,6 +4,7 @@ use syntrix_network::codecs::InvitePayload;
 pub use syntrix_core::{build_device_addr_string, SyncInfo};
 use syntrix_core::ENTITY_NAMES;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 
 pub async fn create_org(state: &mut AppState, name: &str) -> anyhow::Result<()> {
@@ -97,20 +98,12 @@ pub async fn send_invite(
     can_open: Vec<String>,
     can_write: Vec<String>,
 ) -> anyhow::Result<()> {
-    let (peer_id, _) = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
-        let node_id_hex = addr_data["node_id"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("invalid addr json: missing node_id"))?;
-        let node_id_bytes = hex::decode(node_id_hex)?;
-        let node_id: [u8; 32] = node_id_bytes.as_slice().try_into()
-            .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
-        let peer_id = libp2p::PeerId::from_bytes(&node_id)?;
-        (peer_id, endpoint_addr_json.to_string())
+    let peer_id = if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
+        let pid_str = addr_data["peer_id"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid addr json: missing peer_id"))?;
+        libp2p::PeerId::from_str(pid_str)?
     } else {
-        let node_id_bytes = hex::decode(endpoint_addr_json)?;
-        let node_id: [u8; 32] = node_id_bytes.as_slice().try_into()
-            .map_err(|_| anyhow::anyhow!("invalid node_id length"))?;
-        let peer_id = libp2p::PeerId::from_bytes(&node_id)?;
-        (peer_id, endpoint_addr_json.to_string())
+        libp2p::PeerId::from_str(endpoint_addr_json)?
     };
 
     let payload = InvitePayload {
@@ -210,6 +203,7 @@ pub fn get_endpoint_addr_impl(state: &AppState) -> String {
     let addrs = tauri::async_runtime::block_on(state.p2p().listen_addrs());
     serde_json::json!({
         "node_id": hex::encode(state.node_id()),
+        "peer_id": peer_id.to_base58(),
         "addrs": addrs,
     }).to_string()
 }
