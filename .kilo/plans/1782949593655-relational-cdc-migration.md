@@ -164,3 +164,14 @@ cobrar sus beneficios (columnas tipadas, índices reales, constraints, joins, ag
 - Confirmar la lista exacta de columnas **buscables** (FTS) por entidad.
 - Clave de LWW definitiva para filas hijas de line items.
 - Si el admin debe conservar además un audit semántico (nombre de evento) o basta el data-audit por fila.
+
+## Cierre (al final de todas las fases)
+
+- Revisar la suite de tests completa: actualizar los tests existentes que queden desalineados
+  con el modelo relacional/CDC, y añadir tests adicionales donde falte cobertura (por
+  ejemplo, timing/latencia del loop de publish CDC vs. helpers de polling en
+  `apps/*/src-tauri/tests/common/mod.rs`).
+- Actualizar `apps/docs/` (Starlight) para reflejar la arquitectura final: motor de base de
+  datos relacional, sync CDC-nativo, consola SQL del admin, y eliminar/actualizar referencias
+  obsoletas a `payload` JSON / `json_extract` / event_log-como-transporte.
+

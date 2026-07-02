@@ -48,6 +48,18 @@ impl NamespaceRegistry {
         self.grants.entry(org_id).or_default().insert(role, grants);
     }
 
+    /// All known devices for an org (Fase 3: used to seed a full roster snapshot into
+    /// catchup responses, so late/restarted peers learn every device's role for permission
+    /// validation, not just ones they happened to be subscribed for when broadcast).
+    pub fn list_devices(&self, org_id: &OrgId) -> Vec<Device> {
+        self.devices.get(org_id).map(|m| m.values().cloned().collect()).unwrap_or_default()
+    }
+
+    /// All known role grants for an org, as `(role_name, grants)` pairs.
+    pub fn list_roles(&self, org_id: &OrgId) -> Vec<(String, RoleGrants)> {
+        self.grants.get(org_id).map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default()
+    }
+
     pub fn set_known_namespaces(&mut self, org_id: OrgId, namespaces: HashSet<String>) {
         self.known_namespaces.insert(org_id, namespaces);
     }

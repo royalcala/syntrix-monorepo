@@ -43,6 +43,9 @@ pub struct AppState {
     pub invite_handler: InviteHandler,
     /// Maps topic string → org_id for routing gossipsub messages
     topic_to_org: HashMap<String, String>,
+    /// Maps org_id → topic string, shared with the CDC publish loop (cdc_sync.rs) so it can
+    /// pick up newly-joined orgs without restarting (Fase 3, tarea 14).
+    cdc_topics: Arc<RwLock<HashMap<String, String>>>,
 }
 
 pub struct OrgState {
@@ -104,12 +107,33 @@ impl AppState {
             process_event_loop(event_rx, idx_ev, p2p_ev, invite_handler_ev, topic_to_org_ev).await;
         });
 
+        // Shared with `add_org` (kept in sync below and in `AppState::add_org`) so the CDC
+        // publish loop (cdc_sync.rs, Fase 3) picks up newly-joined orgs without a restart.
+        let cdc_topics: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
+        {
+            let p2p_cdc = p2p.clone();
+            let indexer_cdc = indexer.clone();
+            let cdc_topics_task = cdc_topics.clone();
+            tokio::spawn(async move {
+                crate::cdc_sync::run_cdc_publish_loop(
+                    p2p_cdc,
+                    indexer_cdc,
+                    cdc_topics_task,
+                    std::time::Duration::from_secs(2),
+                )
+                .await;
+            });
+        }
+
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<ClientOrgConfig>>(&orgs_json) {
                     for cfg in configs {
                         let topic_id_str = format!("syntrix-org-{}", cfg.org_id);
                         topic_to_org.insert(topic_id_str.clone(), cfg.org_id.clone());
+                        if let Ok(mut cdc_map) = cdc_topics.write() {
+                            cdc_map.insert(cfg.org_id.clone(), topic_id_str.clone());
+                        }
 
                         if let Ok(mut reg) = registry.write() {
                             reg.set_topic_id(cfg.org_id.clone(), topic_id_str.clone());
@@ -142,7 +166,7 @@ impl AppState {
 
                             let admin_ok = if let Some(ref addr_str) = cfg.admin_addr {
                                 if let Some(peer_id) = syntrix_core::parse_device_addr(addr_str) {
-                                    p2p_catchup.request_catchup(peer_id, org.clone(), 0).await.is_ok()
+                                    crate::catchup::request_catchup(&p2p_catchup, peer_id, &org, 0, &idx).await.is_ok()
                                 } else {
                                     false
                                 }
@@ -162,7 +186,7 @@ impl AppState {
                                             let mut arr = [0u8; 32];
                                             arr.copy_from_slice(&peer_bytes);
                                             if let Ok(peer_id) = libp2p::PeerId::from_bytes(&arr) {
-                                                let _ = p2p_catchup.request_catchup(peer_id, org.clone(), 0).await;
+                                                let _ = crate::catchup::request_catchup(&p2p_catchup, peer_id, &org, 0, &idx).await;
                                             }
                                         }
                                     }
@@ -227,6 +251,7 @@ impl AppState {
                 live_manager: LiveManager::new(),
                 invite_handler,
                 topic_to_org,
+                cdc_topics,
             },
             vec![],
         ))
@@ -263,6 +288,9 @@ impl AppState {
 
     pub fn add_org(&mut self, org_id: &str, name: &str, role: &str, topic_id: String, admin_addr: Option<String>) {
         self.topic_to_org.insert(topic_id.clone(), org_id.to_string());
+        if let Ok(mut cdc_map) = self.cdc_topics.write() {
+            cdc_map.insert(org_id.to_string(), topic_id.clone());
+        }
         self.orgs.insert(org_id.into(), OrgState {
             name: name.into(),
             role: role.into(),
@@ -317,7 +345,16 @@ async fn process_event_loop(
                             Ok(v) => v,
                             Err(_) => continue,
                         };
-                        process_gossip_event(&org_id, &val, &indexer);
+
+                        // CDC-native batches (Fase 3) take over entity data changes; the
+                        // legacy JSON `commit_event` shape is still used for
+                        // heartbeats/role.updated/device.updated (see process_gossip_event),
+                        // which are outside the relational-CDC scope.
+                        if val.get("kind").and_then(|k| k.as_str()) == Some("cdc_batch") {
+                            apply_cdc_batch(&org_id, &val, &indexer);
+                        } else {
+                            process_gossip_event(&org_id, &val, &indexer);
+                        }
                     }
                     Event::InviteReceived { peer: _, payload } => {
                         invite_handler.push(payload);
@@ -340,6 +377,34 @@ async fn process_event_loop(
             }
             else => break,
         }
+    }
+}
+
+/// Applies an incoming CDC batch message (Fase 3, tarea 14/15). Rejects rows whose author
+/// (`node_id`, embedded per-row from the writer's own `commit_event`) is not permitted to
+/// write to the row's entity, per this node's local copy of `members`/`roles` (populated by
+/// `device.updated`/`role.updated` gossip — NOT the in-memory `NamespaceRegistry`, which only
+/// tracks this node's own device, never peers').
+fn apply_cdc_batch(
+    org_id: &str,
+    val: &serde_json::Value,
+    indexer: &crate::indexes::SqlEngine,
+) {
+    let events: Vec<syntrix_network::cdc::CdcEvent> = match val.get("events").cloned() {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(events) => events,
+            Err(e) => {
+                tracing::warn!(target: "syntrix", error = %e, "apply_cdc_batch: failed to decode events");
+                return;
+            }
+        },
+        None => return,
+    };
+
+    let perm = |node_id_hex: &str, entity: &str| indexer.can_node_write(org_id, node_id_hex, entity);
+
+    if let Err(e) = syntrix_network::cdc::apply_cdc_events(&indexer.conn, &events, &perm) {
+        tracing::warn!(target: "syntrix", org = %org_id, error = %e, "apply_cdc_batch: failed to apply events");
     }
 }
 

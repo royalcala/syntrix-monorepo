@@ -153,18 +153,11 @@ pub fn commit_event(
 
     state.live_manager().notify_table_changed(&state.conn(), &[entity.to_string()]);
 
-    // Broadcast via P2P node gossipsub
-    if let Ok(event_bytes) = serde_json::to_vec(&value) {
-        let p2p = state.p2p().clone();
-        let topic = org.topic_id.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let _ = p2p.publish(&topic, event_bytes);
-            });
-        } else {
-            let _ = p2p.publish(&topic, event_bytes);
-        }
-    }
+    // NOTE (Fase 3, Decisión 4): entity data no longer propagates via an immediate gossip
+    // publish of this JSON event. The typed row just written above (via
+    // `upsert_document_full`) is picked up by `turso_cdc`, and the periodic CDC publish loop
+    // (cdc_sync.rs::run_cdc_publish_loop) reads and gossips it to peers as a `CdcEvent`. This
+    // event_log entry remains client-local, informational only (see audit.rs).
 
     Ok(key)
 }

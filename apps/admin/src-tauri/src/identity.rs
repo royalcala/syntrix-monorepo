@@ -97,8 +97,9 @@ impl AppState {
         let hb_ev = heartbeats.clone();
         let db_ev = db.clone();
         let p2p_ev = p2p.clone();
+        let registry_ev = registry.clone();
         tokio::spawn(async move {
-            process_event_loop(event_rx, hb_ev, db_ev, p2p_ev).await;
+            process_event_loop(event_rx, hb_ev, db_ev, p2p_ev, registry_ev).await;
         });
 
         let mut orgs = HashMap::new();
@@ -500,6 +501,7 @@ async fn process_event_loop(
     heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
     db: Arc<turso_core::Connection>,
     p2p: P2PNode,
+    registry: Arc<RwLock<NamespaceRegistry>>,
 ) {
     use syntrix_network::Event;
 
@@ -518,7 +520,7 @@ async fn process_event_loop(
                             Err(_) => continue,
                         };
 
-                        if val.get("type").is_none() {
+                        if val.get("type").is_none() && val.get("kind").is_none() {
                             if let (Some(node_id), Some(ts)) = (
                                 val.get("node_id").and_then(|v| v.as_str()),
                                 val.get("ts").and_then(|v| v.as_i64()),
@@ -532,13 +534,53 @@ async fn process_event_loop(
                             continue;
                         }
 
-                        write_event_to_limbo(&db, &org_id, &val);
+                        // CDC-native batches (Fase 3/4) carry entity data changes: applied to
+                        // admin's own relational replica AND recorded as data-audit rows in
+                        // event_log. The legacy JSON shape (still used for device.updated/
+                        // role.updated broadcast by admin.rs itself) keeps going through
+                        // write_event_to_limbo as a best-effort audit record.
+                        if val.get("kind").and_then(|k| k.as_str()) == Some("cdc_batch") {
+                            crate::gossip::apply_cdc_batch(&db, &org_id, &val, &registry);
+                        } else {
+                            write_event_to_limbo(&db, &org_id, &val);
+                        }
                     }
                     Event::InviteReceived { peer: _, payload: _ } => {
                         // Admin doesn't receive invites
                     }
                     Event::CatchupRequestReceived { peer: _, org_id, since_hlc, response_id } => {
-                        let events = query_events_since(&db, &org_id, since_hlc, 10000).unwrap_or_default();
+                        let mut events = query_events_since(&db, &org_id, since_hlc, 10000).unwrap_or_default();
+                        // Always prepend a full device/role roster snapshot (Fase 3, tarea 16):
+                        // every peer needs the complete roles/devices roster to validate
+                        // `apply_cdc_events`'s author permission check, not just the devices it
+                        // happened to be subscribed for when a `device.updated` was broadcast.
+                        if let Ok(reg) = registry.read() {
+                            let mut roster = Vec::new();
+                            for (role_name, grants) in reg.list_roles(&org_id) {
+                                roster.push(serde_json::json!({
+                                    "type": "role.updated",
+                                    "payload": {
+                                        "name": role_name,
+                                        "can_open": grants.can_open,
+                                        "can_write": grants.can_write,
+                                    },
+                                }));
+                            }
+                            for device in reg.list_devices(&org_id) {
+                                roster.push(serde_json::json!({
+                                    "type": "device.updated",
+                                    "payload": {
+                                        "node_id": hex::encode(device.node_id),
+                                        "active": device.active,
+                                        "role": device.role,
+                                        "person": device.person,
+                                        "name": device.name,
+                                    },
+                                }));
+                            }
+                            roster.append(&mut events);
+                            events = roster;
+                        }
                         let _ = p2p.respond_catchup(response_id, events);
                     }
                     Event::PeerConnected(_) | Event::PeerDisconnected(_) => {}

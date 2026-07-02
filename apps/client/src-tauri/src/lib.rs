@@ -15,6 +15,7 @@ pub mod gossip;
 pub mod storage;
 pub mod catchup;
 pub mod live;
+pub mod cdc_sync;
 
 use syntrix_core::ENTITY_NAMES;
 
@@ -238,10 +239,7 @@ pub async fn join_org_impl(
     let indexer = state.indexer.clone();
     let admin_ok = if let Some(ref addr) = admin_addr {
         if let Some(peer_id) = syntrix_core::parse_device_addr(addr) {
-            match p2p_catchup.request_catchup(peer_id, final_org_id.clone(), 0).await {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+            crate::catchup::request_catchup(&p2p_catchup, peer_id, &final_org_id, 0, &indexer).await.is_ok()
         } else {
             false
         }
@@ -261,7 +259,7 @@ pub async fn join_org_impl(
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&peer_bytes);
                     if let Ok(peer_id) = libp2p::PeerId::from_bytes(&arr) {
-                        let _ = p2p_catchup.request_catchup(peer_id, final_org_id.clone(), 0).await;
+                        let _ = crate::catchup::request_catchup(&p2p_catchup, peer_id, &final_org_id, 0, &indexer).await;
                     }
                 }
             }

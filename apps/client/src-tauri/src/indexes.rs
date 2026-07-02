@@ -142,44 +142,9 @@ fn run_to_completion(stmt: &mut turso_core::Statement, ctx: &str) -> anyhow::Res
             turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
                 anyhow::bail!("{}: database busy or interrupted", ctx);
             }
-    }
-
-    /// Last `turso_cdc.change_id` successfully published for this org (Fase 3, tarea 17).
-    pub fn get_cdc_cursor(&self, org_id: &str) -> anyhow::Result<u64> {
-        let mut stmt = self.conn.prepare("SELECT last_change_id FROM cdc_cursor WHERE org_id=?1")?;
-        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
-        let mut cursor = 0u64;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {
-                    if let Some(row) = stmt.row() {
-                        let v: i64 = row.get(0)?;
-                        cursor = v as u64;
-                    }
-                }
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("get_cdc_cursor: database busy or interrupted");
-                }
-            }
         }
-        Ok(cursor)
     }
 
-    pub fn set_cdc_cursor(&self, org_id: &str, change_id: u64) -> anyhow::Result<()> {
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO cdc_cursor (org_id, last_change_id, updated_at) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(org_id) DO UPDATE SET last_change_id=excluded.last_change_id, updated_at=excluded.updated_at",
-        )?;
-        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
-        bind_value(&mut stmt, 2, turso_core::Value::from_i64(change_id as i64))?;
-        bind_value(&mut stmt, 3, turso_core::Value::from_i64(current_millis()))?;
-        run_to_completion(&mut stmt, "set_cdc_cursor")
-    }
-}
     Ok(())
 }
 
@@ -370,6 +335,34 @@ impl SqlEngine {
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role_name.to_string()))?;
         run_to_completion(&mut stmt, "delete_role")
+    }
+
+    /// Whether the device identified by `node_id_hex` is allowed to write to `entity` in
+    /// `org_id`, per the local copy of `members`/`roles` (populated from `device.updated`/
+    /// `role.updated` gossip — see identity.rs::process_gossip_event). Used to validate the
+    /// author of an incoming CDC event before applying it (Fase 3, tarea 15), since the
+    /// in-memory `NamespaceRegistry` only tracks this node's own device/role, not peers'.
+    pub fn can_node_write(&self, org_id: &str, node_id_hex: &str, entity: &str) -> bool {
+        let members = self.get_members(org_id).unwrap_or_default();
+        let Some(member) = members.iter().find(|m| m.get("node_id").and_then(|v| v.as_str()) == Some(node_id_hex))
+        else {
+            return false;
+        };
+        if member.get("active").and_then(|v| v.as_bool()) == Some(false) {
+            return false;
+        }
+        let Some(role) = member.get("role").and_then(|v| v.as_str()) else { return false };
+        if role == "admin" {
+            return true;
+        }
+        let roles = self.get_roles(org_id).unwrap_or_default();
+        roles.iter().any(|r| {
+            r.get("name").and_then(|n| n.as_str()) == Some(role)
+                && r.get("can_write")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().any(|v| v.as_str() == Some(entity) || v.as_str() == Some("*")))
+                    .unwrap_or(false)
+        })
     }
 
     pub fn upsert_heartbeat(&self, org_id: &str, node_id: &str, hb_json: &serde_json::Value) -> anyhow::Result<()> {
@@ -779,6 +772,42 @@ impl SqlEngine {
 
         Ok(())
     }
+
+    /// Last `turso_cdc.change_id` successfully published for this org (Fase 3, tarea 17).
+    pub fn get_cdc_cursor(&self, org_id: &str) -> anyhow::Result<u64> {
+        let mut stmt = self.conn.prepare("SELECT last_change_id FROM cdc_cursor WHERE org_id=?1")?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        let mut cursor = 0u64;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let v: i64 = row.get(0)?;
+                        cursor = v as u64;
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("get_cdc_cursor: database busy or interrupted");
+                }
+            }
+        }
+        Ok(cursor)
+    }
+
+    pub fn set_cdc_cursor(&self, org_id: &str, change_id: u64) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO cdc_cursor (org_id, last_change_id, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(org_id) DO UPDATE SET last_change_id=excluded.last_change_id, updated_at=excluded.updated_at",
+        )?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut stmt, 2, turso_core::Value::from_i64(change_id as i64))?;
+        bind_value(&mut stmt, 3, turso_core::Value::from_i64(current_millis()))?;
+        run_to_completion(&mut stmt, "set_cdc_cursor")
+    }
 }
 
 /// Maps a real column name to the JSON key used in the reconstructed IPC document shape.
@@ -947,5 +976,19 @@ mod tests {
         })).unwrap();
         engine.delete_document("org1", "invoices", "inv1").unwrap();
         assert!(engine.get_document("org1", "invoices", "inv1").unwrap().is_none());
+    }
+
+    #[test]
+    fn cdc_cursor_roundtrip_and_upsert() {
+        let (_dir, engine) = test_engine();
+        assert_eq!(engine.get_cdc_cursor("org1").unwrap(), 0, "no cursor yet defaults to 0");
+
+        engine.set_cdc_cursor("org1", 42).unwrap();
+        assert_eq!(engine.get_cdc_cursor("org1").unwrap(), 42);
+
+        engine.set_cdc_cursor("org1", 100).unwrap();
+        assert_eq!(engine.get_cdc_cursor("org1").unwrap(), 100, "cursor updates in place");
+
+        assert_eq!(engine.get_cdc_cursor("org2").unwrap(), 0, "cursor is per-org");
     }
 }
