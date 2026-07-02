@@ -71,6 +71,11 @@ pub struct EventEntry {
 
 pub struct SqlEngine {
     pub conn: Arc<turso_core::Connection>,
+    /// Per-org mutexes for serializing CDC event application. Gossipsub
+    /// can deliver the same CDC batch twice (direct + admin-forwarded).
+    /// Without serialization, concurrent processing of duplicate batches
+    /// can cause LWW races where an older event overwrites a newer one.
+    apply_locks: std::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::Mutex<()>>>>,
 }
 
 fn current_millis() -> i64 {
@@ -152,11 +157,21 @@ impl SqlEngine {
     pub fn new(data_dir: PathBuf) -> anyhow::Result<Self> {
         let conn = crate::storage::open_limbo(&data_dir)?;
         crate::storage::run_migrations(&conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn, apply_locks: std::sync::Mutex::new(std::collections::HashMap::new()) })
     }
 
     pub fn with_connection(conn: Arc<turso_core::Connection>) -> Self {
-        Self { conn }
+        Self { conn, apply_locks: std::sync::Mutex::new(std::collections::HashMap::new()) }
+    }
+
+    /// Returns a per-org mutex for serializing CDC event application.
+    /// Ensures that for a given org, only one batch of CDC events is
+    /// processed at a time, preventing LWW races from gossipsub duplicates.
+    pub fn org_apply_lock(&self, org_id: &str) -> Arc<std::sync::Mutex<()>> {
+        let mut locks = self.apply_locks.lock().unwrap();
+        locks.entry(org_id.to_string())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn append_event(&self, org_id: &str, event_json: &serde_json::Value) -> anyhow::Result<String> {

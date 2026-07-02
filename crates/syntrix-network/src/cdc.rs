@@ -92,7 +92,7 @@ pub fn read_cdc_events(
                     if let Some(row) = stmt.row() {
                         let change_id: i64 = row.get(0)?;
                         let change_type: i64 = row.get(1)?;
-                        let change_time: i64 = row.get(2)?;
+                        let cdc_change_time: i64 = row.get(2)?;
 
                         if change_id as u64 > max_change_id {
                             max_change_id = change_id as u64;
@@ -126,6 +126,14 @@ pub fn read_cdc_events(
                         for (col, val) in columns.iter().zip(values.iter()) {
                             col_map.insert(col.name.clone(), turso_value_to_json(val, col.ty));
                         }
+
+                        // turso_cdc.change_time truncates to seconds (divides by 1000),
+                        // losing the millisecond precision that LWW convergence needs.
+                        // Read the exact change_time from the row image instead.
+                        let change_time = col_map
+                            .get("change_time")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or_else(|| cdc_change_time.saturating_mul(1000));
 
                         all_events.push(CdcEvent {
                             table: table.to_string(),
@@ -331,7 +339,7 @@ pub fn apply_cdc_events(
             }
         };
 
-        if lww_should_skip(conn, table_ref.table_name(), &row_key_cols, &row_key_vals, event.change_time)? {
+        if lww_should_skip(conn, table_ref.table_name(), &row_key_cols, &row_key_vals, event.change_time, node_id)? {
             continue;
         }
 
@@ -360,9 +368,10 @@ fn lww_should_skip(
     key_cols: &[&str],
     key_vals: &[String],
     incoming_change_time: i64,
+    incoming_node_id: &str,
 ) -> anyhow::Result<bool> {
     let where_clause: Vec<String> = key_cols.iter().enumerate().map(|(i, c)| format!("{}=?{}", c, i + 1)).collect();
-    let sql = format!("SELECT change_time FROM {} WHERE {}", table, where_clause.join(" AND "));
+    let sql = format!("SELECT change_time, node_id FROM {} WHERE {}", table, where_clause.join(" AND "));
     let mut stmt = conn.prepare(&sql)?;
     for (i, val) in key_vals.iter().enumerate() {
         stmt.bind_at(NonZero::new(i + 1).unwrap(), turso_core::Value::from_text(val.clone()))?;
@@ -375,8 +384,13 @@ fn lww_should_skip(
             StepResult::Row => {
                 if let Some(row) = stmt.row() {
                     let stored_ts: i64 = row.get(0)?;
-                    if stored_ts >= incoming_change_time {
+                    if stored_ts > incoming_change_time {
                         skip = true;
+                    } else if stored_ts == incoming_change_time {
+                        let stored_node: String = row.get(1).unwrap_or_default();
+                        if stored_node != incoming_node_id && stored_node.as_str() >= incoming_node_id {
+                            skip = true;
+                        }
                     }
                 }
             }

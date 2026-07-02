@@ -37,6 +37,7 @@ pub async fn run_cdc_publish_loop(
     cdc_topics: Arc<RwLock<HashMap<String, String>>>,
     interval: Duration,
 ) {
+    let local_node_id = hex::encode(p2p.local_peer_id_bytes());
     loop {
         tokio::time::sleep(interval).await;
         let orgs: Vec<(String, String)> = {
@@ -48,7 +49,7 @@ pub async fn run_cdc_publish_loop(
         };
 
         for (org_id, topic) in orgs {
-            if let Err(e) = publish_org_cdc_batch(&p2p, &indexer, &org_id, &topic) {
+            if let Err(e) = publish_org_cdc_batch(&p2p, &indexer, &org_id, &topic, &local_node_id) {
                 tracing::warn!(target: "syntrix", org = %org_id, error = %e, "cdc publish loop: failed to publish batch");
             }
         }
@@ -60,13 +61,18 @@ fn publish_org_cdc_batch(
     indexer: &Arc<SqlEngine>,
     org_id: &str,
     topic: &str,
+    local_node_id: &str,
 ) -> anyhow::Result<()> {
     let cursor = indexer.get_cdc_cursor(org_id)?;
     let (events, new_cursor) = read_cdc_events(&indexer.conn, cursor, CDC_READ_LIMIT, None)?;
 
-    // Only keep events belonging to this org — `read_cdc_events` scans all tables regardless
-    // of org, since `turso_cdc.change_id` is a single global sequence (Fase 0 finding).
-    let org_events: Vec<_> = events.into_iter().filter(|e| e.org_id() == Some(org_id)).collect();
+    // Only publish events authored by this node — events received and applied
+    // from peers also generate local CDC entries (via apply_cdc_events →
+    // upsert_row), but republishing them creates a feedback loop where the
+    // receiving peer re-receives its own forwarded events and LWW-rejects them.
+    let org_events: Vec<_> = events.into_iter()
+        .filter(|e| e.org_id() == Some(org_id) && e.node_id() == Some(local_node_id))
+        .collect();
 
     if new_cursor > cursor {
         indexer.set_cdc_cursor(org_id, new_cursor)?;

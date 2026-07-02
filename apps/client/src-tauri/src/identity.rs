@@ -389,6 +389,13 @@ fn apply_cdc_batch(
     val: &serde_json::Value,
     indexer: &crate::indexes::SqlEngine,
 ) {
+    // Serialize CDC application per-org. Gossipsub duplicate delivery
+    // (direct + admin-forwarded) can cause two batches to be processed
+    // concurrently, leading to LWW races where an older event overwrites
+    // a newer one because the in-flight batch hasn't committed yet.
+    let lock = indexer.org_apply_lock(org_id);
+    let _guard = lock.lock().unwrap();
+
     let events: Vec<syntrix_network::cdc::CdcEvent> = match val.get("events").cloned() {
         Some(v) => match serde_json::from_value(v) {
             Ok(events) => events,
