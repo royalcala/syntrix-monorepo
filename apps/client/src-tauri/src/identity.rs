@@ -55,7 +55,7 @@ pub struct OrgState {
 }
 
 impl AppState {
-    pub async fn new() -> anyhow::Result<(Self, Vec<InvitePayload>)> {
+    pub async fn new() -> anyhow::Result<(Self, tokio::sync::mpsc::UnboundedReceiver<InvitePayload>)> {
         let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
             PathBuf::from(custom_path)
         } else {
@@ -64,7 +64,7 @@ impl AppState {
         Self::new_with_data_dir(data_dir).await
     }
 
-    pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<(Self, Vec<InvitePayload>)> {
+    pub async fn new_with_data_dir(data_dir: PathBuf) -> anyhow::Result<(Self, tokio::sync::mpsc::UnboundedReceiver<InvitePayload>)> {
         std::fs::create_dir_all(&data_dir).ok();
 
         let key_path = data_dir.join("keypair.bytes");
@@ -88,7 +88,7 @@ impl AppState {
         crate::storage::run_migrations(&conn)?;
         let conn_arc = conn;
         let indexer = Arc::new(crate::indexes::SqlEngine::with_connection(conn_arc.clone()));
-        let (invite_handler, _invite_rx) = InviteHandler::new();
+        let (invite_handler, invite_rx) = InviteHandler::new();
 
         let mut topic_to_org: HashMap<String, String> = HashMap::new();
         let mut orgs = HashMap::new();
@@ -252,7 +252,7 @@ impl AppState {
                 topic_to_org,
                 cdc_topics,
             },
-            vec![],
+            invite_rx,
         ))
     }
 

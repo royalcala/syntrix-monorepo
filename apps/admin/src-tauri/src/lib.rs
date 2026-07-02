@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::io::{BufRead, Write};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -146,105 +147,10 @@ fn send_invite(
     name: String,
     person: String,
 ) -> Result<(), String> {
-    let (node_id_hex, device_addr) = parse_invite_endpoint(&endpoint_addr_json)?;
-
-    let (topic_id, admin_addr, can_open, can_write) = {
-        let mut s = state.lock().map_err(|e| e.to_string())?;
-        tauri::async_runtime::block_on(admin::add_device(
-            &mut s,
-            &org,
-            &node_id_hex,
-            &name,
-            &person,
-            &role,
-            &device_addr,
-        )).map_err(|e| e.to_string())?;
-
-        let org_state = s.get_org(&org).ok_or_else(|| format!("org {} not found", org))?;
-        let roles = s.list_org_roles(&org);
-        let (co, cw) = roles.iter()
-            .find(|r| r.name == role)
-            .map(|r| (r.can_open.clone(), r.can_write.clone()))
-            .unwrap_or_else(|| {
-                let g = default_role_grants(&role);
-                (g.can_open, g.can_write)
-            });
-        let addr = get_admin_addr_string(&s);
-        (org_state.topic_id.clone(), addr, co, cw)
-    };
-
-    // Dial the client peer BEFORE sending the invite. libp2p request-response
-    // requires an active connection — without dial, the invite is silently
-    // dropped (OutboundFailure). We do this OUTSIDE the state lock so we don't
-    // block other commands during the QUIC handshake wait.
-    let mut dialed_any = false;
-    if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(&endpoint_addr_json) {
-        let peer_id_b58 = addr_data["peer_id"].as_str().unwrap_or("");
-        if let Some(addrs) = addr_data["addrs"].as_array() {
-            let p2p_node = {
-                let s = state.lock().map_err(|e| e.to_string())?;
-                s.p2p().clone()
-            };
-            for addr_val in addrs {
-                if let Some(addr_str) = addr_val.as_str() {
-                    let with_p2p = format!("{}/p2p/{}", addr_str, peer_id_b58);
-                    match libp2p::Multiaddr::from_str(&with_p2p) {
-                        Ok(addr) => {
-                            tracing::info!(
-                                target: "syntrix",
-                                addr = %addr_str,
-                                peer = %peer_id_b58,
-                                "dialing client peer before invite"
-                            );
-                            match p2p_node.dial(addr) {
-                                Ok(()) => { dialed_any = true; }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        target: "syntrix",
-                                        addr = %addr_str,
-                                        error = %e,
-                                        "dial failed for address"
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(target: "syntrix", addr = %addr_str, error = %e, "invalid multiaddr");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if !dialed_any {
-        tracing::warn!(
-            target: "syntrix",
-            "no valid addresses to dial — invite will likely fail"
-        );
-    }
-
-    // Wait for QUIC handshake + identify to complete (outside the lock).
-    // std::thread::sleep is safe here because we're not holding the state lock
-    // and don't need a Tokio runtime context.
-    std::thread::sleep(Duration::from_millis(1000));
-
-    // Now send the invite via request-response
-    {
-        let s = state.lock().map_err(|e| e.to_string())?;
-        tauri::async_runtime::block_on(admin::send_invite(
-            &*s,
-            &org,
-            &endpoint_addr_json,
-            &role,
-            topic_id,
-            admin_addr,
-            can_open,
-            can_write,
-        )).map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(admin::send_invite_full(
+        &mut s, &org, &endpoint_addr_json, &role, &name, &person,
+    )).map_err(|e| e.to_string())
 }
 
 fn get_admin_addr_string(state: &AppState) -> String {
@@ -350,6 +256,10 @@ fn get_endpoint_addr(state: tauri::State<'_, Mutex<AppState>>) -> Result<String,
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::args().any(|a| a == "--headless") {
+        return run_headless();
+    }
+
     let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
         std::path::PathBuf::from(custom_path)
     } else {
@@ -412,4 +322,109 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-admin");
+}
+
+/// Headless mode: no WebView, reads JSON commands from stdin, writes JSON
+/// responses to stdout. Used by binary E2E tests that need to test the real
+/// binary (with dial, P2P, Tauri runtime) without a GUI.
+fn run_headless() {
+    let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+        std::path::PathBuf::from(custom_path)
+    } else {
+        dirs_next::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("syntrix-admin")
+    };
+
+    let _ = syntrix_logging::init_logging("admin-headless", data_dir.clone());
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let mut state = rt.block_on(async {
+        AppState::new().await.expect("failed to initialize libp2p")
+    });
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::BufWriter::new(std::io::stdout());
+
+    eprintln!("[headless] admin ready, reading commands from stdin...");
+
+    for line in stdin.lock().lines() {
+        let line = match line { Ok(l) => l, Err(_) => break };
+        if line.is_empty() { continue; }
+
+        let req: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = writeln!(stdout, "{{\"ok\":false,\"error\":\"parse: {e}\"}}");
+                let _ = stdout.flush();
+                continue;
+            }
+        };
+
+        let cmd = req["cmd"].as_str().unwrap_or("");
+        let result: anyhow::Result<serde_json::Value> = rt.block_on(async {
+            match cmd {
+                "create_org" => {
+                    let name = req["name"].as_str().unwrap_or("");
+                    admin::create_org(&mut state, name).await?;
+                    Ok(serde_json::json!({"created": true}))
+                }
+                "create_role" => {
+                    let org = req["org"].as_str().unwrap_or("");
+                    let name = req["name"].as_str().unwrap_or("");
+                    let can_open: Vec<String> = req["can_open"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    let can_write: Vec<String> = req["can_write"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    admin::create_role(&mut state, org, name, can_open, can_write).await?;
+                    Ok(serde_json::json!({"created": true}))
+                }
+                "list_roles" => {
+                    let org = req["org"].as_str().unwrap_or("");
+                    let roles = admin::list_roles(&mut state, org).await?;
+                    Ok(serde_json::to_value(roles)?)
+                }
+                "list_orgs" => {
+                    Ok(serde_json::to_value(state.list_orgs())?)
+                }
+                "get_endpoint_addr" => {
+                    let peer_id = state.p2p().local_peer_id();
+                    let addrs = state.p2p().listen_addrs().await;
+                    let addr = serde_json::json!({
+                        "node_id": hex::encode(state.node_id()),
+                        "peer_id": peer_id.to_base58(),
+                        "addrs": addrs,
+                    }).to_string();
+                    Ok(serde_json::Value::String(addr))
+                }
+                "send_invite" => {
+                    let org = req["org"].as_str().unwrap_or("");
+                    let endpoint = req["endpoint_addr_json"].as_str().unwrap_or("");
+                    let role = req["role"].as_str().unwrap_or("");
+                    let name = req["name"].as_str().unwrap_or("");
+                    let person = req["person"].as_str().unwrap_or("");
+                    admin::send_invite_full(&mut state, org, endpoint, role, name, person).await?;
+                    Ok(serde_json::json!({"sent": true}))
+                }
+                "list_devices" => {
+                    let org = req["org"].as_str().unwrap_or("");
+                    let devs = admin::list_devices(&mut state, org).await?;
+                    Ok(serde_json::to_value(devs)?)
+                }
+                "ping" => Ok(serde_json::json!("pong")),
+                _ => Err(anyhow::anyhow!("unknown command: {}", cmd)),
+            }
+        });
+
+        let response = match result {
+            Ok(data) => serde_json::json!({"ok": true, "data": data}),
+            Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
+        };
+        let _ = writeln!(stdout, "{}", response);
+        let _ = stdout.flush();
+    }
+
+    eprintln!("[headless] admin shutting down");
 }

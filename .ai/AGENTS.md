@@ -93,6 +93,37 @@ Every `#[tauri::command]` **must** be a thin wrapper around a public `*_impl(sta
 ### Running tests
 Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. Do **not** run `cargo test` locally (laptop CPU restriction).
 
+### Test Tiers
+
+| Tier | Type | What it tests | How to run | Catches |
+|------|------|---------------|------------|---------|
+| **1** | Unit (inline `#[cfg(test)]`) | Pure functions, no I/O | `just test-unit` | Logic bugs |
+| **2** | Integration (in-process) | Admin + client sharing same tokio runtime, P2P via localhost | `just test-integration` | P2P protocol, permissions, sync |
+| **3** | Binary E2E (separate processes) | Real binaries launched as subprocesses, communicate via stdin/stdout `--headless` mode | `just test-binary-e2e` | Tauri command wrappers, dial, event emission, process lifecycle |
+| **4** | Playwright E2E (cross-app UI) | 3 Tauri apps running simultaneously with real WebViews | `scripts/start-e2e-cross-app.sh` + `just test-e2e-cross-app` | Frontend rendering, invite inbox UI, full user flow |
+
+### Tier 3 — Binary E2E tests (`just test-binary-e2e`)
+- Requires GTK on the local machine (must run locally, not on server-1).
+- Compiles both `syntrix-admin` and `syntrix-client` remotely, downloads binaries, then runs `cargo test --test binary_e2e_test -- --ignored` locally.
+- Uses `--headless` mode: both apps read JSON commands from stdin and write JSON responses to stdout.
+- Tests: create org → create role → get client address → send invite (with real P2P dial) → check inbox → accept invite → write records → verify bidirectional gossip sync.
+
+### Tier 4 — Playwright E2E tests
+- See `apps/admin/src/__tests__/e2e-cross-app/` for the cross-app test.
+- Requires 3 Tauri apps running with `--remote-debugging-port` and WebDriver.
+- Start apps: `bash scripts/start-e2e-cross-app.sh`
+- Run test: `just test-e2e-cross-app`
+
+### Headless mode (`--headless`)
+Both `syntrix-admin` and `syntrix-client` support a `--headless` CLI flag that:
+- Skips the Tauri WebView
+- Initializes `AppState` with P2P networking
+- Reads JSON commands from stdin: `{"cmd": "...", "arg": "..."}`
+- Writes JSON responses to stdout: `{"ok": true, "data": ...}`
+- Supported admin commands: `create_org`, `create_role`, `list_roles`, `send_invite`, `get_endpoint_addr`, `list_orgs`, `list_devices`, `ping`
+- Supported client commands: `get_invites`, `get_endpoint_addr`, `join_org`, `list_orgs`, `set_active_org`, `commit_event`, `query_entity`, `ping`
+- The `send_invite` command includes the full dial flow (add_device → dial all addresses → wait 1s for QUIC handshake → send invite via request-response).
+
 ### Test utility crate
 `crates/syntrix-testkit/` provides:
 - `temp_node_dir()` — isolated temp directories for per-test state.
@@ -101,6 +132,7 @@ Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. 
 
 ### Approval gate
 Do not approve a backend feature without a green `just test-rust`.
+- For invite/sync features: also require green `just test-binary-e2e`.
 
 ---
 

@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::io::{BufRead, Write};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
@@ -472,6 +473,10 @@ fn live_unsubscribe(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::args().any(|a| a == "--headless") {
+        return run_headless();
+    }
+
     let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
         std::path::PathBuf::from(custom_path)
     } else {
@@ -482,7 +487,7 @@ pub fn run() {
 
     let log_handle = syntrix_logging::init_logging("client", data_dir.clone());
 
-    let (app_state, _initial_invites) = tauri::async_runtime::block_on(async {
+    let (app_state, mut invite_rx) = tauri::async_runtime::block_on(async {
         AppState::new().await.expect("failed to initialize libp2p")
     });
 
@@ -520,6 +525,22 @@ pub fn run() {
                     }
                 }
             });
+
+            // Spawn invite listener: forwards P2P invites to the frontend
+            // via the "invite-received" Tauri event.
+            let invite_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(invite) = invite_rx.recv().await {
+                    let _ = invite_app_handle.emit("invite-received", &invite);
+                    tracing::info!(
+                        target: "syntrix",
+                        org = %invite.org_name,
+                        role = %invite.role,
+                        "invite emitted to frontend"
+                    );
+                }
+            });
+
             Ok(())
         })
         .manage(Mutex::new(app_state))
@@ -534,4 +555,95 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");
+}
+
+/// Headless mode: no WebView, reads JSON commands from stdin, writes JSON
+/// responses to stdout. Used by binary E2E tests.
+fn run_headless() {
+    let data_dir = if let Ok(custom_path) = std::env::var("SYNTRIX_DATA_DIR") {
+        std::path::PathBuf::from(custom_path)
+    } else {
+        dirs_next::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("syntrix")
+    };
+
+    let _ = syntrix_logging::init_logging("client-headless", data_dir.clone());
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let (mut state, _invite_rx) = rt.block_on(async {
+        AppState::new().await.expect("failed to initialize libp2p")
+    });
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::BufWriter::new(std::io::stdout());
+
+    eprintln!("[headless] client ready, reading commands from stdin...");
+
+    for line in stdin.lock().lines() {
+        let line = match line { Ok(l) => l, Err(_) => break };
+        if line.is_empty() { continue; }
+
+        let req: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = writeln!(stdout, "{{\"ok\":false,\"error\":\"parse: {e}\"}}");
+                let _ = stdout.flush();
+                continue;
+            }
+        };
+
+        let cmd = req["cmd"].as_str().unwrap_or("");
+        let result: Result<serde_json::Value, String> = match cmd {
+            "get_invites" => {
+                Ok(serde_json::to_value(get_invites_impl(&state)).unwrap_or_default())
+            }
+            "get_endpoint_addr" => {
+                let peer_id = state.p2p().local_peer_id();
+                let addrs = rt.block_on(state.p2p().listen_addrs());
+                let addr = serde_json::json!({
+                    "node_id": hex::encode(state.node_id()),
+                    "peer_id": peer_id.to_base58(),
+                    "addrs": addrs,
+                }).to_string();
+                Ok(serde_json::Value::String(addr))
+            }
+            "join_org" => {
+                let invite_json = req["invite_json"].as_str().unwrap_or("");
+                let org_name = req["org_name"].as_str();
+                let result = rt.block_on(join_org_impl(&mut state, invite_json, org_name));
+                result.map(|org| serde_json::to_value(org).unwrap_or_default())
+            }
+            "list_orgs" => {
+                Ok(serde_json::to_value(list_orgs_impl(&state)).unwrap_or_default())
+            }
+            "set_active_org" => {
+                let org_id = req["org_id"].as_str().unwrap_or("");
+                state.set_active_org(org_id).map(|_| serde_json::json!({"ok": true}))
+            }
+            "commit_event" => {
+                let event_type = req["event_type"].as_str().unwrap_or("");
+                let payload = req["payload"].as_str().unwrap_or("");
+                commit_event_impl(&state, event_type, payload)
+                    .map(|id| serde_json::json!({"id": id}))
+            }
+            "query_entity" => {
+                let org_id = req["org_id"].as_str();
+                let entity = req["entity"].as_str().unwrap_or("");
+                query_entity_impl(&state, org_id, entity, None, None)
+                    .map(|docs| serde_json::Value::Array(docs))
+            }
+            "ping" => Ok(serde_json::json!("pong")),
+            _ => Err(format!("unknown command: {}", cmd)),
+        };
+
+        let response = match result {
+            Ok(data) => serde_json::json!({"ok": true, "data": data}),
+            Err(e) => serde_json::json!({"ok": false, "error": e}),
+        };
+        let _ = writeln!(stdout, "{}", response);
+        let _ = stdout.flush();
+    }
+
+    eprintln!("[headless] client shutting down");
 }

@@ -128,6 +128,19 @@ test-unit:
 test-integration:
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace --tests'
 
+# Test E2E de binarios reales (procesos separados con dial P2P real)
+# Compila ambos binarios remotamente, luego ejecuta el test localmente (necesita GTK)
+test-binary-e2e:
+    #!/usr/bin/env bash
+    set -e
+    echo "=== Compilando admin en server-1 ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-admin'
+    echo "=== Compilando client en server-2 ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-2"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-client'
+    echo "=== Ejecutando test binario localmente ==="
+    CLIENT_BIN="$(cd apps/client/src-tauri && pwd)/target/debug/syntrix-client"
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/admin/src-tauri && SYNTRIX_CLIENT_BIN="'"$CLIENT_BIN"'" cargo test --test binary_e2e_test -- --ignored --nocapture'
+
 # Tests Rust completos (unit + integration)
 test-rust:
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace'

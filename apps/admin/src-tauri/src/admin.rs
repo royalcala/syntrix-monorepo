@@ -247,3 +247,72 @@ pub fn get_sync_info(
     let heartbeats: HashMap<String, i64> = state.get_heartbeats(org);
     syntrix_core::sync::get_sync_info(members, heartbeats, node_id)
 }
+
+/// Full invite flow: parse endpoint → add_device → dial → wait → send_invite.
+/// Used by both the Tauri command wrapper and the headless test mode.
+pub async fn send_invite_full(
+    state: &mut AppState,
+    org: &str,
+    endpoint_addr_json: &str,
+    role: &str,
+    name: &str,
+    person: &str,
+) -> anyhow::Result<()> {
+    // Parse endpoint
+    let node_id_hex = if let Ok(addr_data) =
+        serde_json::from_str::<serde_json::Value>(endpoint_addr_json)
+    {
+        addr_data["node_id"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid endpoint: missing node_id"))?
+            .to_string()
+    } else {
+        endpoint_addr_json.to_string()
+    };
+
+    // Register device
+    add_device(state, org, &node_id_hex, name, person, role, endpoint_addr_json).await?;
+
+    // Dial the client peer before sending the invite
+    if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
+        let peer_id_b58 = addr_data["peer_id"].as_str().unwrap_or("");
+        if let Some(addrs) = addr_data["addrs"].as_array() {
+            for addr_val in addrs {
+                if let Some(addr_str) = addr_val.as_str() {
+                    let with_p2p = format!("{}/p2p/{}", addr_str, peer_id_b58);
+                    if let Ok(addr) = libp2p::Multiaddr::from_str(&with_p2p) {
+                        tracing::info!(
+                            target: "syntrix",
+                            addr = %addr_str, peer = %peer_id_b58,
+                            "dialing client peer before invite"
+                        );
+                        let _ = state.p2p().dial(addr);
+                    }
+                }
+            }
+        }
+    }
+
+    // Wait for QUIC handshake + identify
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+
+    // Get role permissions
+    let org_state = state.get_org(org)
+        .ok_or_else(|| anyhow::anyhow!("org {} not found", org))?;
+    let topic_id = org_state.topic_id.clone();
+    let roles = state.list_org_roles(org);
+    let (can_open, can_write) = roles.iter()
+        .find(|r| r.name == role)
+        .map(|r| (r.can_open.clone(), r.can_write.clone()))
+        .unwrap_or_else(|| {
+            let g = crate::identity::default_role_grants(role);
+            (g.can_open, g.can_write)
+        });
+
+    // Get admin address
+    let peer_id = state.p2p().local_peer_id();
+    let addrs = state.p2p().listen_addrs().await;
+    let admin_addr = build_device_addr_string(peer_id, &addrs);
+
+    // Send invite via request-response
+    send_invite(state, org, endpoint_addr_json, role, topic_id, admin_addr, can_open, can_write).await
+}
