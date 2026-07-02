@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::str::FromStr;
 
-use syntrix_testkit::{temp_node_dir, poll_until, PollConfig};
+use syntrix_testkit::{poll_until, PollConfig};
 
 use syntrix_admin_lib::identity::AppState as AdminState;
 use syntrix_client_lib::identity::AppState as ClientState;
