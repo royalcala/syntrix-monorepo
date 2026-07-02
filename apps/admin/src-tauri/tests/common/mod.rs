@@ -38,10 +38,12 @@ pub async fn get_client_addr(client: &ClientState) -> String {
 
 pub async fn dial_client(admin: &AdminState, client_addr: &str) {
     let v: serde_json::Value = serde_json::from_str(client_addr).unwrap();
+    let peer_id_b58 = v["peer_id"].as_str().unwrap_or("");
     if let Some(addrs) = v["addrs"].as_array() {
         for addr_val in addrs {
             if let Some(addr_str) = addr_val.as_str() {
-                if let Ok(addr) = libp2p::Multiaddr::from_str(addr_str) {
+                let with_p2p = format!("{}/p2p/{}", addr_str, peer_id_b58);
+                if let Ok(addr) = libp2p::Multiaddr::from_str(&with_p2p) {
                     let _ = admin.p2p().dial(addr);
                 }
             }
@@ -70,6 +72,9 @@ pub async fn invite_one_client(
     .await?;
 
     dial_client(admin, &client_addr).await;
+
+    // Wait for QUIC handshake + identify to complete before sending invite
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let peer_id = admin.p2p().local_peer_id();
     let addrs = admin.p2p().listen_addrs().await;

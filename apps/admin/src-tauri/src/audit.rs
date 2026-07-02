@@ -2,26 +2,28 @@ use std::num::NonZero;
 use serde::{Deserialize, Serialize};
 use crate::identity::AppState;
 
+/// Data-audit entry (Decision 5): one row per record-level change (insert/update/delete),
+/// reconstructed from CDC once Fase 3 lands. Until then, `write_event_to_limbo` (gossip.rs)
+/// populates this from the legacy JSON business-event stream with `change_type = "write"`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditEntry {
-    pub key: String,
-    pub event_type: String,
-    pub hlc_ts: u64,
-    pub schema_version: u32,
+    pub id: i64,
     pub entity: String,
+    pub change_type: String,
     pub doc_id: String,
-    pub payload: serde_json::Value,
+    pub row_image: serde_json::Value,
+    pub change_time: i64,
+    pub node_id: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AuditFilter {
     pub entity: Option<String>,
-    pub event_type: Option<String>,
+    pub change_type: Option<String>,
     pub node: Option<String>,
-    pub author: Option<String>,
     pub doc_id: Option<String>,
-    pub since_ts: Option<u64>,
-    pub until_ts: Option<u64>,
+    pub since_ts: Option<i64>,
+    pub until_ts: Option<i64>,
 }
 
 pub fn audit_query(
@@ -32,7 +34,7 @@ pub fn audit_query(
     offset: usize,
 ) -> Vec<AuditEntry> {
     let mut sql = String::from(
-        "SELECT key, event_type, hlc_ts, schema_version, entity, payload FROM event_log WHERE org_id = ?1"
+        "SELECT id, entity, change_type, doc_id, row_image, change_time, node_id FROM event_log WHERE org_id = ?1"
     );
     let mut params: Vec<(usize, turso_core::Value)> = Vec::new();
     params.push((1, turso_core::Value::from_text(org_name.to_string())));
@@ -44,37 +46,38 @@ pub fn audit_query(
         params.push((idx, turso_core::Value::from_text(entity.clone())));
         idx += 1;
     }
-    if let Some(ref event_type) = filter.event_type {
-        sql.push_str(&format!(" AND event_type LIKE ?{}", idx));
-        params.push((idx, turso_core::Value::from_text(format!("%{}%", event_type))));
+    if let Some(ref change_type) = filter.change_type {
+        sql.push_str(&format!(" AND change_type = ?{}", idx));
+        params.push((idx, turso_core::Value::from_text(change_type.clone())));
         idx += 1;
     }
     if let Some(ref node) = filter.node {
-        sql.push_str(&format!(" AND hlc_node = ?{}", idx));
+        sql.push_str(&format!(" AND node_id = ?{}", idx));
         params.push((idx, turso_core::Value::from_text(node.clone())));
         idx += 1;
     }
+    if let Some(ref doc_id) = filter.doc_id {
+        sql.push_str(&format!(" AND doc_id = ?{}", idx));
+        params.push((idx, turso_core::Value::from_text(doc_id.clone())));
+        idx += 1;
+    }
     if let Some(since) = filter.since_ts {
-        sql.push_str(&format!(" AND hlc_ts >= ?{}", idx));
-        params.push((idx, turso_core::Value::from_i64(since as i64)));
+        sql.push_str(&format!(" AND change_time >= ?{}", idx));
+        params.push((idx, turso_core::Value::from_i64(since)));
         idx += 1;
     }
     if let Some(until) = filter.until_ts {
-        sql.push_str(&format!(" AND hlc_ts <= ?{}", idx));
-        params.push((idx, turso_core::Value::from_i64(until as i64)));
+        sql.push_str(&format!(" AND change_time <= ?{}", idx));
+        params.push((idx, turso_core::Value::from_i64(until)));
         idx += 1;
     }
 
-    let has_doc_filter = filter.doc_id.is_some();
-    let fetch_limit = if has_doc_filter { limit + offset + 200 } else { limit };
-    let fetch_offset = if has_doc_filter { 0 } else { offset };
-
-    sql.push_str(" ORDER BY hlc_ts DESC");
+    sql.push_str(" ORDER BY change_time DESC");
     sql.push_str(&format!(" LIMIT ?{}", idx));
-    params.push((idx, turso_core::Value::from_i64(fetch_limit as i64)));
+    params.push((idx, turso_core::Value::from_i64(limit as i64)));
     idx += 1;
     sql.push_str(&format!(" OFFSET ?{}", idx));
-    params.push((idx, turso_core::Value::from_i64(fetch_offset as i64)));
+    params.push((idx, turso_core::Value::from_i64(offset as i64)));
 
     let mut stmt = match state.db.prepare(&sql) {
         Ok(s) => s,
@@ -107,40 +110,24 @@ pub fn audit_query(
             None => continue,
         };
 
-        let key: String = match row.get(0) { Ok(v) => v, Err(_) => continue };
-        let event_type: String = match row.get(1) { Ok(v) => v, Err(_) => continue };
-        let hlc_ts: i64 = match row.get(2) { Ok(v) => v, Err(_) => continue };
-        let schema_version: i64 = match row.get(3) { Ok(v) => v, Err(_) => continue };
-        let entity: String = match row.get(4) { Ok(v) => v, Err(_) => continue };
-        let payload_str: String = match row.get(5) { Ok(v) => v, Err(_) => continue };
-        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap_or_default();
-
-        let doc_id = payload
-            .get("id")
-            .and_then(|v| v.as_str())
-            .or_else(|| payload.get("node_id").and_then(|v| v.as_str()))
-            .unwrap_or("")
-            .to_string();
-
-        if let Some(ref f_doc) = filter.doc_id {
-            if doc_id != *f_doc {
-                continue;
-            }
-        }
+        let id: i64 = match row.get(0) { Ok(v) => v, Err(_) => continue };
+        let entity: String = match row.get(1) { Ok(v) => v, Err(_) => continue };
+        let change_type: String = match row.get(2) { Ok(v) => v, Err(_) => continue };
+        let doc_id: String = match row.get(3) { Ok(v) => v, Err(_) => continue };
+        let row_image_str: String = match row.get(4) { Ok(v) => v, Err(_) => continue };
+        let change_time: i64 = match row.get(5) { Ok(v) => v, Err(_) => continue };
+        let node_id: String = match row.get(6) { Ok(v) => v, Err(_) => continue };
+        let row_image: serde_json::Value = serde_json::from_str(&row_image_str).unwrap_or_default();
 
         results.push(AuditEntry {
-            key,
-            event_type,
-            hlc_ts: hlc_ts as u64,
-            schema_version: schema_version as u32,
+            id,
             entity,
+            change_type,
             doc_id,
-            payload,
+            row_image,
+            change_time,
+            node_id,
         });
-    }
-
-    if has_doc_filter {
-        results = results.into_iter().skip(offset).take(limit).collect();
     }
 
     results
@@ -149,16 +136,6 @@ pub fn audit_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_entity_from_event_type() {
-        assert_eq!(entity_from_event_type("customer.created"), "customers");
-        assert_eq!(entity_from_event_type("invoice.paid"), "invoices");
-        assert_eq!(entity_from_event_type("order.shipped"), "orders");
-        assert_eq!(entity_from_event_type("product.updated"), "products");
-        assert_eq!(entity_from_event_type("payroll.processed"), "payroll");
-        assert_eq!(entity_from_event_type("supplier.added"), "suppliers");
-    }
 
     #[test]
     fn test_audit_filter_default() {
@@ -171,28 +148,16 @@ mod tests {
     #[test]
     fn test_audit_entry_serialization() {
         let entry = AuditEntry {
-            key: "evt:org1:00000000000000010000:00000000:node1".into(),
-            event_type: "invoices.created".into(),
-            hlc_ts: 200,
-            schema_version: 1,
+            id: 1,
             entity: "invoices".into(),
+            change_type: "insert".into(),
             doc_id: "inv-1".into(),
-            payload: serde_json::json!({"id": "inv-1", "total": 500}),
+            row_image: serde_json::json!({"id": "inv-1", "amount": 500}),
+            change_time: 200,
+            node_id: "node1".into(),
         };
         let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("invoices.created"));
+        assert!(json.contains("invoices"));
         assert!(json.contains("inv-1"));
-    }
-}
-
-fn entity_from_event_type(event_type: &str) -> &str {
-    match event_type.split('.').next().unwrap_or(event_type) {
-        "invoice" | "invoices" => "invoices",
-        "order" | "orders" => "orders",
-        "product" | "products" => "products",
-        "customer" | "customers" => "customers",
-        "supplier" | "suppliers" => "suppliers",
-        "payroll" => "payroll",
-        other => other,
     }
 }

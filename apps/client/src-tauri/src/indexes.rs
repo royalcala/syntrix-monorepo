@@ -2,17 +2,9 @@ use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-fn entity_table_name(entity: &str) -> anyhow::Result<&'static str> {
-    match entity {
-        "customers" | "customer" => Ok("customers"),
-        "suppliers" | "supplier" => Ok("suppliers"),
-        "products" | "product" => Ok("products"),
-        "invoices" | "invoice" => Ok("invoices"),
-        "orders" | "order" => Ok("orders"),
-        "payroll" => Ok("payroll"),
-        _ => anyhow::bail!("unknown entity: {}", entity),
-    }
-}
+use syntrix_core::schema::{ColumnMeta, ColumnType, ChildTableMeta, EntityMeta};
+
+pub use syntrix_core::entity_table_name;
 
 fn entity_from_event_type(event_type: &str) -> &str {
     match event_type.split('.').next().unwrap_or(event_type) {
@@ -81,6 +73,116 @@ pub struct SqlEngine {
     pub conn: Arc<turso_core::Connection>,
 }
 
+fn current_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Convert a JSON value into the turso value matching a column's declared type. Missing/null
+/// business fields become SQL NULL (nullable columns) or the type's zero value otherwise.
+fn json_to_column_value(v: Option<&serde_json::Value>, ty: ColumnType, nullable: bool) -> turso_core::Value {
+    match (v, ty) {
+        (None, _) | (Some(serde_json::Value::Null), _) => {
+            if nullable {
+                turso_core::Value::Null
+            } else {
+                match ty {
+                    ColumnType::Text => turso_core::Value::from_text(String::new()),
+                    ColumnType::Integer => turso_core::Value::from_i64(0),
+                    ColumnType::Real => turso_core::Value::from_f64(0.0),
+                }
+            }
+        }
+        (Some(serde_json::Value::String(s)), ColumnType::Text) => turso_core::Value::from_text(s.clone()),
+        (Some(serde_json::Value::Number(n)), ColumnType::Text) => turso_core::Value::from_text(n.to_string()),
+        (Some(serde_json::Value::Bool(b)), ColumnType::Text) => turso_core::Value::from_text(b.to_string()),
+        (Some(serde_json::Value::Number(n)), ColumnType::Integer) => {
+            turso_core::Value::from_i64(n.as_i64().unwrap_or_else(|| n.as_f64().unwrap_or(0.0) as i64))
+        }
+        (Some(serde_json::Value::Bool(b)), ColumnType::Integer) => turso_core::Value::from_i64(if *b { 1 } else { 0 }),
+        (Some(serde_json::Value::String(s)), ColumnType::Integer) => {
+            turso_core::Value::from_i64(s.parse::<i64>().unwrap_or(0))
+        }
+        (Some(serde_json::Value::Number(n)), ColumnType::Real) => turso_core::Value::from_f64(n.as_f64().unwrap_or(0.0)),
+        (Some(serde_json::Value::String(s)), ColumnType::Real) => {
+            turso_core::Value::from_f64(s.parse::<f64>().unwrap_or(0.0))
+        }
+        _ => turso_core::Value::Null,
+    }
+}
+
+/// Convert a turso row value back into a JSON value according to the column's declared type.
+fn column_value_to_json(v: &turso_core::Value) -> serde_json::Value {
+    match v {
+        turso_core::Value::Null => serde_json::Value::Null,
+        turso_core::Value::Text(t) => serde_json::Value::String(t.as_str().to_string()),
+        turso_core::Value::Numeric(turso_core::Numeric::Integer(i)) => serde_json::json!(i),
+        turso_core::Value::Numeric(turso_core::Numeric::Float(f)) => {
+            serde_json::json!(f64::from(*f))
+        }
+        turso_core::Value::Blob(_) => serde_json::Value::Null,
+    }
+}
+
+fn bind_value(stmt: &mut turso_core::Statement, idx: usize, value: turso_core::Value) -> anyhow::Result<()> {
+    stmt.bind_at(NonZero::new(idx).unwrap(), value)?;
+    Ok(())
+}
+
+fn run_to_completion(stmt: &mut turso_core::Statement, ctx: &str) -> anyhow::Result<()> {
+    loop {
+        match stmt.step()? {
+            turso_core::StepResult::Row => {}
+            turso_core::StepResult::Done => break,
+            turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                stmt._io().step()?;
+            }
+            turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                anyhow::bail!("{}: database busy or interrupted", ctx);
+            }
+    }
+
+    /// Last `turso_cdc.change_id` successfully published for this org (Fase 3, tarea 17).
+    pub fn get_cdc_cursor(&self, org_id: &str) -> anyhow::Result<u64> {
+        let mut stmt = self.conn.prepare("SELECT last_change_id FROM cdc_cursor WHERE org_id=?1")?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        let mut cursor = 0u64;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let v: i64 = row.get(0)?;
+                        cursor = v as u64;
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("get_cdc_cursor: database busy or interrupted");
+                }
+            }
+        }
+        Ok(cursor)
+    }
+
+    pub fn set_cdc_cursor(&self, org_id: &str, change_id: u64) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO cdc_cursor (org_id, last_change_id, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(org_id) DO UPDATE SET last_change_id=excluded.last_change_id, updated_at=excluded.updated_at",
+        )?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut stmt, 2, turso_core::Value::from_i64(change_id as i64))?;
+        bind_value(&mut stmt, 3, turso_core::Value::from_i64(current_millis()))?;
+        run_to_completion(&mut stmt, "set_cdc_cursor")
+    }
+}
+    Ok(())
+}
+
 impl SqlEngine {
     pub fn new(data_dir: PathBuf) -> anyhow::Result<Self> {
         let conn = crate::storage::open_limbo(&data_dir)?;
@@ -118,18 +220,7 @@ impl SqlEngine {
         stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_i64(schema_version as i64))?;
         stmt.bind_at(NonZero::new(8).unwrap(), turso_core::Value::from_text(entity.to_string()))?;
         stmt.bind_at(NonZero::new(9).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("append_event: database busy or interrupted");
-                }
-            }
-        }
+        run_to_completion(&mut stmt, "append_event")?;
 
         Ok(key)
     }
@@ -197,19 +288,7 @@ impl SqlEngine {
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
         stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(data.clone()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("upsert_member: database busy or interrupted");
-                }
-            }
-        }
-        Ok(())
+        run_to_completion(&mut stmt, "upsert_member")
     }
 
     pub fn get_members(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
@@ -244,19 +323,7 @@ impl SqlEngine {
         let mut stmt = self.conn.prepare("DELETE FROM members WHERE org_id=?1 AND node_id=?2")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("delete_member: database busy or interrupted");
-                }
-            }
-        }
-        Ok(())
+        run_to_completion(&mut stmt, "delete_member")
     }
 
     pub fn upsert_role_cfg(&self, org_id: &str, role_name: &str, role_json: &serde_json::Value) -> anyhow::Result<()> {
@@ -267,19 +334,7 @@ impl SqlEngine {
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role_name.to_string()))?;
         stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(data.clone()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("upsert_role_cfg: database busy or interrupted");
-                }
-            }
-        }
-        Ok(())
+        run_to_completion(&mut stmt, "upsert_role_cfg")
     }
 
     pub fn get_roles(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
@@ -314,19 +369,7 @@ impl SqlEngine {
         let mut stmt = self.conn.prepare("DELETE FROM roles WHERE org_id=?1 AND role_name=?2")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role_name.to_string()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("delete_role: database busy or interrupted");
-                }
-            }
-        }
-        Ok(())
+        run_to_completion(&mut stmt, "delete_role")
     }
 
     pub fn upsert_heartbeat(&self, org_id: &str, node_id: &str, hb_json: &serde_json::Value) -> anyhow::Result<()> {
@@ -339,19 +382,7 @@ impl SqlEngine {
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
         stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(ts))?;
         stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(data.clone()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("upsert_heartbeat: database busy or interrupted");
-                }
-            }
-        }
-        Ok(())
+        run_to_completion(&mut stmt, "upsert_heartbeat")
     }
 
     pub fn get_heartbeats(&self, org_id: &str) -> anyhow::Result<std::collections::HashMap<String, i64>> {
@@ -381,6 +412,111 @@ impl SqlEngine {
         Ok(results)
     }
 
+    /// Typed projection: business_json -> real columns (Fase 2, tarea 9). Replaces the old
+    /// `payload` JSON blob write. Also handles child rows (invoice_items/order_items) via
+    /// delete+reinsert, and keeps the FTS5 shadow table in sync.
+    pub fn upsert_document_full(
+        &self,
+        org_id: &str,
+        entity: &str,
+        doc_id: &str,
+        json_payload: &serde_json::Value,
+        change_time: i64,
+        node_id: &str,
+    ) -> anyhow::Result<()> {
+        let meta = syntrix_core::entity_meta(entity)?;
+        let business_cols = syntrix_core::business_columns(meta);
+
+        let mut col_names: Vec<&str> = vec!["org_id", "doc_id"];
+        col_names.extend(business_cols.iter().map(|c| c.name.as_str()));
+        col_names.push("change_time");
+        col_names.push("node_id");
+
+        let placeholders: Vec<String> = (1..=col_names.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "INSERT OR REPLACE INTO {} ({}) VALUES ({})",
+            meta.table,
+            col_names.join(", "),
+            placeholders.join(", ")
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut stmt, 2, turso_core::Value::from_text(doc_id.to_string()))?;
+        let mut idx = 3;
+        for col in &business_cols {
+            let json_key = business_json_key(col);
+            let v = json_to_column_value(json_payload.get(json_key), col.ty, col.nullable);
+            bind_value(&mut stmt, idx, v)?;
+            idx += 1;
+        }
+        bind_value(&mut stmt, idx, turso_core::Value::from_i64(change_time))?;
+        idx += 1;
+        bind_value(&mut stmt, idx, turso_core::Value::from_text(node_id.to_string()))?;
+        run_to_completion(&mut stmt, "upsert_document_full")?;
+
+        for child in &meta.children {
+            self.replace_children(org_id, doc_id, child, json_payload, change_time, node_id)?;
+        }
+
+        Ok(())
+    }
+
+    fn replace_children(
+        &self,
+        org_id: &str,
+        parent_doc_id: &str,
+        child: &ChildTableMeta,
+        parent_payload: &serde_json::Value,
+        change_time: i64,
+        node_id: &str,
+    ) -> anyhow::Result<()> {
+        let delete_sql = format!("DELETE FROM {} WHERE org_id=?1 AND {}=?2", child.table, child.parent_key);
+        let mut del_stmt = self.conn.prepare(&delete_sql)?;
+        bind_value(&mut del_stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut del_stmt, 2, turso_core::Value::from_text(parent_doc_id.to_string()))?;
+        run_to_completion(&mut del_stmt, "replace_children:delete")?;
+
+        let items = parent_payload.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let business_cols = syntrix_core::child_business_columns(child);
+
+        for (idx_in_list, item) in items.iter().enumerate() {
+            let mut col_names: Vec<&str> = vec!["org_id", child.parent_key.as_str()];
+            col_names.extend(business_cols.iter().map(|c| c.name.as_str()));
+            col_names.push("change_time");
+            col_names.push("node_id");
+
+            let placeholders: Vec<String> = (1..=col_names.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "INSERT OR REPLACE INTO {} ({}) VALUES ({})",
+                child.table,
+                col_names.join(", "),
+                placeholders.join(", ")
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+            bind_value(&mut stmt, 2, turso_core::Value::from_text(parent_doc_id.to_string()))?;
+            let mut col_idx = 3;
+            for col in &business_cols {
+                let value = if col.name == "line_id" {
+                    let line_id = item.get("line_id").and_then(|v| v.as_str()).map(String::from)
+                        .unwrap_or_else(|| format!("{parent_doc_id}-{idx_in_list}"));
+                    turso_core::Value::from_text(line_id)
+                } else {
+                    json_to_column_value(item.get(col.name.as_str()), col.ty, col.nullable)
+                };
+                bind_value(&mut stmt, col_idx, value)?;
+                col_idx += 1;
+            }
+            bind_value(&mut stmt, col_idx, turso_core::Value::from_i64(change_time))?;
+            col_idx += 1;
+            bind_value(&mut stmt, col_idx, turso_core::Value::from_text(node_id.to_string()))?;
+            run_to_completion(&mut stmt, "replace_children:insert")?;
+        }
+
+        Ok(())
+    }
+
     pub fn upsert_document(
         &self,
         org_id: &str,
@@ -388,36 +524,7 @@ impl SqlEngine {
         doc_id: &str,
         json_payload: &serde_json::Value,
     ) -> anyhow::Result<()> {
-        let table = entity_table_name(entity)?;
-        let payload_str = serde_json::to_string(json_payload)?;
-        let fts_title = extract_title(json_payload);
-        let fts_body = extract_body(json_payload);
-
-        let sql = format!(
-            "INSERT OR REPLACE INTO {} (org_id, doc_id, payload, fts_title, fts_body) VALUES (?1, ?2, ?3, ?4, ?5)",
-            table
-        );
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
-        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
-        stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(fts_title.clone()))?;
-        stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(fts_body.clone()))?;
-        loop {
-            match stmt.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("upsert_document: database busy or interrupted");
-                }
-            }
-        }
-
-        Ok(())
+        self.upsert_document_full(org_id, entity, doc_id, json_payload, current_millis(), "")
     }
 
     pub fn upsert_document_with_hlc(
@@ -463,44 +570,15 @@ impl SqlEngine {
                 }
             }
         }
-
         drop(stmt);
 
         if skip {
             return Ok(());
         }
 
-        // Upsert document
-        let table = entity_table_name(entity)?;
-        let payload_str = serde_json::to_string(json_payload)?;
-        let fts_title = extract_title(json_payload);
-        let fts_body = extract_body(json_payload);
+        let change_time = (hlc.ts / 1000) as i64;
+        self.upsert_document_full(org_id, entity, doc_id, json_payload, change_time, &hlc.node)?;
 
-        let sql = format!(
-            "INSERT OR REPLACE INTO {} (org_id, doc_id, payload, fts_title, fts_body) VALUES (?1, ?2, ?3, ?4, ?5)",
-            table
-        );
-        let mut stmt2 = self.conn.prepare(&sql)?;
-        stmt2.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-        stmt2.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
-        stmt2.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
-        stmt2.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(fts_title.clone()))?;
-        stmt2.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(fts_body.clone()))?;
-        loop {
-            match stmt2.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt2._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("upsert_document_with_hlc: database busy or interrupted");
-                }
-            }
-        }
-        drop(stmt2);
-
-        // Update HLC tracker
         let mut stmt3 = self.conn.prepare(
             "INSERT OR REPLACE INTO hlc_tracker (org_id, entity, doc_id, hlc_ts, hlc_count, hlc_node) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
@@ -510,20 +588,7 @@ impl SqlEngine {
         stmt3.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_i64(hlc.ts as i64))?;
         stmt3.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_i64(hlc.count as i64))?;
         stmt3.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(hlc.node.clone()))?;
-        loop {
-            match stmt3.step()? {
-                turso_core::StepResult::Row => {}
-                turso_core::StepResult::Done => break,
-                turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                    stmt3._io().step()?;
-                }
-                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("upsert_document_with_hlc: database busy or interrupted");
-                }
-            }
-        }
-
-        Ok(())
+        run_to_completion(&mut stmt3, "upsert_document_with_hlc:tracker")
     }
 
     pub fn query(
@@ -532,61 +597,43 @@ impl SqlEngine {
         entity: &str,
         options: &QueryOptions,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let table = entity_table_name(entity)?;
+        let meta = syntrix_core::entity_meta(entity)?;
+        let business_cols = syntrix_core::business_columns(meta);
 
-        let mut sql = format!("SELECT payload FROM {} WHERE org_id=?1", table);
-        let mut param_idx = 2u32;
+        let mut select_cols: Vec<&str> = vec!["doc_id"];
+        select_cols.extend(business_cols.iter().map(|c| c.name.as_str()));
 
-        let filter_clauses: Vec<String> = options.filters.iter().map(|f| {
-            let clause = format!("json_extract(payload, '$.{}') = ?{}", f.field, param_idx);
+        let mut sql = format!("SELECT {} FROM {} WHERE org_id=?1", select_cols.join(", "), meta.table);
+        let mut param_idx = 2usize;
+        let mut bind_plan: Vec<(usize, turso_core::Value)> = vec![];
+
+        for filter in &options.filters {
+            let (col, ty) = resolve_filterable_column(meta, &filter.field)?;
+            sql.push_str(&format!(" AND {} = ?{}", col, param_idx));
+            bind_plan.push((param_idx, json_to_column_value(Some(&serde_json::Value::String(filter.value.clone())), ty, true)));
             param_idx += 1;
-            clause
-        }).collect();
-
-        for clause in &filter_clauses {
-            sql.push_str(" AND ");
-            sql.push_str(clause);
         }
 
         if let Some(ref sort_field) = options.sort {
-            sql.push_str(&format!(" ORDER BY json_extract(payload, '$.{}')", sort_field));
+            let (col, _) = resolve_filterable_column(meta, sort_field)?;
+            sql.push_str(&format!(" ORDER BY {}", col));
         }
 
         if let Some(limit) = options.limit {
             sql.push_str(&format!(" LIMIT ?{}", param_idx));
+            bind_plan.push((param_idx, turso_core::Value::from_i64(limit as i64)));
             param_idx += 1;
         }
 
         if let Some(offset) = options.offset {
             sql.push_str(&format!(" OFFSET ?{}", param_idx));
-            param_idx += 1;
+            bind_plan.push((param_idx, turso_core::Value::from_i64(offset as i64)));
         }
 
         let mut stmt = self.conn.prepare(&sql)?;
-        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-
-        let mut bind_idx = 2u32;
-        for filter in &options.filters {
-            stmt.bind_at(
-                NonZero::new(bind_idx as usize).unwrap(),
-                turso_core::Value::from_text(filter.value.clone()),
-            )?;
-            bind_idx += 1;
-        }
-
-        if let Some(limit) = options.limit {
-            stmt.bind_at(
-                NonZero::new(bind_idx as usize).unwrap(),
-                turso_core::Value::from_i64(limit as i64),
-            )?;
-            bind_idx += 1;
-        }
-
-        if let Some(offset) = options.offset {
-            stmt.bind_at(
-                NonZero::new(bind_idx as usize).unwrap(),
-                turso_core::Value::from_i64(offset as i64),
-            )?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        for (idx, value) in bind_plan {
+            bind_value(&mut stmt, idx, value)?;
         }
 
         let mut results = Vec::new();
@@ -594,10 +641,14 @@ impl SqlEngine {
             match stmt.step()? {
                 turso_core::StepResult::Row => {
                     if let Some(row) = stmt.row() {
-                        let payload_str: String = row.get(0)?;
-                        if let Ok(val) = serde_json::from_str(&payload_str) {
-                            results.push(val);
+                        let mut obj = serde_json::Map::new();
+                        let doc_id_val: &turso_core::Value = row.get(0)?;
+                        obj.insert("id".to_string(), column_value_to_json(doc_id_val));
+                        for (i, col) in business_cols.iter().enumerate() {
+                            let v: &turso_core::Value = row.get(i + 1)?;
+                            obj.insert(col.name.clone(), column_value_to_json(v));
                         }
+                        results.push(serde_json::Value::Object(obj));
                     }
                 }
                 turso_core::StepResult::Done => break,
@@ -619,25 +670,31 @@ impl SqlEngine {
         entity: &str,
         doc_id: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
-        let table = entity_table_name(entity)?;
-        let sql = format!("SELECT payload FROM {} WHERE org_id=?1 AND doc_id=?2", table);
+        let meta = syntrix_core::entity_meta(entity)?;
+        let business_cols = syntrix_core::business_columns(meta);
+
+        let select_cols: Vec<&str> = business_cols.iter().map(|c| c.name.as_str()).collect();
+        let sql = format!("SELECT {} FROM {} WHERE org_id=?1 AND doc_id=?2", select_cols.join(", "), meta.table);
 
         let mut stmt = self.conn.prepare(&sql)?;
-        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut stmt, 2, turso_core::Value::from_text(doc_id.to_string()))?;
 
+        let mut found: Option<serde_json::Map<String, serde_json::Value>> = None;
         loop {
             match stmt.step()? {
                 turso_core::StepResult::Row => {
                     if let Some(row) = stmt.row() {
-                        let payload_str: String = row.get(0)?;
-                        if let Ok(val) = serde_json::from_str(&payload_str) {
-                            return Ok(Some(val));
+                        let mut obj = serde_json::Map::new();
+                        obj.insert("id".to_string(), serde_json::Value::String(doc_id.to_string()));
+                        for (i, col) in business_cols.iter().enumerate() {
+                            let v: &turso_core::Value = row.get(i)?;
+                            obj.insert(col.name.clone(), column_value_to_json(v));
                         }
+                        found = Some(obj);
                     }
-                    return Ok(None);
                 }
-                turso_core::StepResult::Done => return Ok(None),
+                turso_core::StepResult::Done => break,
                 turso_core::StepResult::IO | turso_core::StepResult::Yield => {
                     stmt._io().step()?;
                 }
@@ -646,55 +703,102 @@ impl SqlEngine {
                 }
             }
         }
+
+        let mut obj = match found {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+
+        if let Some(child) = meta.children.first() {
+            let items = self.query_children(org_id, doc_id, child)?;
+            obj.insert("items".to_string(), serde_json::Value::Array(items));
+        }
+
+        Ok(Some(serde_json::Value::Object(obj)))
     }
 
-    pub fn delete_document(&self, org_id: &str, entity: &str, doc_id: &str) -> anyhow::Result<()> {
-        let table = entity_table_name(entity)?;
-        let sql = format!("DELETE FROM {} WHERE org_id=?1 AND doc_id=?2", table);
-
+    fn query_children(
+        &self,
+        org_id: &str,
+        parent_doc_id: &str,
+        child: &ChildTableMeta,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let business_cols = syntrix_core::child_business_columns(child);
+        let select_cols: Vec<&str> = business_cols.iter().map(|c| c.name.as_str()).collect();
+        let sql = format!(
+            "SELECT {} FROM {} WHERE org_id=?1 AND {}=?2 ORDER BY line_id",
+            select_cols.join(", "),
+            child.table,
+            child.parent_key
+        );
         let mut stmt = self.conn.prepare(&sql)?;
-        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(doc_id.to_string()))?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut stmt, 2, turso_core::Value::from_text(parent_doc_id.to_string()))?;
+
+        let mut items = Vec::new();
         loop {
             match stmt.step()? {
-                turso_core::StepResult::Row => {}
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let mut obj = serde_json::Map::new();
+                        for (i, col) in business_cols.iter().enumerate() {
+                            let v: &turso_core::Value = row.get(i)?;
+                            obj.insert(col.name.clone(), column_value_to_json(v));
+                        }
+                        items.push(serde_json::Value::Object(obj));
+                    }
+                }
                 turso_core::StepResult::Done => break,
                 turso_core::StepResult::IO | turso_core::StepResult::Yield => {
                     stmt._io().step()?;
                 }
                 turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
-                    anyhow::bail!("delete_document: database busy or interrupted");
+                    anyhow::bail!("query_children: database busy or interrupted");
                 }
             }
         }
+        Ok(items)
+    }
+
+    pub fn delete_document(&self, org_id: &str, entity: &str, doc_id: &str) -> anyhow::Result<()> {
+        let meta = syntrix_core::entity_meta(entity)?;
+
+        for child in &meta.children {
+            let sql = format!("DELETE FROM {} WHERE org_id=?1 AND {}=?2", child.table, child.parent_key);
+            let mut stmt = self.conn.prepare(&sql)?;
+            bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+            bind_value(&mut stmt, 2, turso_core::Value::from_text(doc_id.to_string()))?;
+            run_to_completion(&mut stmt, "delete_document:children")?;
+        }
+
+        let sql = format!("DELETE FROM {} WHERE org_id=?1 AND doc_id=?2", meta.table);
+        let mut stmt = self.conn.prepare(&sql)?;
+        bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
+        bind_value(&mut stmt, 2, turso_core::Value::from_text(doc_id.to_string()))?;
+        run_to_completion(&mut stmt, "delete_document")?;
 
         Ok(())
     }
 }
 
-fn extract_title(payload: &serde_json::Value) -> String {
-    if let Some(obj) = payload.as_object() {
-        for key in &["name", "title", "label"] {
-            if let Some(v) = obj.get(*key).and_then(|v| v.as_str()) {
-                return v.to_string();
-            }
-        }
-    }
-    String::new()
+/// Maps a real column name to the JSON key used in the reconstructed IPC document shape.
+/// Only `doc_id` is renamed (to `id`, to match the frontend field registry); every other
+/// column name is already the JSON key (snake_case matches on both sides).
+fn business_json_key(col: &ColumnMeta) -> &str {
+    col.name.as_str()
 }
 
-fn extract_body(payload: &serde_json::Value) -> String {
-    let mut parts = Vec::new();
-    if let Some(obj) = payload.as_object() {
-        for (_k, v) in obj {
-            if v.is_string() {
-                parts.push(v.as_str().unwrap().to_string());
-            } else if v.is_number() || v.is_boolean() {
-                parts.push(v.to_string());
-            }
-        }
+/// Resolves a frontend-facing field name (as used in QueryFilter/sort) to a real column name +
+/// type, accepting `id` as an alias for `doc_id`.
+fn resolve_filterable_column<'a>(meta: &'a EntityMeta, field: &str) -> anyhow::Result<(&'a str, ColumnType)> {
+    if field == "id" {
+        return Ok(("doc_id", ColumnType::Text));
     }
-    parts.join(" ")
+    meta.columns
+        .iter()
+        .find(|c| c.name == field)
+        .map(|c| (c.name.as_str(), c.ty))
+        .ok_or_else(|| anyhow::anyhow!("unknown field '{}' for entity table '{}'", field, meta.table))
 }
 
 #[cfg(test)]
@@ -742,31 +846,106 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_title_customers() {
-        let payload = serde_json::json!({"name": "Acme Corp"});
-        assert_eq!(extract_title(&payload), "Acme Corp");
-    }
-
-    #[test]
-    fn test_extract_title_fallback() {
-        let payload = serde_json::json!({"title": "Dr."});
-        assert_eq!(extract_title(&payload), "Dr.");
-    }
-
-    #[test]
-    fn test_extract_body_with_strings() {
-        let payload = serde_json::json!({"name": "Alice", "email": "a@b.com"});
-        let body = extract_body(&payload);
-        assert!(body.contains("Alice"));
-        assert!(body.contains("a@b.com"));
-    }
-
-    #[test]
     fn test_query_options_default() {
         let opts = QueryOptions::default();
         assert!(opts.filters.is_empty());
         assert!(opts.sort.is_none());
         assert!(opts.limit.is_none());
         assert!(opts.offset.is_none());
+    }
+
+    fn test_engine() -> (impl Drop, SqlEngine) {
+        let (dir, conn) = syntrix_testkit::temp_limbo_db();
+        crate::storage::run_migrations(&conn).expect("run_migrations");
+        (dir, SqlEngine::with_connection(conn))
+    }
+
+    #[test]
+    fn upsert_and_get_document_roundtrip_typed_columns() {
+        let (_dir, engine) = test_engine();
+        let payload = serde_json::json!({
+            "name": "Alice",
+            "tax_id": "TAX1",
+            "email": "alice@test.com",
+        });
+        engine.upsert_document("org1", "customers", "c1", &payload).unwrap();
+
+        let doc = engine.get_document("org1", "customers", "c1").unwrap().unwrap();
+        assert_eq!(doc["id"], "c1");
+        assert_eq!(doc["name"], "Alice");
+        assert_eq!(doc["tax_id"], "TAX1");
+        assert_eq!(doc["email"], "alice@test.com");
+        assert_eq!(doc["address"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn upsert_invoice_with_line_items_delete_and_reinsert() {
+        let (_dir, engine) = test_engine();
+        let payload = serde_json::json!({
+            "customer_id": "cust1",
+            "amount": 150.0,
+            "status": "open",
+            "tax_rate": 0.16,
+            "date": "2024-01-01",
+            "items": [
+                { "product_id": "p1", "qty": 2.0, "price": 50.0 },
+                { "product_id": "p2", "qty": 1.0, "price": 50.0 },
+            ],
+        });
+        engine.upsert_document("org1", "invoices", "inv1", &payload).unwrap();
+
+        let doc = engine.get_document("org1", "invoices", "inv1").unwrap().unwrap();
+        assert_eq!(doc["customer_id"], "cust1");
+        assert_eq!(doc["amount"], 150.0);
+        let items = doc["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["product_id"], "p1");
+        assert_eq!(items[0]["qty"], 2.0);
+
+        // Update with fewer items: old rows must be gone (delete+reinsert semantics).
+        let payload2 = serde_json::json!({
+            "customer_id": "cust1",
+            "amount": 50.0,
+            "status": "open",
+            "tax_rate": 0.16,
+            "date": "2024-01-01",
+            "items": [ { "product_id": "p1", "qty": 1.0, "price": 50.0 } ],
+        });
+        engine.upsert_document("org1", "invoices", "inv1", &payload2).unwrap();
+        let doc2 = engine.get_document("org1", "invoices", "inv1").unwrap().unwrap();
+        let items2 = doc2["items"].as_array().unwrap();
+        assert_eq!(items2.len(), 1);
+        assert_eq!(items2[0]["product_id"], "p1");
+    }
+
+    #[test]
+    fn query_filters_on_real_typed_columns_without_json_extract() {
+        let (_dir, engine) = test_engine();
+        engine.upsert_document("org1", "invoices", "inv1", &serde_json::json!({
+            "customer_id": "cust1", "amount": 10.0, "status": "open", "date": "2024-01-01",
+        })).unwrap();
+        engine.upsert_document("org1", "invoices", "inv2", &serde_json::json!({
+            "customer_id": "cust2", "amount": 20.0, "status": "paid", "date": "2024-01-02",
+        })).unwrap();
+
+        let options = QueryOptions {
+            filters: vec![QueryFilter { field: "status".to_string(), value: "paid".to_string() }],
+            ..Default::default()
+        };
+        let results = engine.query("org1", "invoices", &options).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["id"], "inv2");
+        assert_eq!(results[0]["customer_id"], "cust2");
+    }
+
+    #[test]
+    fn delete_document_removes_row_and_children() {
+        let (_dir, engine) = test_engine();
+        engine.upsert_document("org1", "invoices", "inv1", &serde_json::json!({
+            "customer_id": "cust1", "amount": 10.0, "status": "open", "date": "2024-01-01",
+            "items": [ { "product_id": "p1", "qty": 1.0, "price": 10.0 } ],
+        })).unwrap();
+        engine.delete_document("org1", "invoices", "inv1").unwrap();
+        assert!(engine.get_document("org1", "invoices", "inv1").unwrap().is_none());
     }
 }

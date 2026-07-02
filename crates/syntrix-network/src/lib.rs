@@ -1,6 +1,7 @@
 mod behaviour;
 pub mod cdc;
 pub mod codecs;
+pub mod schema;
 
 use std::collections::HashMap;
 

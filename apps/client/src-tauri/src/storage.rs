@@ -19,7 +19,7 @@ pub fn open_limbo(data_dir: &PathBuf) -> anyhow::Result<Arc<turso_core::Connecti
 }
 
 pub fn run_migrations(conn: &Arc<turso_core::Connection>) -> anyhow::Result<()> {
-    let sql = include_str!("../migrations/0000_legal_stephen_strange.sql");
+    let sql = include_str!("../migrations/0000_known_squadron_sinister.sql");
     conn.execute(sql)?;
     conn.execute("PRAGMA capture_data_changes_conn='full'")?;
     Ok(())

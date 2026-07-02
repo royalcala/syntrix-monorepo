@@ -550,92 +550,7 @@ async fn process_event_loop(
 }
 
 fn write_event_to_limbo(db: &Arc<turso_core::Connection>, org_id: &str, val: &serde_json::Value) {
-    let event_type = val["type"].as_str().unwrap_or("unknown");
-    let hlc_val = &val["hlc"];
-    let hlc_ts = hlc_val["ts"].as_u64().unwrap_or(0);
-    let hlc_count = hlc_val["count"].as_u64().unwrap_or(0);
-    let hlc_node = hlc_val["node"].as_str().unwrap_or("");
-    let schema_version = val["schema_version"].as_u64().unwrap_or(1);
-    let payload_str = serde_json::to_string(val).unwrap_or_default();
-
-    let key = format!(
-        "evt:{}:{:020}:{:08}:{}",
-        org_id, hlc_ts, hlc_count, hlc_node
-    );
-
-    let mut stmt = match db.prepare(
-        "INSERT OR IGNORE INTO event_log (key, org_id, event_type, hlc_ts, hlc_count, hlc_node, schema_version, entity, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-            return;
-        }
-    };
-
-    if let Err(e) = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(key.clone())) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(org_id.to_string())) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(event_type.to_string())) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_i64(hlc_ts as i64)) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_i64(hlc_count as i64)) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(hlc_node.to_string())) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_i64(schema_version as i64)) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(8).unwrap(), turso_core::Value::from_text("")) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-    if let Err(e) = stmt.bind_at(NonZero::new(9).unwrap(), turso_core::Value::from_text(payload_str.clone())) {
-        eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-        return;
-    }
-
-    loop {
-        match stmt.step() {
-            Ok(turso_core::StepResult::Row) => continue,
-            Ok(turso_core::StepResult::Done) => break,
-            Ok(turso_core::StepResult::IO | turso_core::StepResult::Yield) => {
-                if let Err(e) = stmt._io().step() {
-                    eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-                    return;
-                }
-            }
-            Ok(turso_core::StepResult::Interrupt | turso_core::StepResult::Busy) => {
-                continue;
-            }
-            Err(e) => {
-                eprintln!("[admin-gossip] failed to write event {} to event_log: {e}", event_type);
-                return;
-            }
-        }
-    }
-
-    tracing::info!(
-        target: "syntrix",
-        org = %org_id,
-        event_type = %event_type,
-        "admin-audit: stored gossip event in event_log"
-    );
+    crate::gossip::write_event_to_limbo(db, org_id, val);
 }
 
 fn query_events_since(
@@ -644,11 +559,14 @@ fn query_events_since(
     cursor_ts: u64,
     limit: usize,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
+    // `cursor_ts` arrives in HLC microseconds (see catchup.rs::request_catchup on the client);
+    // `event_log.change_time` is stored in milliseconds, matching every other entity table.
+    let cursor_millis = (cursor_ts / 1000) as i64;
     let mut stmt = db.prepare(
-        "SELECT payload FROM event_log WHERE org_id=?1 AND hlc_ts>?2 ORDER BY hlc_ts, hlc_count LIMIT ?3"
+        "SELECT row_image FROM event_log WHERE org_id=?1 AND change_time>?2 ORDER BY change_time LIMIT ?3"
     )?;
     stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-    stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_i64(cursor_ts as i64))?;
+    stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_i64(cursor_millis))?;
     stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(limit as i64))?;
 
     let mut results = Vec::new();

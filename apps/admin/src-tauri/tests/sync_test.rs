@@ -35,7 +35,7 @@ async fn test_two_clients_sync_via_gossip() {
     let admin_entry = wait_for_audit_entry(&admin, "acme", "c1")
         .await
         .expect("admin should see audit entry");
-    assert_eq!(admin_entry.event_type, "customer.created");
+    assert_eq!(admin_entry.row_image["type"], "customer.created");
 }
 
 #[tokio::test]
@@ -57,7 +57,7 @@ async fn test_admin_audit_sees_propagated_events() {
     let entry = wait_for_audit_entry(&admin, "acme", "p1")
         .await
         .expect("admin audit should see the event");
-    assert_eq!(entry.event_type, "customer.created");
+    assert_eq!(entry.row_image["type"], "customer.created");
 }
 
 #[tokio::test]
@@ -144,11 +144,11 @@ async fn test_multi_org_isolation() {
         0,
     );
     assert!(
-        acme_audit.iter().any(|e| e.event_type == "customer.created"),
+        acme_audit.iter().any(|e| e.row_image["type"] == "customer.created"),
         "admin audit acme has customer.created"
     );
     assert!(
-        !acme_audit.iter().any(|e| e.event_type == "customer.created" && e.doc_id == "c-beta"),
+        !acme_audit.iter().any(|e| e.row_image["type"] == "customer.created" && e.doc_id == "c-beta"),
         "admin audit acme should NOT have beta customer"
     );
 }
@@ -530,6 +530,12 @@ async fn test_concurrent_commits() {
 
 #[tokio::test]
 async fn test_large_payload() {
+    // NOTE: this used to assert that 100 arbitrary schemaless `field_N` keys survived a
+    // round trip through the `payload` JSON blob. That's exactly the "document store
+    // disguised as SQL" anti-pattern the relational-CDC migration eliminates (see
+    // .kilo/plans/1782949593655-relational-cdc-migration.md): entity tables now have real
+    // typed columns, so undeclared fields are legitimately dropped. This test now verifies
+    // a large *declared* text column (address) round-trips correctly instead.
     let (_adir, adir) = syntrix_testkit::temp_node_dir("t20_admin");
     let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t20_client1");
     let (_c2dir, c2dir) = syntrix_testkit::temp_node_dir("t20_client2");
@@ -542,10 +548,12 @@ async fn test_large_payload() {
         .await
         .expect("invite and join");
 
-    let mut payload = serde_json::json!({"id": "c-large"});
-    for i in 0..100 {
-        payload[format!("field_{}", i)] = serde_json::json!(format!("value_{}", i));
-    }
+    let long_address = "1234 Main Street, ".repeat(200);
+    let payload = serde_json::json!({
+        "id": "c-large",
+        "name": "Big Address Co",
+        "address": long_address,
+    });
 
     set_client_org(&mut c1, &org_id);
     syntrix_client_lib::commit_event_impl(&c1, "customer.created", &payload.to_string())
@@ -554,6 +562,6 @@ async fn test_large_payload() {
     let doc = wait_for_document(&c2, &org_id, "customers", "c-large")
         .await
         .expect("client2 receives large document");
-    assert_eq!(doc["field_50"], "value_50", "field_50 preserved");
-    assert_eq!(doc["field_99"], "value_99", "field_99 preserved");
+    assert_eq!(doc["name"], "Big Address Co");
+    assert_eq!(doc["address"], long_address, "large declared column value preserved");
 }

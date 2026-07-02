@@ -145,7 +145,11 @@ pub fn commit_event(
         .to_string();
 
     let upcasted = upcast_payload(entity, payload_val, schema_version);
-    let _ = indexer.upsert_document(org_id, entity, &doc_id, &upcasted);
+    // Typed SQL write: business fields -> real columns (Fase 2, tarea 11). `change_time`
+    // comes from the HLC's microsecond timestamp (converted to millis, matching the column's
+    // unit) so the row is immediately consistent with what CDC will later replay to peers.
+    let change_time_millis = (hlc.ts / 1000) as i64;
+    let _ = indexer.upsert_document_full(org_id, entity, &doc_id, &upcasted, change_time_millis, &node_id_hex);
 
     state.live_manager().notify_table_changed(&state.conn(), &[entity.to_string()]);
 

@@ -166,6 +166,8 @@ lint:
 drizzle-gen:
     cd apps/admin && pnpm drizzle-kit generate
     cd apps/client && pnpm drizzle-kit generate
+    cd apps/admin && pnpm export-schema
+    cd apps/client && pnpm export-schema
 
 # Limpia los directorios locales cargo target de compilaciones de Rust
 clean-builds:

@@ -14,4 +14,4 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 tempfile = "3"
-turso_core.workspace = true
+turso_core = { workspace = true, features = ["fts"] }
