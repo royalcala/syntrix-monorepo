@@ -141,6 +141,14 @@ rationale.
 - FTS uses turso's `fts_match`/`fts_score` scalar functions directly on typed columns (Tantivy
   under the hood) — there is no SQLite-style `CREATE VIRTUAL TABLE ... USING fts5` support in
   the vendored `turso_core`.
+- Catch-up (`apps/client/src-tauri/src/catchup.rs`, admin's `CatchupRequestReceived` handler)
+  sends a **relational snapshot** (`syntrix_network::cdc::snapshot_org_rows` → a `cdc_batch`
+  of current rows, applied via `apply_cdc_events`) plus the device/role roster — not an
+  `event_log` replay. There is no `hlc_tracker` table and no `upsert_document_with_hlc`
+  anymore; `change_time` on each row is the only LWW source of truth, for both live CDC and
+  catch-up. Don't reintroduce an HLC-based document write path — if you find yourself wanting
+  one, it almost certainly means a gossip/catchup code path isn't reusing
+  `syntrix_network::cdc::apply_cdc_events` like it should.
 
 ### Admin SQL console
 - `apps/admin/src-tauri/src/sql_console.rs` exposes `run_sql` (read-only, validated

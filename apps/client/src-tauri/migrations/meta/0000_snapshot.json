@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d17c7794-82f0-46e7-8873-8b698afa049a",
+  "id": "60f836b2-a95d-4845-bd59-41a51b4fcf18",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "cdc_cursor": {
@@ -287,70 +287,6 @@
             "node_id"
           ],
           "name": "heartbeats_org_id_node_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "hlc_tracker": {
-      "name": "hlc_tracker",
-      "columns": {
-        "org_id": {
-          "name": "org_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "entity": {
-          "name": "entity",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "doc_id": {
-          "name": "doc_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "hlc_ts": {
-          "name": "hlc_ts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "hlc_count": {
-          "name": "hlc_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "hlc_node": {
-          "name": "hlc_node",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "hlc_tracker_org_id_entity_doc_id_pk": {
-          "columns": [
-            "org_id",
-            "entity",
-            "doc_id"
-          ],
-          "name": "hlc_tracker_org_id_entity_doc_id_pk"
         }
       },
       "uniqueConstraints": {},

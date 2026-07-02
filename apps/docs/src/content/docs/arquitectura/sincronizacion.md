@@ -31,7 +31,7 @@ graph TD
         direction LR
         C1[turso_cdc: CDC nativo]
         C2[Entity tables + FTS]
-        C3[event_log + hlc_tracker + cdc_cursor]
+        C3[event_log + cdc_cursor]
     end
 
     subgraph syntrix-network
@@ -55,7 +55,7 @@ graph TD
 *   **Limbo (turso_core)**: motor SQL embebido con CDC nativo via
     `PRAGMA capture_data_changes_conn='full'`. Tablas: `customers`, `suppliers`, `products`,
     `invoices`, `orders`, `payroll` (+ tablas hijas `invoice_items`/`order_items`), más tablas
-    de sistema `event_log`, `members`, `roles`, `heartbeats`, `hlc_tracker`, `cdc_cursor`.
+    de sistema `event_log`, `members`, `roles`, `heartbeats`, `cdc_cursor`.
 *   **`syntrix-network`**: expone `cdc::{read_cdc_events, apply_cdc_events, CdcEvent}` (el
     núcleo del transporte CDC-nativo) y dos protocolos libp2p:
     - **gossipsub**: batches de `CdcEvent` (`{"kind":"cdc_batch","events":[...]}`),
@@ -140,15 +140,30 @@ antes de continuar con el procesamiento normal:
 
 1. `crate::catchup::request_catchup(p2p, peer_id, org_id, since_hlc, indexer)` pide un
    snapshot al admin via request_response.
-2. El admin responde con:
+2. El admin responde con una lista mixta de items:
    - Un **roster completo** de `device.updated`/`role.updated` para todos los dispositivos y
      roles conocidos de la org (necesario para que el peer pueda validar permisos de autor de
      eventos CDC recibidos de *cualquier* otro peer, no solo del admin — ver sección 6).
-   - El historial de `event_log` desde `since_hlc` (compatibilidad con el flujo legacy).
-3. `catchup::apply_catchup_event` aplica cada evento: roster → `members`/`roles` SQL;
-   documentos con HLC → `upsert_document_with_hlc`.
+   - Un item `{"kind":"cdc_batch","events":[CdcEvent...]}` con un **snapshot relacional**:
+     `syntrix_network::cdc::snapshot_org_rows()` lee el estado *actual* de todas las
+     tablas de entidad/hijas para esa org (no un replay histórico) y lo codifica como
+     `CdcEvent`s (`change_type = 1`, con el `change_time`/`node_id` real de cada fila).
+3. `catchup::apply_catchup_event` procesa cada item: roster → `members`/`roles` SQL;
+   `cdc_batch` → `syntrix_network::cdc::apply_cdc_events` (el mismo código usado para CDC en
+   vivo, así que catch-up y sync en vivo comparten idénticas reglas de LWW y validación de
+   permisos). El admin envía el roster **antes** del snapshot en la lista, para que
+   `apply_cdc_events` ya pueda validar el autor de cada fila del snapshot.
 4. Si la solicitud al admin falla (offline), se reintenta contra un peer visto recientemente
    en `heartbeats`.
+
+> **Nota histórica**: una primera versión de catch-up reproducía el `event_log` como una lista
+> de eventos JSON con HLC (`upsert_document_with_hlc` + una tabla `hlc_tracker` para
+> deduplicación). Ese diseño quedó roto en cuanto `event_log` del admin pasó a ser
+> exclusivamente auditoría de datos (Decisión 5) — `row_image` ya no tiene la forma
+> `{type, hlc, payload}` que ese replay esperaba, así que un peer nuevo no recibía datos
+> históricos. El snapshot relacional (punto 2) reemplaza ese enfoque por completo; `LWW` para
+> filas de entidad se decide únicamente por `change_time` de columna (sección 7),
+> `upsert_document_with_hlc`/`hlc_tracker` fueron eliminados.
 
 ---
 
@@ -194,27 +209,10 @@ CDC usa LWW por `change_time` (epoch ms, no HLC) para resolver conflictos:
    commit); se aplica como `DELETE` tras pasar el chequeo LWW, y si la fila es una entidad con
    tablas hijas declaradas, se hace cascada explícita de borrado a esas tablas hijas (defensivo
    ante reordenamiento de red).
-4. **Escritura legacy con HLC** (gossip/catchup, mientras conviven con el loop CDC):
-   `upsert_document_with_hlc` sigue comparando contra `hlc_tracker` (ver más abajo) — este
-   camino se retirará cuando el loop CDC sea la única vía de escritura remota.
-
-### hlc_tracker (solo path legacy)
-
-La tabla `hlc_tracker` almacena el último HLC visto por `(org_id, entity, doc_id)`, usada
-únicamente por `upsert_document_with_hlc` (gossip.rs/catchup.rs/identity.rs del cliente,
-todavía vigente para el flujo de catch-up basado en HLC):
-
-```sql
-CREATE TABLE hlc_tracker (
-    org_id TEXT NOT NULL,
-    entity TEXT NOT NULL,
-    doc_id TEXT NOT NULL,
-    hlc_ts INTEGER NOT NULL,
-    hlc_count INTEGER NOT NULL,
-    hlc_node TEXT NOT NULL,
-    PRIMARY KEY (org_id, entity, doc_id)
-);
-```
+4. **Catch-up**: el snapshot relacional (sección 4) se aplica con el mismo `apply_cdc_events`
+   y el mismo chequeo LWW por `change_time` — no hay un camino de escritura remota separado.
+   `change_time` de cada fila es la única fuente de verdad de LWW; no existe una tabla
+   `hlc_tracker` ni un `upsert_document_with_hlc` independiente.
 
 ---
 

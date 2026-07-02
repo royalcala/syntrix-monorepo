@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -548,16 +547,20 @@ async fn process_event_loop(
                     Event::InviteReceived { peer: _, payload: _ } => {
                         // Admin doesn't receive invites
                     }
-                    Event::CatchupRequestReceived { peer: _, org_id, since_hlc, response_id } => {
-                        let mut events = query_events_since(&db, &org_id, since_hlc, 10000).unwrap_or_default();
-                        // Always prepend a full device/role roster snapshot (Fase 3, tarea 16):
-                        // every peer needs the complete roles/devices roster to validate
-                        // `apply_cdc_events`'s author permission check, not just the devices it
-                        // happened to be subscribed for when a `device.updated` was broadcast.
+                    Event::CatchupRequestReceived { peer: _, org_id, since_hlc: _, response_id } => {
+                        // Catch-up sends: (1) a full device/role roster (every peer needs the
+                        // complete roster to validate `apply_cdc_events`'s author permission
+                        // check, not just the devices it happened to be subscribed for when a
+                        // `device.updated` was broadcast), and (2) a relational snapshot of
+                        // the org's current entity/child rows as `CdcEvent`s, applied via the
+                        // exact same `apply_cdc_events` used for live CDC sync (Fase 3, tarea
+                        // 16). This replaces the old event-log replay, which broke once
+                        // `event_log` became data-audit-only (Decision 5) — `row_image` no
+                        // longer has the `{type, hlc, payload}` shape that replay expected.
+                        let mut events: Vec<serde_json::Value> = Vec::new();
                         if let Ok(reg) = registry.read() {
-                            let mut roster = Vec::new();
                             for (role_name, grants) in reg.list_roles(&org_id) {
-                                roster.push(serde_json::json!({
+                                events.push(serde_json::json!({
                                     "type": "role.updated",
                                     "payload": {
                                         "name": role_name,
@@ -567,7 +570,7 @@ async fn process_event_loop(
                                 }));
                             }
                             for device in reg.list_devices(&org_id) {
-                                roster.push(serde_json::json!({
+                                events.push(serde_json::json!({
                                     "type": "device.updated",
                                     "payload": {
                                         "node_id": hex::encode(device.node_id),
@@ -578,8 +581,15 @@ async fn process_event_loop(
                                     },
                                 }));
                             }
-                            roster.append(&mut events);
-                            events = roster;
+                        }
+                        match syntrix_network::cdc::snapshot_org_rows(&db, &org_id) {
+                            Ok(snapshot) if !snapshot.is_empty() => {
+                                events.push(serde_json::json!({ "kind": "cdc_batch", "events": snapshot }));
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!(target: "syntrix", org = %org_id, error = %e, "catchup: failed to snapshot org rows");
+                            }
                         }
                         let _ = p2p.respond_catchup(response_id, events);
                     }
@@ -593,43 +603,6 @@ async fn process_event_loop(
 
 fn write_event_to_limbo(db: &Arc<turso_core::Connection>, org_id: &str, val: &serde_json::Value) {
     crate::gossip::write_event_to_limbo(db, org_id, val);
-}
-
-fn query_events_since(
-    db: &Arc<turso_core::Connection>,
-    org_id: &str,
-    cursor_ts: u64,
-    limit: usize,
-) -> anyhow::Result<Vec<serde_json::Value>> {
-    // `cursor_ts` arrives in HLC microseconds (see catchup.rs::request_catchup on the client);
-    // `event_log.change_time` is stored in milliseconds, matching every other entity table.
-    let cursor_millis = (cursor_ts / 1000) as i64;
-    let mut stmt = db.prepare(
-        "SELECT row_image FROM event_log WHERE org_id=?1 AND change_time>?2 ORDER BY change_time LIMIT ?3"
-    )?;
-    stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-    stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_i64(cursor_millis))?;
-    stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(limit as i64))?;
-
-    let mut results = Vec::new();
-    loop {
-        match stmt.step()? {
-            turso_core::StepResult::Row => {
-                let row = stmt.row().unwrap();
-                let payload_str: String = row.get(0)?;
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload_str) {
-                    results.push(val);
-                }
-            }
-            turso_core::StepResult::Done => break,
-            turso_core::StepResult::IO | turso_core::StepResult::Yield => {
-                stmt._io().step()?;
-            }
-            turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => continue,
-        }
-    }
-
-    Ok(results)
 }
 
 fn peer_id_to_bytes(peer_id: libp2p::PeerId) -> [u8; 32] {

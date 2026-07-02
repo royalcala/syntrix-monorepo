@@ -434,6 +434,12 @@ fn load_or_create_keypair(key_path: &std::path::Path) -> anyhow::Result<Keypair>
     }
 }
 
+/// Handles gossip messages that aren't CDC batches: heartbeats and the device/role roster
+/// (`device.updated`/`role.updated`), which admin still broadcasts directly (outside the
+/// relational-CDC data path). Entity documents no longer arrive here — `commit_event` writes
+/// typed columns directly and relies on the CDC publish loop (cdc_sync.rs) for propagation;
+/// see also `apply_cdc_batch` above for the `cdc_batch` branch this function's caller already
+/// handles before falling back to this one.
 fn process_gossip_event(
     org_id: &str,
     val: &serde_json::Value,
@@ -475,31 +481,5 @@ fn process_gossip_event(
                 let _ = indexer.append_event(org_id, val);
             }
         }
-        return;
     }
-
-    let entity = crate::events::entity_from_event_type(event_type);
-    let payload = match val.get("payload") {
-        Some(p) => p.clone(),
-        None => return,
-    };
-
-    let doc_id = payload.get("id")
-        .and_then(|v| v.as_str())
-        .or_else(|| payload.get("node_id").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .to_string();
-
-    if let Some(hlc_val) = val.get("hlc") {
-        let hlc = crate::indexes::HlcTimestamp {
-            ts: hlc_val.get("ts").and_then(|v| v.as_u64()).unwrap_or(0),
-            count: hlc_val.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            node: hlc_val.get("node").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        };
-        let _ = indexer.upsert_document_with_hlc(org_id, entity, &doc_id, &payload, &hlc);
-    } else {
-        let _ = indexer.upsert_document(org_id, entity, &doc_id, &payload);
-    }
-
-    let _ = indexer.append_event(org_id, val);
 }

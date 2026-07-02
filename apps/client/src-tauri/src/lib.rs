@@ -11,7 +11,6 @@ mod seed;
 pub mod audit;
 pub mod indexes;
 pub mod search;
-pub mod gossip;
 pub mod storage;
 pub mod catchup;
 pub mod live;

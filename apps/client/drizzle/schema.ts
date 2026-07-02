@@ -190,18 +190,3 @@ export const cdcCursor = sqliteTable("cdc_cursor", {
   lastChangeId: integer("last_change_id").notNull().default(0),
   updatedAt: integer("updated_at").notNull().default(sql`(unixepoch('now') * 1000)`),
 });
-
-// NOTE: retained for the legacy JSON-over-gossip write path (`upsert_document_with_hlc`,
-// used today by gossip.rs/catchup.rs/identity.rs) until Fase 3 replaces those call sites
-// with CDC-native sync. Once the CDC loop lands, per-row `change_time` on each entity table
-// is the sole LWW source of truth and this table can be dropped.
-export const hlcTracker = sqliteTable("hlc_tracker", {
-  orgId: text("org_id").notNull(),
-  entity: text("entity").notNull(),
-  docId: text("doc_id").notNull(),
-  hlcTs: integer("hlc_ts").notNull().default(0),
-  hlcCount: integer("hlc_count").notNull().default(0),
-  hlcNode: text("hlc_node").notNull().default(""),
-}, (table) => [
-  primaryKey({ columns: [table.orgId, table.entity, table.docId] }),
-]);

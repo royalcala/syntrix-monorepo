@@ -27,9 +27,10 @@ pub fn write_event_to_limbo(db: &Arc<turso_core::Connection>, org_id: &str, val:
         .unwrap_or("")
         .to_string();
 
-    // `row_image` retains the full original event (type/hlc/payload) so that catchup
-    // responses (identity.rs::query_events_since) can still reconstruct the shape peers
-    // expect, even though `event_log` itself is now audit-only storage (Decision 5).
+    // `row_image` retains the full original event (type/hlc/payload) purely as an audit
+    // record — catch-up no longer replays `event_log` (see identity.rs's
+    // `CatchupRequestReceived` handler, which now sends a relational snapshot via
+    // `syntrix_network::cdc::snapshot_org_rows` instead).
     let row_image = val.clone();
     let row_image_str = match serde_json::to_string(&row_image) {
         Ok(s) => s,

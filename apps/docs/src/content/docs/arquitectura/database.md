@@ -80,8 +80,6 @@ CDC, no como parte de un JSON anidado.
   transporte de sync
 - `event_log` (admin) — **auditoría de datos**: una fila por cambio CDC recibido
   (`entity`/`change_type`/`doc_id`/`row_image`/`change_time`/`node_id`)
-- `hlc_tracker` — deduplicación Last-Write-Wins para el path de escritura legacy
-  (gossip/catchup/identity), hasta que el loop CDC lo sustituya por completo
 - `cdc_cursor` (cliente) — último `turso_cdc.change_id` publicado por org, para reanudar el
   loop de sync tras un reinicio
 - `saved_views` (admin) — consultas SQL favoritas de la consola SQL

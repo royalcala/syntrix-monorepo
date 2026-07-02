@@ -149,6 +149,71 @@ pub fn read_cdc_events(
     Ok((all_events, max_change_id))
 }
 
+/// Snapshots the **current** rows for an org across every entity/child table, encoded as
+/// `CdcEvent`s (`change_type = 1`, i.e. insert) with each row's own `change_time`/`node_id`
+/// preserved. Used for catch-up (Fase 3, tarea 16): rather than replaying historical
+/// `turso_cdc`/`event_log` events (fragile once retention/pruning is added, and incompatible
+/// with the admin's data-audit `event_log` shape), a newly-joined or long-disconnected peer
+/// gets a snapshot of current state that it can apply with the exact same
+/// `apply_cdc_events` used for live sync — so LWW/permission-checking behavior is identical
+/// for catch-up and live updates.
+pub fn snapshot_org_rows(conn: &Arc<turso_core::Connection>, org_id: &str) -> anyhow::Result<Vec<CdcEvent>> {
+    let mut events = Vec::new();
+
+    for table in schema::all_physical_tables() {
+        let Some(table_ref) = schema::resolve_table(table) else { continue };
+        let columns = table_ref.columns();
+        let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+
+        let sql = format!("SELECT {} FROM {} WHERE org_id = ?1", col_names.join(", "), table);
+        // Tolerate a table not existing yet (e.g. a peer on an older schema mid-migration, or
+        // a test DB that only created a subset of tables) rather than failing the whole
+        // snapshot for every other table.
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
+
+        let mut change_time_idx = None;
+        for (i, col) in columns.iter().enumerate() {
+            if col.name == "change_time" {
+                change_time_idx = Some(i);
+            }
+        }
+
+        use turso_core::StepResult;
+        loop {
+            match stmt.step()? {
+                StepResult::Row => {
+                    let Some(row) = stmt.row() else { continue };
+                    let mut col_map = BTreeMap::new();
+                    let mut change_time = 0i64;
+                    for (i, col) in columns.iter().enumerate() {
+                        let v: &turso_core::Value = row.get(i)?;
+                        if Some(i) == change_time_idx {
+                            if let turso_core::Value::Numeric(turso_core::Numeric::Integer(n)) = v {
+                                change_time = *n;
+                            }
+                        }
+                        col_map.insert(col.name.clone(), turso_value_to_json(v, col.ty));
+                    }
+                    events.push(CdcEvent { table: table.to_string(), change_type: 1, change_time, columns: col_map });
+                }
+                StepResult::Done => break,
+                StepResult::IO | StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                StepResult::Interrupt | StepResult::Busy => {
+                    anyhow::bail!("snapshot read interrupted or busy");
+                }
+            }
+        }
+    }
+
+    Ok(events)
+}
+
 fn as_blob(v: &turso_core::Value) -> Option<&[u8]> {
     match v {
         turso_core::Value::Blob(b) => Some(b.as_slice()),
@@ -680,6 +745,62 @@ mod tests {
                 StepResult::IO | StepResult::Yield => {
                     stmt._io().step().unwrap();
                 }
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_org_rows_captures_current_state_across_entity_and_child_tables() {
+        let (_dir, conn) = test_conn();
+        create_customers_table(&conn);
+        create_invoices_and_items(&conn);
+
+        conn.execute(
+            "INSERT INTO customers (org_id, doc_id, name, email, change_time, node_id) \
+             VALUES ('org1', 'c1', 'Alice', 'alice@test.com', 1000, 'nodeA')",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO customers (org_id, doc_id, name, change_time) \
+             VALUES ('org2', 'c2', 'Bob', 2000)",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (org_id, doc_id, customer_id, amount, date, change_time) \
+             VALUES ('org1', 'inv1', 'c1', 100.0, '2024-01-01', 1000)",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO invoice_items (org_id, invoice_id, line_id, product_id, qty, price, change_time) \
+             VALUES ('org1', 'inv1', 'l1', 'p1', 2.0, 50.0, 1000)",
+        ).unwrap();
+
+        let snapshot = snapshot_org_rows(&conn, "org1").unwrap();
+
+        // Only org1 rows, across both the customers table and the invoices/invoice_items pair.
+        assert!(snapshot.iter().all(|e| e.org_id() == Some("org1")));
+        assert!(snapshot.iter().any(|e| e.table == "customers" && e.get_str("doc_id") == Some("c1")));
+        assert!(snapshot.iter().any(|e| e.table == "invoices" && e.get_str("doc_id") == Some("inv1")));
+        assert!(snapshot.iter().any(|e| e.table == "invoice_items" && e.get_str("line_id") == Some("l1")));
+        assert!(!snapshot.iter().any(|e| e.get_str("doc_id") == Some("c2")), "org2 rows must not leak into org1's snapshot");
+
+        // Snapshot rows apply cleanly on a fresh peer via the same apply_cdc_events path used
+        // for live CDC sync (Fase 3, tarea 16).
+        let (_dir2, conn2) = test_conn();
+        create_customers_table(&conn2);
+        create_invoices_and_items(&conn2);
+        apply_cdc_events(&conn2, &snapshot, &AllowAll).unwrap();
+
+        let mut stmt = conn2.prepare("SELECT name FROM customers WHERE org_id='org1' AND doc_id='c1'").unwrap();
+        use turso_core::StepResult;
+        loop {
+            match stmt.step().unwrap() {
+                StepResult::Row => {
+                    let row = stmt.row().unwrap();
+                    let name: String = row.get(0).unwrap();
+                    assert_eq!(name, "Alice");
+                    break;
+                }
+                StepResult::Done => panic!("snapshot row for c1 should have been applied"),
+                StepResult::IO | StepResult::Yield => { stmt._io().step().unwrap(); }
                 other => panic!("unexpected: {other:?}"),
             }
         }

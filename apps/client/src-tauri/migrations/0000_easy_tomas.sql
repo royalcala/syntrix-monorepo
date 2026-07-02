@@ -43,16 +43,6 @@ CREATE TABLE `heartbeats` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_heartbeats_org` ON `heartbeats` (`org_id`,`node_id`);--> statement-breakpoint
-CREATE TABLE `hlc_tracker` (
-	`org_id` text NOT NULL,
-	`entity` text NOT NULL,
-	`doc_id` text NOT NULL,
-	`hlc_ts` integer DEFAULT 0 NOT NULL,
-	`hlc_count` integer DEFAULT 0 NOT NULL,
-	`hlc_node` text DEFAULT '' NOT NULL,
-	PRIMARY KEY(`org_id`, `entity`, `doc_id`)
-);
---> statement-breakpoint
 CREATE TABLE `invoice_items` (
 	`org_id` text NOT NULL,
 	`invoice_id` text NOT NULL,
