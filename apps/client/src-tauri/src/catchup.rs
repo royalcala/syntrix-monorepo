@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use syntrix_network::P2PNode;
 use crate::indexes::SqlEngine;
 

@@ -71,6 +71,6 @@ Cada evento gossip recibido de un peer remoto pasa por validación de permisos a
 |---|---|
 | NamespaceId por entidad (anterior) | TopicId (libp2p gossipsub) por organización |
 | accept_cb a nivel de doc | Validación por evento en receive loop |
-| `doc.set_bytes()` para escribir | `gossip.broadcast()` + `event_log.append` |
-| `doc.get_many()` para leer | `event_log.query_events_since()` |
+| `doc.set_bytes()` para escribir | `SqlEngine::upsert_document_full` (columnas tipadas) + `turso_cdc` + loop de publish CDC |
+| `doc.get_many()` para leer | `SqlEngine::query`/`get_document` (SQL directo sobre columnas tipadas) |
 | `doc.subscribe()` para eventos remotos | `GossipTopic` stream de `Event::Received` |

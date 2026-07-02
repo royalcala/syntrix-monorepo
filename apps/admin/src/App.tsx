@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Users, Shield, Building2, Terminal, Database, ScrollText, Plus } from "lucide-react";
+import { Users, Shield, Building2, Terminal, Database, ScrollText, Plus, TerminalSquare } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
@@ -15,6 +15,7 @@ import { RolesGridPage } from "./screens/RolesGridPage";
 import { OrgsGridPage } from "./screens/OrgsGridPage";
 import { SchemaExplorer } from "./screens/SchemaExplorer";
 import { AuditTrail } from "./screens/AuditTrail";
+import { SqlConsole } from "./screens/SqlConsole";
 
 type OrgInfo = { name: string };
 
@@ -24,6 +25,7 @@ const navItems: NavItem[] = [
   { href: "/orgs", label: "Organizaciones", icon: Building2 },
   { href: "/schemas", label: "Esquemas", icon: Database },
   { href: "/audit", label: "Auditoría", icon: ScrollText },
+  { href: "/sql", label: "Consola SQL", icon: TerminalSquare },
   { href: "/logs", label: "Logs", icon: Terminal },
 ];
 
@@ -118,6 +120,16 @@ export default function App() {
                 contentClassName="flex-1 min-h-0 flex flex-col"
               >
                 <AuditTrail org={activeOrg} />
+              </PageLayout>
+            } />
+            <Route path="/sql" element={
+              <PageLayout
+                title="Consola SQL"
+                description="Ejecuta consultas SELECT de solo lectura contra la réplica relacional del admin y guarda vistas favoritas."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0 flex flex-col"
+              >
+                <SqlConsole />
               </PageLayout>
             } />
             <Route path="/logs" element={<Logs />} />

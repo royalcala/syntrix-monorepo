@@ -40,3 +40,26 @@ Esta sección contiene el catálogo oficial de comandos del backend en Rust que 
 - **Argumentos**:
   - `id: u64` (ID de la suscripción retornado por `live_subscribe`).
 - **Retorno**: `Result<(), String>`
+
+---
+
+## Módulo de Consola SQL (Admin)
+
+### `run_sql`
+- **Descripción**: Ejecuta una consulta `SELECT`/`WITH` de solo lectura contra la réplica
+  relacional del admin, con paginación. Rechaza cualquier sentencia que no sea de lectura
+  (`INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`CREATE`/`ATTACH`/`PRAGMA`/etc.) y sentencias
+  apiladas (`;` intermedio).
+- **Argumentos**:
+  - `query: String` (una sola sentencia SQL de solo lectura).
+  - `limit: Option<usize>` (por defecto 200, tope 1000).
+  - `offset: Option<usize>`.
+- **Retorno**: `Result<SqlResult, String>` — `{ columns: Vec<String>, rows: Vec<Vec<Value>>, truncated: bool }`.
+
+### `list_saved_views` / `create_saved_view` / `delete_saved_view`
+- **Descripción**: CRUD sobre `saved_views` (consultas SQL favoritas). "Audit Trail" se
+  siembra automáticamente al iniciar (`sql_console::seed_default_saved_views`).
+- **Argumentos** (`create_saved_view`): `name: String`, `sql_query: String` (validado como
+  solo-lectura antes de guardar).
+- **Retorno**: `Result<SavedView, String>` / `Result<Vec<SavedView>, String>` / `Result<(), String>`.
+

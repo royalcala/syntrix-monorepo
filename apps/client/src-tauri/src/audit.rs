@@ -26,6 +26,7 @@ pub struct AuditFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::entity_from_event_type;
 
     #[test]
     fn test_entity_from_event_type() {
@@ -61,18 +62,6 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("customer.created"));
         assert!(json.contains("c1"));
-    }
-}
-
-fn entity_from_event_type(event_type: &str) -> &str {
-    match event_type.split('.').next().unwrap_or(event_type) {
-        "invoice" | "invoices" => "invoices",
-        "order" | "orders" => "orders",
-        "product" | "products" => "products",
-        "customer" | "customers" => "customers",
-        "supplier" | "suppliers" => "suppliers",
-        "payroll" => "payroll",
-        other => other,
     }
 }
 

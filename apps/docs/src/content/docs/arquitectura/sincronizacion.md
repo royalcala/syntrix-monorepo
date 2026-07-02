@@ -1,11 +1,15 @@
 ---
 title: "Sincronización P2P y CDC (libp2p Gossipsub + request_response)"
-description: "Mecánica detallada de sincronización mediante pub/sub gossip y CDC sobre libp2p, reconciliación por catch-up P2P, resolución LWW y compatibilidad de esquemas."
+description: "Mecánica detallada de sincronización mediante pub/sub gossip y CDC nativo sobre libp2p, catch-up con roster de permisos, resolución LWW y compatibilidad de esquemas."
 ---
 
 # Sincronización P2P y CDC
 
-La arquitectura de comunicación colaborativa de Syntrix utiliza **libp2p gossipsub** para pub/sub de eventos en vivo, **libp2p request_response** para transferencia batch de CDC y catch-up, y **Limbo (turso_core)** como único almacenamiento local SQL con CDC nativo.
+La arquitectura de comunicación colaborativa de Syntrix utiliza **libp2p gossipsub** para
+pub/sub de cambios CDC, **libp2p request_response** para catch-up, y **Limbo (turso_core)**
+como único almacenamiento local SQL con CDC nativo. El transporte de sincronización de datos
+de entidad es **CDC-nativo**: ya no se retransmiten eventos JSON de negocio por gossip como
+mecanismo principal — se lee `turso_cdc` y se envían los cambios reales de fila.
 
 ---
 
@@ -18,118 +22,133 @@ graph TD
 
     subgraph syntrix-core
         direction LR
-        B1[NamespaceRegistry] --> B2[TopicIds + Permisos]
+        B1[NamespaceRegistry] --> B2[TopicIds + Permisos propios]
         B3[Bucle de Heartbeats]
         B4[Cálculo de Estado: SyncInfo]
     end
 
     subgraph Limbo
         direction LR
-        C1[Turso CDC: turso_cdc]
+        C1[turso_cdc: CDC nativo]
         C2[Entity tables + FTS]
-        C3[event_log + hlc_tracker]
+        C3[event_log + hlc_tracker + cdc_cursor]
     end
 
     subgraph syntrix-network
-        D1[gossipsub: eventos en vivo]
-        D2[request_response: CDC batch]
+        D1[gossipsub: batches CDC + heartbeats/roster]
+        D2[cdc::read_cdc_events / apply_cdc_events]
         D3[request_response: catch-up]
     end
 
     B2 --> D1
     C1 --> D2
+    D2 --> D1
     C3 --> D3
     B4 --> C
 ```
 
-*   **`syntrix-core`**: Proporciona `NamespaceRegistry` (mapeo TopicId → OrgId, permisos de roles), heartbeats sobre gossip + Limbo, y cálculo de estado de peers.
-*   **Limbo (turso_core)**: Motor SQL embebido con CDC nativo via `PRAGMA capture_data_changes_conn='full'`. Tablas: `customers`, `suppliers`, `products`, `invoices`, `orders`, `payroll`, más tablas de sistema `event_log`, `members`, `roles`, `heartbeats`, `hlc_tracker`.
-*   **`syntrix-network`**: Maneja dos protocolos de sincronización sobre libp2p:
-    - **gossipsub** (`/syntrix/1.0.0`): transmisión en vivo de eventos firmados con HLC.
-    - **request_response** (`/syntrix/catchup/1`, `/syntrix/cdc/1`): transferencia batch de catch-up histórico y cambios CDC.
+*   **`syntrix-core`**: proporciona `NamespaceRegistry` (mapeo TopicId → OrgId, permisos de
+    roles) y re-exporta el registro de columnas (`syntrix-network::schema`) como
+    `syntrix_core::schema`. En el cliente, el `NamespaceRegistry` solo conoce con certeza **su
+    propio** dispositivo/rol — el permiso de autores remotos se valida contra las tablas SQL
+    `members`/`roles` (ver sección 6), no contra el registro en memoria.
+*   **Limbo (turso_core)**: motor SQL embebido con CDC nativo via
+    `PRAGMA capture_data_changes_conn='full'`. Tablas: `customers`, `suppliers`, `products`,
+    `invoices`, `orders`, `payroll` (+ tablas hijas `invoice_items`/`order_items`), más tablas
+    de sistema `event_log`, `members`, `roles`, `heartbeats`, `hlc_tracker`, `cdc_cursor`.
+*   **`syntrix-network`**: expone `cdc::{read_cdc_events, apply_cdc_events, CdcEvent}` (el
+    núcleo del transporte CDC-nativo) y dos protocolos libp2p:
+    - **gossipsub**: batches de `CdcEvent` (`{"kind":"cdc_batch","events":[...]}`),
+      heartbeats, y eventos de roster (`device.updated`/`role.updated`).
+    - **request_response** (catch-up): snapshot histórico + roster completo de
+      dispositivos/roles para peers que se unen o se reconectan.
 
 ---
 
-## 2. Flujo de Datos — Gossip en Vivo
+## 2. Flujo de escritura local (commit_event)
 
-### Escritura local (commit_event)
-1. Validar `can_write` del rol contra la entidad del evento (`NamespaceRegistry`).
+1. Validar `can_write` del rol propio contra la entidad del evento (chequeo local, usando el
+   rol conocido de este mismo nodo).
 2. Generar HLC timestamp (ts + count monotónico por nodo).
-3. Escribir evento en Limbo `event_log`.
-4. Proyectar documento en tabla de entidad + `FTS`.
+3. Escribir el evento en el `event_log` local del cliente (histórico informativo, ya no es
+   transporte).
+4. Proyectar el documento en columnas tipadas de la tabla de entidad (+ tablas hijas si
+   aplica) vía `SqlEngine::upsert_document_full`, usando `change_time`/`node_id` reales.
 5. Notificar `LiveManager` para re-ejecutar queries activas.
-6. Broadcast del evento serializado al topic gossip de la org.
-
-### Recepción remota (gossip Received)
-1. Validar que el sender es un miembro activo conocido (Limbo `members`).
-2. Validar que el rol del sender tiene `can_write` para la entidad del evento.
-3. Validar HLC > HLC existente para el mismo `doc_id` (LWW — ver sección 6).
-4. Escribir en `event_log` + proyectar en tabla de entidad + `FTS`.
-5. Notificar `LiveManager` para actualizar suscripciones activas.
+6. **No** se publica el evento directamente por gossip. El cambio queda registrado en
+   `turso_cdc` (por el `PRAGMA capture_data_changes_conn`) y será recogido y publicado por el
+   loop de CDC (sección 3) en su próximo tick.
 
 ---
 
-## 3. Sincronización CDC (Change Data Capture)
-
-Además del gossip en vivo, Syntrix sincroniza cambios a través de CDC nativo de Limbo. Esto asegura que ningún cambio se pierda incluso si el nodo estuvo offline durante un evento gossip.
+## 3. Sincronización CDC (Change Data Capture) — transporte principal
 
 ### Captura local (turso_cdc)
 
-Limbo expone CDC nativo via `PRAGMA capture_data_changes_conn='full'`. Esto crea la tabla virtual `turso_cdc` que captura automáticamente todo INSERT/UPDATE/DELETE en las tablas registradas:
+Limbo expone CDC nativo via `PRAGMA capture_data_changes_conn='full'`. Esto crea la tabla
+`turso_cdc`, que captura automáticamente todo INSERT/UPDATE/DELETE como un blob de registro
+binario estándar (mismo formato que una fila de tabla — decodificable con
+`turso_core::types::ImmutableRecord`), con esta forma:
 
 ```
-catalog/changes/┐
-               ├─ change_id (monotónico)
-               ├─ table_name
-               ├─ change_type (1=INSERT, 2=DELETE, 3=UPDATE)
-               ├─ row_id (rowid interno)
-               ├─ after (JSON con valores posteriores)
-               └─ change_time (epoch ms)
+turso_cdc
+  ├─ change_id     (monotónico, GLOBAL entre todas las tablas con CDC activo)
+  ├─ table_name    (NULL para filas de marcador de commit)
+  ├─ change_type   (1=insert, 0=update, -1=delete, 2=marcador de commit)
+  ├─ change_time   (epoch ms)
+  ├─ before        (record binario pre-cambio; NULL en insert)
+  └─ after         (record binario post-cambio; NULL en delete)
 ```
 
-El módulo `syntrix-network::cdc::read_cdc_events()` consulta `turso_cdc` desde un `change_id` dado, mapea los cambios crudos a `CdcEvent` con campos de aplicación (`org_id`, `entity`, `doc_id`, `payload`, `change_time`, `node_id`, `change_type`).
+`syntrix_network::cdc::read_cdc_events()` consulta `turso_cdc` desde un `change_id` dado,
+filtrando por tabla física (entidad o tabla hija), decodifica el blob `after` (o `before` para
+deletes) posicionalmente según el orden de columnas de `schema.json`, y descarta las filas de
+marcador de commit (`change_type == 2`).
 
-### Push CDC (nodo local → peer remoto)
+### Push CDC (nodo local → peers)
 
-Cada 30 segundos (o inmediatamente después de una escritura local), el nodo hace lecturas incrementales de `turso_cdc`:
+`apps/client/src-tauri/src/cdc_sync.rs::run_cdc_publish_loop` corre cada 2 segundos por
+defecto:
 
-1. Leer `turso_cdc` desde el último `change_id` procesado.
-2. Agrupar eventos por `(org_id, entity, doc_id)` — solo el último cambio por documento es relevante.
-3. Enviar lote de `CdcEvent` al peer via libp2p request_response protocol `/syntrix/cdc/1`.
-4. El peer receptor aplica LWW (sección 6) y descarta eventos cuyo `change_time` sea ≤ al almacenado localmente.
+1. Lee el cursor persistido (`cdc_cursor.last_change_id`) para cada org conocida.
+2. Llama a `read_cdc_events(conn, cursor, limit, None)` (todas las tablas físicas).
+3. Filtra los eventos que pertenecen a esa org (`turso_cdc.change_id` es una secuencia global
+   compartida entre orgs en la misma base de datos).
+4. Si hay eventos, los publica como `{"kind":"cdc_batch","events":[CdcEvent...]}` en el topic
+   gossip de la org.
+5. Persiste el nuevo cursor (`set_cdc_cursor`), avance con o sin eventos para esa org.
 
-### Pull CDC (catch-up diferencial)
+### Recepción (peer remoto)
 
-Cuando un nodo se reconecta tras una desconexión:
+`identity.rs::apply_cdc_batch` (cliente) / `gossip.rs::apply_cdc_batch` (admin):
 
-1. Consulta el `max_change_id` del peer remoto via request_response.
-2. Si el peer remoto tiene cambios más recientes, envía `pull_cdc_changes(since=last_local_change_id)`.
-3. El peer responde con todos los `CdcEvent` desde ese punto.
-4. Se aplican con LWW y se actualiza el watermark local.
-
-### CDC vs. Gossip
-
-| Aspecto | Gossip | CDC |
-|---------|--------|-----|
-| Latencia | Milisegundos (en vivo) | ~30s (batch) |
-| Confiabilidad | Depende del mesh | Garantizado por CDC en base de datos |
-| Cobertura | Eventos actuales | Cambios desde cualquier punto en el tiempo |
-| Uso | Sincronización en vivo | Reconciliación offline + bootstrapping |
-| Protocolo | Pub/sub (gossipsub) | Request/response |
+1. Deserializa el batch `Vec<CdcEvent>`.
+2. Para cada evento, valida que el autor (`node_id` embebido en la fila) tenga permiso de
+   escritura sobre la entidad — ver sección 6.
+3. Llama a `syntrix_network::cdc::apply_cdc_events`, que aplica LWW por `change_time` (sección
+   7), hace `INSERT OR REPLACE` tipado o `DELETE` (con cascada a tablas hijas en deletes de
+   entidad padre).
+4. (Admin) Registra cada evento aceptado como fila de auditoría en `event_log`
+   (`entity`/`change_type`/`doc_id`/`row_image`/`change_time`/`node_id`).
 
 ---
 
 ## 4. Catch-up P2P
 
-Cuando un nuevo nodo se une a una org, completa catch-up antes de procesar eventos gossip en vivo:
+Cuando un nodo se une a una org (o se reconecta tras un reinicio), solicita catch-up al admin
+antes de continuar con el procesamiento normal:
 
-1. Se suscribe al topic gossip de la org.
-2. Conecta al admin via `endpoint.connect()` con ALPN `/syntrix/catchup/1`.
-3. Envía `{ org_id, since_hlc: 0 }`.
-4. Admin responde con todos los eventos desde `since_hlc` (desde `event_log`).
-5. Los eventos recibidos se proyectan en Limbo (tablas de entidad + `FTS`).
-6. Se reanuda el procesamiento normal de gossip.
-7. Adicionalmente, se ejecuta un pull CDC para capturar cambios que pudieron haber ocurrido en tablas de entidad directamente (sin pasar por `event_log`).
+1. `crate::catchup::request_catchup(p2p, peer_id, org_id, since_hlc, indexer)` pide un
+   snapshot al admin via request_response.
+2. El admin responde con:
+   - Un **roster completo** de `device.updated`/`role.updated` para todos los dispositivos y
+     roles conocidos de la org (necesario para que el peer pueda validar permisos de autor de
+     eventos CDC recibidos de *cualquier* otro peer, no solo del admin — ver sección 6).
+   - El historial de `event_log` desde `since_hlc` (compatibilidad con el flujo legacy).
+3. `catchup::apply_catchup_event` aplica cada evento: roster → `members`/`roles` SQL;
+   documentos con HLC → `upsert_document_with_hlc`.
+4. Si la solicitud al admin falla (offline), se reintenta contra un peer visto recientemente
+   en `heartbeats`.
 
 ---
 
@@ -137,40 +156,53 @@ Cuando un nuevo nodo se une a una org, completa catch-up antes de procesar event
 
 Cada nodo escribe un heartbeat cada 15s:
 
-- Formato JSON: `{ ts, status: "online", node_id, schema_version }`
+- Formato JSON: `{ ts, status: "online", node_id }`.
 - Almacenado en Limbo `heartbeats`.
-- Leído por `get_sync_info` para determinar peers online/offline.
-- El campo `schema_version` permite detectar peers con esquema incompatible (ver sección 8).
+- Leído por `get_sync_info` para determinar peers online/offline, y como respaldo para
+  localizar un peer con quien reintentar catch-up si el admin no responde.
 
 ---
 
-## 6. Autorización por Evento
+## 6. Autorización por Autor de Evento
 
-A diferencia del modelo anterior (accept_cb a nivel de doc), la autorización ahora se valida **por cada evento recibido**:
+La autorización se valida **por cada evento CDC recibido**, no solo al escribir localmente:
 
-1. El `NamespaceRegistry` mantiene devices activos y roles con `can_write`.
-2. Cuando un evento llega via gossip, se verifica que el sender (identificado por `hlc.node`) tenga `can_write` para la entidad del evento.
-3. Si no tiene permiso, el evento se descarta (nunca se indexa en Limbo).
-4. Para CDC, la autorización se valida en el lado receptor antes de aplicar `CdcEvent`.
+1. Cada fila CDC lleva su propio `node_id` (el autor original de la escritura, capturado en la
+   columna `node_id` de la tabla en el momento de `commit_event`).
+2. El receptor valida el permiso del autor contra su copia local de `members`/`roles`
+   (`SqlEngine::can_node_write`, cliente; `NamespaceRegistry` completo, admin — el admin es
+   autoritativo porque emite él mismo cada `device.updated`/`role.updated`).
+3. **Importante**: el `NamespaceRegistry` en memoria de un *cliente* solo contiene su propio
+   dispositivo (nunca aprende sobre otros peers vía ese registro) — por eso la validación en
+   el cliente usa las tablas SQL `members`/`roles`, pobladas por gossip de roster
+   (`device.updated`/`role.updated`) y por el snapshot de catch-up (sección 4).
+4. Si el autor no tiene permiso, el evento se descarta silenciosamente (no se aplica, no se
+   audita).
 
 ---
 
 ## 7. Resolución Last-Write-Wins (LWW)
 
-Tanto gossip como CDC usan LWW para resolver conflictos. Cada evento lleva un `change_time` (epoch ms) que representa el momento lógico del cambio:
+CDC usa LWW por `change_time` (epoch ms, no HLC) para resolver conflictos:
 
-### Reglas LWW
+1. **Por fila**: cada fila de entidad o de tabla hija tiene su propio `change_time` vigente
+   (clave: `(org_id, doc_id)` para entidades; `(org_id, parent_id, line_id)` para hijas).
+2. **Aplicación de CDC**: `apply_cdc_events` compara `CdcEvent.change_time` contra el
+   `change_time` almacenado en la fila local. Si el almacenado es `>=` al entrante, el evento
+   se descarta (no se sobreescribe).
+3. **Deletes**: un evento con `change_type == -1` es un delete real (no un marcador de
+   commit); se aplica como `DELETE` tras pasar el chequeo LWW, y si la fila es una entidad con
+   tablas hijas declaradas, se hace cascada explícita de borrado a esas tablas hijas (defensivo
+   ante reordenamiento de red).
+4. **Escritura legacy con HLC** (gossip/catchup, mientras conviven con el loop CDC):
+   `upsert_document_with_hlc` sigue comparando contra `hlc_tracker` (ver más abajo) — este
+   camino se retirará cuando el loop CDC sea la única vía de escritura remota.
 
-1. **Por documento**: cada `(org_id, entity, doc_id)` tiene un único `change_time` vigente.
-2. **Escritura local**: si el nuevo evento tiene `change_time > stored.change_time`, se aplica; en caso contrario se descarta.
-3. **Recepción remota (gossip)**: se compara el HLC del evento entrante vs. el HLC almacenado en `hlc_tracker`. Si HLC entrante ≤ HLC almacenado, se descarta.
-4. **Recepción remota (CDC)**: `apply_cdc_events` compara `CdcEvent.change_time` vs. `stored.change_time` en la tabla de entidad. Si el entrante es menor o igual, el evento se salta.
-5. **Empate**: si dos eventos tienen exactamente el mismo `change_time` (caso extremadamente raro), se desempata por `hlc.node` (lexicográfico).
-6. **Deletes**: un evento DELETE (change_type=2) en CDC se ignora en la aplicación; los documentos se marcan como eliminados si el payload contiene `_deleted: true`.
+### hlc_tracker (solo path legacy)
 
-### hlc_tracker
-
-La tabla `hlc_tracker` almacena el último HLC visto por `(org_id, entity, doc_id)`:
+La tabla `hlc_tracker` almacena el último HLC visto por `(org_id, entity, doc_id)`, usada
+únicamente por `upsert_document_with_hlc` (gossip.rs/catchup.rs/identity.rs del cliente,
+todavía vigente para el flujo de catch-up basado en HLC):
 
 ```sql
 CREATE TABLE hlc_tracker (
@@ -184,34 +216,18 @@ CREATE TABLE hlc_tracker (
 );
 ```
 
-Esto permite deduplicación determinista incluso si el mismo evento llega dos veces por rutas diferentes (gossip + CDC).
-
 ---
 
 ## 8. Compatibilidad de Versiones de Esquema
 
-Syntrix soporta peers con diferentes versiones de esquema. Cada evento incluye `schema_version` en su metadata JSON:
-
-```json
-{
-  "type": "customer.created",
-  "hlc": { "ts": 1719000000000, "count": 0, "node": "a1b2c3d4e5f6..." },
-  "schema_version": 2,
-  "payload": { "id": "...", "name": "...", "address": { ... } }
-}
-```
-
-### Reglas de compatibilidad
-
-1. **Forward-only**: las migraciones de esquema solo pueden ADD columnas, nunca DROP o RENAME. Esto asegura que peers con esquemas más nuevos puedan leer datos de peers más viejos.
-2. **schema_version en heartbeat**: cada nodo publica su `schema_version` en los heartbeats gossip. Si un peer detecta que otro tiene una versión de esquema que no entiende, puede optar por no sincronizar ciertas tablas.
-3. **Upcasters deterministas**: cuando un peer recibe un evento con `schema_version` menor al suyo, ejecuta `upcast_payload()` que aplica una cadena de upcasters (ej: `CustomerV1ToV2` que transforma `address: string` → `address: { street, city }`).
-4. **Ignorar columnas desconocidas**: si un peer recibe CDC de una tabla/columna que no existe localmente, el cambio se ignora silenciosamente.
-5. **Version negotiation (futuro)**: para breaking changes, se implementará `min_schema_version` en gossip. Peers por debajo de ese mínimo no podrán sincronizar hasta actualizar.
-
-### Implementación
-
-- `syntrix_core::schema_version_for(entity) → u32` retorna la versión actual del esquema para una entidad.
-- `syntrix_core::upcast_payload(payload, from_schema, to_schema) → Value` aplica la cadena de transformaciones.
-- En el cliente, `upcast_payload()` se llama tanto en `commit_event` como en `sync_push` y en recepción gossip.
-- Esto evita corrupción de datos y asegura que todos los peers en el mesh tengan un esquema compatible aunque estén en distintas versiones de software.
+1. **Forward-only**: las migraciones de esquema solo pueden ADD columnas, nunca DROP o
+   RENAME, para que peers con esquemas más nuevos puedan leer datos de peers más viejos.
+2. **Columnas desconocidas se ignoran**: si `read_cdc_events`/`apply_cdc_events` encuentra un
+   row-image con menos columnas de las que el `schema.json` local espera para esa tabla, la
+   fila se descarta en vez de desalinear columnas.
+3. **Upcasters deterministas** (solo en el path de escritura local, `events.rs`): al comitear
+   un evento de negocio con `schema_version` menor a la actual, se ejecuta `upcast_payload()`
+   antes de proyectar a columnas tipadas.
+4. Los eventos de negocio (`commit_event`) siguen llevando `schema_version` en su metadata,
+   pero ese payload ya no viaja directamente por la red — solo se usa localmente para decidir
+   el upcast antes de escribir en columnas.

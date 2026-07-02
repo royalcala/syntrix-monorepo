@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 
 pub use syntrix_core::parse_device_addr;
 
-use crate::indexes::{HlcTimestamp, SqlEngine};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientOrgConfig {

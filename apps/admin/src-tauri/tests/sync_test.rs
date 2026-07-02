@@ -35,7 +35,7 @@ async fn test_two_clients_sync_via_gossip() {
     let admin_entry = wait_for_audit_entry(&admin, "acme", "c1")
         .await
         .expect("admin should see audit entry");
-    assert_eq!(admin_entry.row_image["type"], "customer.created");
+    assert_eq!(admin_entry.entity, "customers");
 }
 
 #[tokio::test]
@@ -57,7 +57,7 @@ async fn test_admin_audit_sees_propagated_events() {
     let entry = wait_for_audit_entry(&admin, "acme", "p1")
         .await
         .expect("admin audit should see the event");
-    assert_eq!(entry.row_image["type"], "customer.created");
+    assert_eq!(entry.entity, "customers");
 }
 
 #[tokio::test]
@@ -144,11 +144,11 @@ async fn test_multi_org_isolation() {
         0,
     );
     assert!(
-        acme_audit.iter().any(|e| e.row_image["type"] == "customer.created"),
+        acme_audit.iter().any(|e| e.entity == "customers"),
         "admin audit acme has customer.created"
     );
     assert!(
-        !acme_audit.iter().any(|e| e.row_image["type"] == "customer.created" && e.doc_id == "c-beta"),
+        !acme_audit.iter().any(|e| e.entity == "customers" && e.doc_id == "c-beta"),
         "admin audit acme should NOT have beta customer"
     );
 }

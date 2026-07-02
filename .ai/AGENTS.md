@@ -104,6 +104,51 @@ Do not approve a backend feature without a green `just test-rust`.
 
 ---
 
+## Relational Data Model & CDC-Native Sync
+
+Entity tables use **typed SQL columns** (not a generic `payload` JSON blob) — see
+`.kilo/plans/1782949593655-relational-cdc-migration.md` for the full migration history and
+rationale.
+
+### Adding/changing an entity's fields
+1. Edit the entity's columns in `apps/client/drizzle/schema.ts` **and** `apps/admin/drizzle/schema.ts`
+   (both apps replicate the same relational shape).
+2. Edit the matching column metadata (`type`, `nullable`, `searchable`) in
+   `shared/drizzle/entity-schema-meta.mjs` — this is the single source of truth for the column
+   registry consumed by Rust.
+3. Run `just drizzle-gen` to regenerate SQL migrations (Drizzle Kit) **and**
+   `crates/syntrix-network/schema.json` (via `pnpm export-schema`). Do not hand-edit
+   `schema.json` — it's generated.
+4. Rust reads the registry via `syntrix_core::schema` (re-exported from
+   `syntrix-network::schema`, which lives there to avoid a circular crate dependency). Never
+   hardcode per-entity column lists in Rust — use `entity_meta`/`business_columns`/
+   `child_business_columns`/`searchable_columns`.
+5. Dev DBs are not migrated/backfilled across schema changes — reset with
+   `just clean-data-admin` / `just clean-data-client` / `just clean-data-all`.
+
+### CDC-native sync (not JSON-over-gossip)
+- Entity data no longer propagates via a direct gossip publish of a JSON business event.
+  Writes go through `SqlEngine::upsert_document_full` (typed columns), and
+  `apps/client/src-tauri/src/cdc_sync.rs::run_cdc_publish_loop` reads `turso_cdc` periodically
+  and gossips `CdcEvent` batches (`syntrix_network::cdc::{read_cdc_events, apply_cdc_events}`).
+- `turso_cdc.change_type`: `1`=insert, `0`=update, `-1`=delete. `change_type == 2` is a
+  per-transaction **commit marker** (`table_name IS NULL`), not a delete — already handled in
+  `read_cdc_events`, but don't reintroduce a `change_type == 2` → delete assumption.
+- Permission checks on received CDC events use SQL `members`/`roles` tables
+  (`SqlEngine::can_node_write`), **not** the in-memory `NamespaceRegistry` on the client side —
+  a client's registry only knows its own device, never peers'. The admin's registry *is*
+  authoritative (it issues every `device.updated`/`role.updated`).
+- FTS uses turso's `fts_match`/`fts_score` scalar functions directly on typed columns (Tantivy
+  under the hood) — there is no SQLite-style `CREATE VIRTUAL TABLE ... USING fts5` support in
+  the vendored `turso_core`.
+
+### Admin SQL console
+- `apps/admin/src-tauri/src/sql_console.rs` exposes `run_sql` (read-only, validated
+  SELECT/WITH only) and `saved_views` CRUD. `AuditTrail.tsx` is now a thin wrapper around
+  `SqlConsole.tsx` seeded with a query over `event_log`, not a bespoke filter UI.
+
+---
+
 ## AI-First Logging (syntrix-logging)
 
 The crate `crates/syntrix-logging/` provides structured NDJSON logging with a query API designed for AI consumption.

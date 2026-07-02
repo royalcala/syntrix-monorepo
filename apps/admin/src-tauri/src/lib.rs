@@ -9,6 +9,7 @@ pub mod audit;
 pub mod catchup;
 pub mod gossip;
 pub mod storage;
+pub mod sql_console;
 
 use syntrix_core::ENTITY_NAMES;
 
@@ -217,6 +218,10 @@ fn start_tail_logs(_app: tauri::AppHandle, _handle: tauri::State<'_, LogHandle>)
     Ok(())
 }
 
+// Kept as a Tauri command even though the frontend no longer calls it directly (`AuditTrail.tsx`
+// now delegates to `run_sql`/`SqlConsole`, Fase 4 tarea 23): it's still a lower-level, filtered
+// API exercised by the Rust integration tests (`tests/sync_test.rs`) and available for any
+// future consumer that needs structured filtering instead of raw SQL.
 #[tauri::command]
 fn audit_query(
     state: tauri::State<'_, Mutex<AppState>>,
@@ -229,6 +234,39 @@ fn audit_query(
     let f = filter.unwrap_or_default();
     let entries = audit::audit_query(&s, &org_id, &f, limit.unwrap_or(50), offset.unwrap_or(0));
     Ok(entries)
+}
+
+#[tauri::command]
+fn run_sql(
+    state: tauri::State<'_, Mutex<AppState>>,
+    query: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<sql_console::SqlResult, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    sql_console::run_sql_impl(&s, &query, limit.unwrap_or(200), offset.unwrap_or(0)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_saved_views(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<sql_console::SavedView>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    sql_console::list_saved_views_impl(&s).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_saved_view(
+    state: tauri::State<'_, Mutex<AppState>>,
+    name: String,
+    sql_query: String,
+) -> Result<sql_console::SavedView, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    sql_console::create_saved_view_impl(&s, &name, &sql_query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_saved_view(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    sql_console::delete_saved_view_impl(&s, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -265,6 +303,9 @@ pub fn run() {
     let app_state = tauri::async_runtime::block_on(async {
         AppState::new().await.expect("failed to initialize libp2p")
     });
+    if let Err(e) = sql_console::seed_default_saved_views(&app_state) {
+        tracing::warn!(target: "syntrix", error = %e, "failed to seed default saved views");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -306,6 +347,7 @@ pub fn run() {
             send_invite, get_invite_info, get_endpoint_addr,
             create_role, update_role, get_sync_info, get_schema_registry,
             audit_query,
+            run_sql, list_saved_views, create_saved_view, delete_saved_view,
             query_logs, summarize_logs, start_tail_logs,
         ])
         .run(tauri::generate_context!())
