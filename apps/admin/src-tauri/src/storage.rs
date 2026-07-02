@@ -20,7 +20,15 @@ pub fn open_limbo(data_dir: &PathBuf) -> anyhow::Result<Arc<turso_core::Connecti
 
 pub fn run_migrations(conn: &Arc<turso_core::Connection>) -> anyhow::Result<()> {
     let sql = include_str!("../migrations/0000_unique_imperial_guard.sql");
-    conn.execute(sql)?;
+    // Execute migration SQL — if tables already exist from a previous run,
+    // the error is benign and we continue. Drizzle-generated SQL doesn't use
+    // IF NOT EXISTS.
+    if let Err(e) = conn.execute(sql) {
+        let msg = e.to_string();
+        if !msg.contains("already exists") {
+            anyhow::bail!("migration failed: {e}");
+        }
+    }
     conn.execute("PRAGMA capture_data_changes_conn='full'")?;
     Ok(())
 }

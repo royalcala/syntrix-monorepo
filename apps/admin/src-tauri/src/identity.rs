@@ -314,6 +314,10 @@ impl AppState {
             node_id: node_id.into(), active, role: role.into(), person: person.into(), name: name.into(),
             device_addr: device_addr.into(),
         });
+
+        // Register device + role (if new) in the in-memory registry.
+        // Roles created explicitly via create_role must not be overwritten
+        // by the default_role_grants fallback.
         if let Ok(mut reg) = self.registry.write() {
             let node_id_bytes = hex::decode(node_id).unwrap_or_default();
             let mut id = [0u8; 32];
@@ -322,11 +326,16 @@ impl AppState {
             reg.upsert_device(org.into(), id, Device {
                 node_id: id, active, role: role.into(), person: person.into(), name: name.into(),
             });
-            let grants = default_role_grants(role);
-            reg.upsert_role(org.into(), role.into(), RoleGrants {
-                can_open: grants.can_open, can_write: grants.can_write,
-            });
+            // Only upsert the role if it doesn't exist yet
+            let existing_roles = reg.list_roles(&org.to_string());
+            if !existing_roles.iter().any(|(name, _)| name == role) {
+                let grants = default_role_grants(role);
+                reg.upsert_role(org.into(), role.into(), RoleGrants {
+                    can_open: grants.can_open, can_write: grants.can_write,
+                });
+            }
         }
+
         self.roles.entry(org.into()).or_default().entry(role.into()).or_insert_with(|| {
             let grants = default_role_grants(role);
             RoleInfo { name: role.into(), can_open: grants.can_open, can_write: grants.can_write }
@@ -450,8 +459,6 @@ impl AppState {
 pub fn default_role_grants(role: &str) -> RoleGrants {
     match role {
         "admin" => RoleGrants { can_open: vec!["*".into()], can_write: vec!["*".into()] },
-        "sales" => RoleGrants { can_open: vec!["customers".into(),"products".into(),"invoices".into(),"orders".into()], can_write: vec!["customers".into(),"invoices".into(),"orders".into()] },
-        "contabilidad" => RoleGrants { can_open: vec!["invoices".into(),"customers".into()], can_write: vec![] },
         _ => RoleGrants { can_open: vec![], can_write: vec![] },
     }
 }

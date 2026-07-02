@@ -301,14 +301,28 @@ fn handle_swarm_event(
             if let Some(sender) = pending_catchup.remove(&request_id) {
                 let _ = sender.send(Err(anyhow::anyhow!("catchup request failed: {error:?}")));
             } else {
+                // Invite delivery failed — log it so the user knows the
+                // invite never reached the peer (e.g. no connection, dial
+                // needed, wrong address).
+                tracing::warn!(
+                    target: "syntrix",
+                    error = ?error,
+                    "invite delivery failed (OutboundFailure). Did you dial the peer first?",
+                );
                 pending_invites.remove(&request_id);
             }
         }
         SwarmEvent::Behaviour(CustomBehaviourEvent::Identify(_)) => {}
         SwarmEvent::Behaviour(CustomBehaviourEvent::Ping(_)) => {}
         SwarmEvent::Behaviour(CustomBehaviourEvent::Kademlia(_)) => {}
-        SwarmEvent::ConnectionEstablished { peer_id, .. } => { let _ = event_tx.send(Event::PeerConnected(peer_id)); }
-        SwarmEvent::ConnectionClosed { peer_id, .. } => { let _ = event_tx.send(Event::PeerDisconnected(peer_id)); }
+        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            tracing::info!(target: "syntrix", peer = %peer_id, "P2P connection established");
+            let _ = event_tx.send(Event::PeerConnected(peer_id));
+        }
+        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+            tracing::info!(target: "syntrix", peer = %peer_id, "P2P connection closed");
+            let _ = event_tx.send(Event::PeerDisconnected(peer_id));
+        }
         _ => {}
     }
 }

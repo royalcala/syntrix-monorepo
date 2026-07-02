@@ -37,6 +37,28 @@ pub async fn add_device(
 ) -> anyhow::Result<()> {
     state.remember_device(org, node_id, role, person, name, true, device_addr);
     tracing::info!(org = %org, op = "add_device", step = "register", node_id = %node_id, role = %role, name = %name, "device registered");
+
+    // Publish device.updated so all existing peers learn about the new
+    // device and can validate its future writes (Fase 3 CDC permission
+    // checks). Without this, peers that joined before this device was
+    // added will reject CDC batches authored by it.
+    let event = serde_json::json!({
+        "type": "device.updated",
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "payload": {
+            "org": org,
+            "node_id": node_id,
+            "active": true,
+            "role": role,
+            "person": person,
+            "name": name,
+        },
+    });
+    let topic = format!("syntrix-org-{}", org);
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        let _ = state.p2p().publish(&topic, bytes);
+    }
+
     Ok(())
 }
 

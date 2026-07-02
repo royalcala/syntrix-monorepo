@@ -5,6 +5,35 @@ use common::{
     get_client_addr, node_id_from_addr,
 };
 
+// Permission sets used across tests. Each test explicitly chooses which
+// permissions its roles need — no implicit defaults from default_role_grants.
+fn admin_perms() -> (Vec<String>, Vec<String>) {
+    (vec!["*".into()], vec!["*".into()])
+}
+fn sales_perms() -> (Vec<String>, Vec<String>) {
+    (vec!["customers".into(), "invoices".into(), "orders".into()],
+     vec!["customers".into(), "invoices".into(), "orders".into()])
+}
+fn contabilidad_perms() -> (Vec<String>, Vec<String>) {
+    (vec!["invoices".into(), "customers".into()], vec![])
+}
+
+macro_rules! inv2 {
+    ($a:expr, $c1:expr, $c2:expr, $org:expr, $role:expr, $perms:expr) => {
+        invite_and_join_two_clients($a, $c1, $c2, $org, $role, &$perms.0, &$perms.1)
+    };
+}
+macro_rules! inv1 {
+    ($a:expr, $c:expr, $org:expr, $role:expr, $perms:expr) => {
+        invite_and_join($a, $c, $org, $role, &$perms.0, &$perms.1)
+    };
+}
+macro_rules! inv0 {
+    ($a:expr, $c:expr, $org:expr, $role:expr, $perms:expr) => {
+        invite_one_client($a, $c, $org, $role, &$perms.0, &$perms.1)
+    };
+}
+
 // ===========================================================================
 // Layer 1 — Sync básico
 // ===========================================================================
@@ -19,7 +48,7 @@ async fn test_two_clients_sync_via_gossip() {
     let mut c1 = spawn_client(c1dir).await;
     let mut c2 = spawn_client(c2dir).await;
 
-    let org_id = invite_and_join_two_clients(&mut admin, &mut c1, &mut c2, "acme", "sales")
+    let org_id = inv2!(&mut admin, &mut c1, &mut c2, "acme", "sales", sales_perms())
         .await
         .expect("invite and join both clients");
 
@@ -46,7 +75,7 @@ async fn test_admin_audit_sees_propagated_events() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -68,7 +97,7 @@ async fn test_duplicate_event_prevention() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -102,10 +131,10 @@ async fn test_multi_org_isolation() {
     let mut c1 = spawn_client(c1dir).await;
     let mut c2 = spawn_client(c2dir).await;
 
-    let org_a = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_a = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("client1 -> acme");
-    let org_b = invite_and_join(&mut admin, &mut c2, "beta", "sales")
+    let org_b = inv1!(&mut admin, &mut c2, "beta", "sales", sales_perms())
         .await
         .expect("client2 -> beta");
 
@@ -165,7 +194,7 @@ async fn test_write_allowed() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -175,7 +204,7 @@ async fn test_write_allowed() {
         "customer.created",
         r#"{"id":"c-write","name":"Allowed"}"#,
     );
-    assert!(result.is_ok(), "sales should be allowed to write customers");
+    assert!(result.is_ok(), "sales should be allowed to write customers: {:?}", result.err());
 }
 
 #[tokio::test]
@@ -186,7 +215,7 @@ async fn test_write_denied() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "contabilidad")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "contabilidad", contabilidad_perms())
         .await
         .expect("invite and join");
 
@@ -207,7 +236,7 @@ async fn test_write_wildcard() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "admin")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "admin", admin_perms())
         .await
         .expect("invite and join");
 
@@ -228,7 +257,7 @@ async fn test_read_allowed() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -247,7 +276,7 @@ async fn test_read_denied() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "contabilidad")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "contabilidad", contabilidad_perms())
         .await
         .expect("invite and join");
 
@@ -272,9 +301,9 @@ async fn test_default_roles() {
 
     syntrix_admin_lib::admin::create_org(&mut admin, "acme").await.expect("create org");
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    invite_one_client(&mut admin, &mut admin_c, "acme", "admin").await.expect("admin client");
-    invite_one_client(&mut admin, &mut sales, "acme", "sales").await.expect("sales client");
-    invite_one_client(&mut admin, &mut contabilidad, "acme", "contabilidad").await.expect("contabilidad client");
+    inv0!(&mut admin, &mut admin_c, "acme", "admin", admin_perms()).await.expect("admin client");
+    inv0!(&mut admin, &mut sales, "acme", "sales", sales_perms()).await.expect("sales client");
+    inv0!(&mut admin, &mut contabilidad, "acme", "contabilidad", contabilidad_perms()).await.expect("contabilidad client");
     let org_id = find_client_org_id(&admin_c, "acme");
 
     set_client_org(&mut admin_c, &org_id);
@@ -310,7 +339,7 @@ async fn test_role_update_propagates() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -344,7 +373,7 @@ async fn test_device_reassignment_propagates() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -382,7 +411,7 @@ async fn test_device_deactivation_blocks_access() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -420,7 +449,7 @@ async fn test_role_deletion_revokes_access() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "sales")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -452,6 +481,96 @@ async fn test_role_deletion_revokes_access() {
 }
 
 // ===========================================================================
+// Layer 3.5 — Inbox verification + sync bidireccional
+// ===========================================================================
+
+#[tokio::test]
+async fn test_inbox_and_bidirectional_sync() {
+    // 1. Spawn admin + 2 clients
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t14b_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t14b_client1");
+    let (_c2dir, c2dir) = syntrix_testkit::temp_node_dir("t14b_client2");
+
+    let mut admin = spawn_admin(adir).await;
+    let mut c1 = spawn_client(c1dir).await;
+    let mut c2 = spawn_client(c2dir).await;
+
+    // 2. Create org + invite both clients with "sales" role
+    let org_id = inv2!(&mut admin, &mut c1, &mut c2, "acme", "sales", sales_perms())
+        .await
+        .expect("invite and join both clients");
+
+    // 3. Client1 writes a customer record
+    set_client_org(&mut c1, &org_id);
+    syntrix_client_lib::commit_event_impl(
+        &c1,
+        "customer.created",
+        r#"{"id":"cust-a","name":"Customer Alpha","address":"123 Main St"}"#,
+    ).expect("c1 write customer");
+
+    // 4. Client2 writes a DIFFERENT customer record
+    set_client_org(&mut c2, &org_id);
+    syntrix_client_lib::commit_event_impl(
+        &c2,
+        "customer.created",
+        r#"{"id":"cust-b","name":"Customer Beta","address":"456 Oak Ave"}"#,
+    ).expect("c2 write customer");
+
+    // 5. Bidirectional sync: client2 sees client1's record
+    let c2_sees_c1 = wait_for_document(&c2, &org_id, "customers", "cust-a")
+        .await
+        .expect("client2 should see client1's customer via gossip");
+    assert_eq!(c2_sees_c1["name"], "Customer Alpha", "c2 sees correct name");
+    assert_eq!(c2_sees_c1["address"], "123 Main St", "c2 sees correct address");
+
+    // 6. Bidirectional sync: client1 sees client2's record
+    let c1_sees_c2 = wait_for_document(&c1, &org_id, "customers", "cust-b")
+        .await
+        .expect("client1 should see client2's customer via gossip");
+    assert_eq!(c1_sees_c2["name"], "Customer Beta", "c1 sees correct name");
+    assert_eq!(c1_sees_c2["address"], "456 Oak Ave", "c1 sees correct address");
+
+    // 7. Admin audit sees both
+    let audit_a = wait_for_audit_entry(&admin, "acme", "cust-a")
+        .await
+        .expect("admin should see cust-a in audit");
+    assert_eq!(audit_a.entity, "customers");
+    let audit_b = wait_for_audit_entry(&admin, "acme", "cust-b")
+        .await
+        .expect("admin should see cust-b in audit");
+    assert_eq!(audit_b.entity, "customers");
+}
+
+#[tokio::test]
+async fn test_inbox_receives_invite() {
+    // Verifies the full invite flow: admin gets client address,
+    // adds device, dials, sends invite, and the client's inbox
+    // receives it before accepting.
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t14c_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t14c_client");
+
+    let mut admin = spawn_admin(adir).await;
+    let mut c1 = spawn_client(c1dir).await;
+
+    syntrix_admin_lib::admin::create_org(&mut admin, "acme").await.expect("create org");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Manually invite to verify inbox polling
+    inv0!(&mut admin, &mut c1, "acme", "sales", sales_perms())
+        .await
+        .expect("invite client");
+
+    // The invite_one_client helper already polls invites internally.
+    // After joining, verify the client can write (proves invite was accepted).
+    let org_id = find_client_org_id(&c1, "acme");
+    set_client_org(&mut c1, &org_id);
+    let result = syntrix_client_lib::commit_event_impl(
+        &c1, "customer.created", r#"{"id":"c-inbox","name":"Invited"}"#,
+    );
+    assert!(result.is_ok(), "client accepted invite and can write: {:?}", result.err());
+}
+
+// ===========================================================================
 // Layer 4 — Edge cases
 // ===========================================================================
 
@@ -463,7 +582,7 @@ async fn test_schema_upcast() {
     let mut admin = spawn_admin(adir).await;
     let mut c1 = spawn_client(c1dir).await;
 
-    let org_id = invite_and_join(&mut admin, &mut c1, "acme", "admin")
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "admin", admin_perms())
         .await
         .expect("invite and join");
 
@@ -492,7 +611,7 @@ async fn test_concurrent_commits() {
     let mut c1 = spawn_client(c1dir).await;
     let mut c2 = spawn_client(c2dir).await;
 
-    let org_id = invite_and_join_two_clients(&mut admin, &mut c1, &mut c2, "acme", "sales")
+    let org_id = inv2!(&mut admin, &mut c1, &mut c2, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 
@@ -544,7 +663,7 @@ async fn test_large_payload() {
     let mut c1 = spawn_client(c1dir).await;
     let mut c2 = spawn_client(c2dir).await;
 
-    let org_id = invite_and_join_two_clients(&mut admin, &mut c1, &mut c2, "acme", "sales")
+    let org_id = inv2!(&mut admin, &mut c1, &mut c2, "acme", "sales", sales_perms())
         .await
         .expect("invite and join");
 

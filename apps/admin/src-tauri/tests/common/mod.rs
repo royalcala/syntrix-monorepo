@@ -56,7 +56,18 @@ pub async fn invite_one_client(
     client: &mut ClientState,
     org_name: &str,
     role: &str,
+    can_open: &[String],
+    can_write: &[String],
 ) -> anyhow::Result<()> {
+    // Ensure the role exists before adding the device
+    let existing = admin.list_org_roles(org_name);
+    if !existing.iter().any(|r| r.name == role) {
+        syntrix_admin_lib::admin::create_role(
+            admin, org_name, role,
+            can_open.to_vec(), can_write.to_vec(),
+        ).await?;
+    }
+
     let client_addr = get_client_addr(client).await;
     let node_id_hex = node_id_from_addr(&client_addr);
 
@@ -82,16 +93,6 @@ pub async fn invite_one_client(
     let org_state = admin.get_org(org_name).unwrap();
     let topic_id = org_state.topic_id.clone();
 
-    let roles = admin.list_org_roles(org_name);
-    let (can_open, can_write) = roles
-        .iter()
-        .find(|r| r.name == role)
-        .map(|r| (r.can_open.clone(), r.can_write.clone()))
-        .unwrap_or_else(|| {
-            let g = syntrix_admin_lib::identity::default_role_grants(role);
-            (g.can_open, g.can_write)
-        });
-
     syntrix_admin_lib::admin::send_invite(
         admin,
         org_name,
@@ -99,8 +100,8 @@ pub async fn invite_one_client(
         role,
         topic_id,
         admin_addr,
-        can_open,
-        can_write,
+        can_open.to_vec(),
+        can_write.to_vec(),
     )
     .await?;
 
@@ -134,10 +135,12 @@ pub async fn invite_and_join(
     client: &mut ClientState,
     org_name: &str,
     role: &str,
+    can_open: &[String],
+    can_write: &[String],
 ) -> anyhow::Result<String> {
     syntrix_admin_lib::admin::create_org(admin, org_name).await?;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    invite_one_client(admin, client, org_name, role).await?;
+    invite_one_client(admin, client, org_name, role, can_open, can_write).await?;
     Ok(find_client_org_id(client, org_name))
 }
 
@@ -147,11 +150,13 @@ pub async fn invite_and_join_two_clients(
     client2: &mut ClientState,
     org_name: &str,
     role: &str,
+    can_open: &[String],
+    can_write: &[String],
 ) -> anyhow::Result<String> {
     syntrix_admin_lib::admin::create_org(admin, org_name).await?;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    invite_one_client(admin, client1, org_name, role).await?;
-    invite_one_client(admin, client2, org_name, role).await?;
+    invite_one_client(admin, client1, org_name, role, can_open, can_write).await?;
+    invite_one_client(admin, client2, org_name, role, can_open, can_write).await?;
     let id = find_client_org_id(client1, org_name);
     Ok(id)
 }
@@ -227,6 +232,31 @@ pub async fn wait_for_audit_entry(
     )
     .await
     .map_err(|e| anyhow::anyhow!("wait_for_audit_entry({}): {}", doc_id, e))
+}
+
+pub async fn poll_invites(
+    client: &ClientState,
+) -> anyhow::Result<Vec<syntrix_client_lib::invite::InvitePayload>> {
+    let invites = syntrix_client_lib::get_invites_impl(client);
+    if invites.is_empty() {
+        poll_until(
+            || {
+                let invites = syntrix_client_lib::get_invites_impl(client);
+                async move {
+                    if invites.is_empty() {
+                        Err("no invites yet")
+                    } else {
+                        Ok(invites)
+                    }
+                }
+            },
+            &POLL,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("no invites received: {}", e))
+    } else {
+        Ok(invites)
+    }
 }
 
 pub fn set_client_org(client: &mut ClientState, org_id: &str) {

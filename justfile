@@ -147,8 +147,13 @@ test-e2e-admin:
 test-e2e-client:
     cd apps/client && npx playwright test --config src/__tests__/e2e/playwright.config.ts
 
+# Tests E2E cross-app (admin + 2 clientes, requiere apps corriendo)
+# Lanza las apps primero: bash scripts/start-e2e-cross-app.sh
+test-e2e-cross-app:
+    cd apps/admin && npx playwright test --config src/__tests__/e2e-cross-app/playwright.config.ts
+
 # Tests completos (todo incluyendo E2E)
-test-all: test test-e2e-admin test-e2e-client
+test-all: test test-e2e-admin test-e2e-client test-e2e-cross-app
 
 # Setup WebDriver para E2E
 e2e-setup:

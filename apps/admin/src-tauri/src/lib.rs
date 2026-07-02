@@ -1,4 +1,7 @@
+use std::str::FromStr;
 use std::sync::Mutex;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use syntrix_logging::{LogHandle, LogQuery, LogRecord, LogSummary};
@@ -170,6 +173,63 @@ fn send_invite(
         (org_state.topic_id.clone(), addr, co, cw)
     };
 
+    // Dial the client peer BEFORE sending the invite. libp2p request-response
+    // requires an active connection — without dial, the invite is silently
+    // dropped (OutboundFailure). We do this OUTSIDE the state lock so we don't
+    // block other commands during the QUIC handshake wait.
+    let mut dialed_any = false;
+    if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(&endpoint_addr_json) {
+        let peer_id_b58 = addr_data["peer_id"].as_str().unwrap_or("");
+        if let Some(addrs) = addr_data["addrs"].as_array() {
+            let p2p_node = {
+                let s = state.lock().map_err(|e| e.to_string())?;
+                s.p2p().clone()
+            };
+            for addr_val in addrs {
+                if let Some(addr_str) = addr_val.as_str() {
+                    let with_p2p = format!("{}/p2p/{}", addr_str, peer_id_b58);
+                    match libp2p::Multiaddr::from_str(&with_p2p) {
+                        Ok(addr) => {
+                            tracing::info!(
+                                target: "syntrix",
+                                addr = %addr_str,
+                                peer = %peer_id_b58,
+                                "dialing client peer before invite"
+                            );
+                            match p2p_node.dial(addr) {
+                                Ok(()) => { dialed_any = true; }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "syntrix",
+                                        addr = %addr_str,
+                                        error = %e,
+                                        "dial failed for address"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(target: "syntrix", addr = %addr_str, error = %e, "invalid multiaddr");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !dialed_any {
+        tracing::warn!(
+            target: "syntrix",
+            "no valid addresses to dial — invite will likely fail"
+        );
+    }
+
+    // Wait for QUIC handshake + identify to complete (outside the lock).
+    // std::thread::sleep is safe here because we're not holding the state lock
+    // and don't need a Tokio runtime context.
+    std::thread::sleep(Duration::from_millis(1000));
+
+    // Now send the invite via request-response
     {
         let s = state.lock().map_err(|e| e.to_string())?;
         tauri::async_runtime::block_on(admin::send_invite(
