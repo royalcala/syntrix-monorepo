@@ -169,6 +169,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2
       lucide-react:
         specifier: ^0.536.0
         version: 0.536.0(react@19.2.7)

@@ -100,6 +100,12 @@ fn get_updates_since(state: tauri::State<'_, Mutex<AppState>>, org_id: String, s
 }
 
 #[tauri::command]
+fn drizzle_execute(state: tauri::State<'_, Mutex<AppState>>, sql: String, params: Vec<String>) -> Result<serde_json::Value, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    drizzle_execute_impl(&s, &sql, &params).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_invites(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<invite::InvitePayload>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(s.invite_handler.get_pending())
@@ -168,6 +174,47 @@ pub fn get_updates_since_impl(state: &AppState, org_id: &str, since_change_id: i
         "events": org_events,
         "max_change_id": new_cursor,
     }))
+}
+
+pub fn drizzle_execute_impl(state: &AppState, sql: &str, params: &[String]) -> Result<serde_json::Value, String> {
+    use std::num::NonZero;
+    use turso_core::StepResult;
+
+    let conn = state.conn();
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+
+    for (i, p) in params.iter().enumerate() {
+        stmt.bind_at(NonZero::new(i + 1).unwrap(), turso_core::Value::from_text(p.clone()))
+            .map_err(|e| e.to_string())?;
+    }
+
+    let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+    loop {
+        match stmt.step().map_err(|e| e.to_string())? {
+            StepResult::Row => {
+                if let Some(row) = stmt.row() {
+                    let mut cols: Vec<serde_json::Value> = Vec::new();
+                    for idx in 0..32 {
+                        let s: String = match row.get(idx) {
+                            Ok(v) => v,
+                            Err(_) => break,
+                        };
+                        cols.push(serde_json::Value::String(s));
+                    }
+                    rows.push(cols);
+                }
+            }
+            StepResult::Done => break,
+            StepResult::IO | StepResult::Yield => {
+                stmt._io().step().map_err(|e| e.to_string())?;
+            }
+            StepResult::Interrupt | StepResult::Busy => {
+                return Err("drizzle_execute: database busy".into());
+            }
+        }
+    }
+
+    Ok(serde_json::json!({ "rows": rows }))
 }
 
 pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
@@ -543,7 +590,7 @@ pub fn run() {
             get_node_id, list_orgs, set_active_org, join_org, get_invites, get_endpoint_addr,
             commit_event, sync_status, check_entity_access,
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
-            get_updates_since, get_schema_registry, audit_query,
+            get_updates_since, drizzle_execute, get_schema_registry, audit_query,
             query_logs, summarize_logs, start_tail_logs,
             live_subscribe, live_unsubscribe,
         ])

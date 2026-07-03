@@ -743,6 +743,52 @@ async fn test_timeline_cursor_returns_cdc_events() {
 }
 
 // ===========================================================================
+// Layer 5.5 — Drizzle proxy (drizzle_execute)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_drizzle_execute_reads_typed_columns() {
+    // Verifies that drizzle_execute_impl can run arbitrary SELECT queries
+    // against Limbo and return rows as JSON arrays — the foundation for
+    // using Drizzle ORM's sqlite-proxy on the frontend.
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t22_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t22_client1");
+
+    let mut admin = spawn_admin(adir).await;
+    let mut c1 = spawn_client(c1dir).await;
+
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
+        .await.expect("client join");
+    set_client_org(&mut c1, &org_id);
+
+    syntrix_client_lib::commit_event_impl(
+        &c1, "customer.created",
+        r#"{"id":"dx-1","name":"Drizzle Alpha","email":"alpha@test.com"}"#,
+    ).expect("write customer");
+
+    // SELECT with drizzle_execute
+    let result = syntrix_client_lib::drizzle_execute_impl(
+        &c1,
+        "SELECT name, email FROM customers WHERE org_id=?1 AND doc_id=?2",
+        &[org_id.clone(), "dx-1".to_string()],
+    ).expect("execute SELECT");
+
+    let rows = result["rows"].as_array().expect("rows is array");
+    assert_eq!(rows.len(), 1, "one row returned");
+    assert_eq!(rows[0][0], "Drizzle Alpha", "first column is name");
+    assert_eq!(rows[0][1], "alpha@test.com", "second column is email");
+
+    // SELECT with parameterized query returning empty
+    let result2 = syntrix_client_lib::drizzle_execute_impl(
+        &c1,
+        "SELECT name FROM customers WHERE org_id=?1 AND doc_id=?2",
+        &[org_id, "nonexistent".to_string()],
+    ).expect("execute SELECT empty");
+    let rows2 = result2["rows"].as_array().expect("rows is array");
+    assert!(rows2.is_empty(), "no rows for nonexistent doc");
+}
+
+// ===========================================================================
 // Layer 6 — Late joiner (offline simulation)
 // ===========================================================================
 

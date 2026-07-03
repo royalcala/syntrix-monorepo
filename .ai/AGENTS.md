@@ -70,6 +70,7 @@ ssh server-1 "nix store gc --extra-experimental-features 'nix-command flakes'"
 - `apps/admin/` — Admin Console application (Tauri + React)
 - `apps/client/` — Client/Worker application (Tauri + React)
 - `packages/syntrix-ui/` — Shared UI component library (`@syntrix/ui/*`)
+- `packages/shared-drizzle/` — Shared Drizzle schemas + `drizzle-zod` helpers
 - `bin/` — Helper scripts including the `cargo` remote compiler bridge
 - `crates/` — Shared Rust libraries (e.g., `syntrix-core`)
 - `justfile` — Project automation runner
@@ -160,6 +161,23 @@ Not a separate test binary, but a backend + frontend feature verified by inline 
 - **Frontend**: `useTimelineCursor` hook in `apps/client/src/hooks/useTimelineCursor.ts`
   polls every 2s, stores cursor in localStorage, and invalidates `react-query` entity caches
   when new CDC events arrive. This replaces `event_log`-based polling and provides near-real-time
+  updates without `LiveManager` or WebSockets.
+- Tests: 17/17 CDC tests pass (including 2 timeline cursor tests).
+
+### Tier 3c — Drizzle Proxy (`drizzle_execute`)
+- **What**: Frontend can use Drizzle ORM's full type-safe query API (select, joins, where,
+  aggregations) via `drizzle-orm/sqlite-proxy`. Drizzle generates SQL on the frontend,
+  sends it to the Rust backend via `invoke("drizzle_execute", { sql, params })`,
+  and the backend executes it against Limbo via `conn.prepare() + stmt.step()`.
+- **Backend**: `drizzle_execute_impl` in `apps/client/src-tauri/src/lib.rs` — binds params,
+  iterates rows, returns `{ rows: [[value, ...], ...] }`.
+- **Frontend**: `apps/client/src/db.ts` exports a `db` instance backed by the proxy.
+  Example: `const rows = await db.query.customers.findMany({ where: eq(customers.name, "Acme") })`.
+- **Schema**: imports from `packages/shared-drizzle/src/entities` for full Drizzle types.
+- Test: `test_drizzle_execute_reads_typed_columns` in sync_test.rs verifies SELECT with params
+  returns correct rows.
+- **Writes still go through `commit_event`** (permissions + HLC + CDC). Reads via Drizzle
+  Proxy bypass `can_open` (non-security concern — CDC layer enforces real permissions). This replaces `event_log`-based polling and provides near-real-time
   updates without `LiveManager` or WebSockets.
 - Tests: 17/17 CDC tests pass (including 2 timeline cursor tests).
 

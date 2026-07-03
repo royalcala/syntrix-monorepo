@@ -66,6 +66,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Registry de Esquemas:** Definición centralizada de entidades, campos, tipos, índices, relaciones y versiones. Exportable a JSON para frontend.
 - **Motor SQL Schema-Driven:** Generación de tablas SQL con columnas tipadas, índices sortables y FTS desde el Registry.
 - **Entidades compartidas:** Las definiciones de entidades (customers, products, invoices, etc.) viven en `packages/shared-drizzle/` y ambas apps las importan. `drizzle-zod` genera schemas Zod automáticamente.
+- **Drizzle Proxy:** El frontend puede usar Drizzle ORM con tipos para queries complejas (select, joins, where, aggregations). Drizzle genera SQL en el frontend y lo envía a Rust vía `drizzle_execute`, que lo ejecuta contra Limbo. Writes siguen usando `commit_event` para permisos + CDC.
 - **Legacy sync eliminado:** Se eliminó `sync_push`/`sync_pull`/`sync_ping` (código muerto), `append_event` y la tabla `event_log` del cliente. CDC reemplazó completamente el transporte legacy.
 - **Timeline CDC (Opción C):** El frontend usa `get_updates_since` con cursor almacenado en localStorage para recibir cambios en tiempo real sin polling bruto. Verificado por tests en `cdc.rs`.
 - **FTS Nativo (Limbo):** Indexación automática de columnas `#[searchable]` mediante FTS5, con BM25, fuzzy search y snippets.
