@@ -14,7 +14,9 @@ import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 import { useHotkeys } from "@tanstack/react-hotkeys";
+import { useSearchParams } from "react-router-dom";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
 import type { EntityDefinition } from "../fields/registry";
 import { DetailPanel } from "./DetailPanel";
@@ -27,29 +29,60 @@ interface EntityGridProps {
   onSaveCreate?: (row: Row) => Promise<Row>;
   onSaveUpdate?: (recordId: string, changes: Record<string, unknown>) => Promise<void>;
   customActions?: (row: Record<string, unknown>) => React.ReactNode;
+  enableSearch?: boolean;
+  onCreateRecord?: () => Promise<Row>;
 }
 
 interface Row { id: string; [key: string]: unknown; }
 
-export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSaveUpdate, customActions }: EntityGridProps) {
+export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSaveUpdate, customActions, enableSearch = false, onCreateRecord: onCreateRecordProp }: EntityGridProps) {
   const queryClient = useQueryClient();
+
   useEffect(() => {
     const unlisten = listen("entity_changed", () => {
       queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
     });
     return () => { unlisten.then(u => u()); };
   }, [entity.id, orgId, queryClient]);
+
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<"edit" | "create">("edit");
   const [viewId, setViewId] = useState(activeView ?? entity.views[0]?.id ?? "all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 
   const view = entity.views.find((v) => v.id === viewId) ?? entity.views[0];
   const visibleCols = view?.visibleColumns ?? entity.fields.map((f) => f.key);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 150);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
+  // Reactive search results via Limbo FTS
+  const { data: searchResults } = useQuery({
+    queryKey: ["search", entity.id, orgId, debouncedSearchQuery],
+    queryFn: async () => {
+      if (!debouncedSearchQuery.trim()) return null;
+      try {
+        const results = await invoke<any[]>("search_entity", {
+          query: debouncedSearchQuery,
+          entities: [entity.id],
+        });
+        return results;
+      } catch (err) {
+        console.error("Search failed:", err);
+        return [];
+      }
+    },
+    enabled: enableSearch && !!debouncedSearchQuery.trim(),
+  });
 
   // Reactive data from Tauri backend via Relational Engine
   const { data: liveData, isLoading } = useQuery({
@@ -65,6 +98,33 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
     return raw.map((r) => ({ ...r, id: (r.id ?? (crypto.randomUUID?.() || Math.random().toString(36).slice(2))) as string })) as Row[];
   }, [liveData]);
 
+  const displayedRows = useMemo(() => {
+    if (!enableSearch || !debouncedSearchQuery.trim() || !searchResults) {
+      return allRows;
+    }
+    const scoreMap = new Map(searchResults.map((r: any, idx: number) => [r.doc_id, idx]));
+    return allRows
+      .filter((row) => scoreMap.has(row.id))
+      .sort((a, b) => scoreMap.get(a.id)! - scoreMap.get(b.id)!);
+  }, [allRows, debouncedSearchQuery, searchResults, enableSearch]);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectId = searchParams.get("id");
+
+  useEffect(() => {
+    if (selectId && allRows.length > 0) {
+      const row = allRows.find((r) => r.id === selectId);
+      if (row) {
+        setSelectedRow(row);
+        setDetailMode("edit");
+        setDetailOpen(true);
+        const newParams = new URLSearchParams(searchParams);
+        newParams.delete("id");
+        setSearchParams(newParams, { replace: true });
+      }
+    }
+  }, [selectId, allRows, searchParams, setSearchParams]);
+
   const columns = useMemo(() =>
     visibleCols.map((key) => {
       const field = entity.fields.find((f) => f.key === key);
@@ -73,7 +133,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
         accessorKey: key,
         header: field?.label ?? key,
         enableSorting: field?.sortable ?? true,
-        cell: ({ getValue, row }: { getValue: () => unknown; row: { original: Row } }) => {
+        cell: ({ getValue }: { getValue: () => unknown }) => {
           const value = getValue();
           if (value == null) return <span className="text-muted-foreground/40">—</span>;
 
@@ -134,7 +194,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
   );
 
   const table = useReactTable({
-    data: allRows,
+    data: displayedRows,
     columns,
     state: { sorting, columnFilters, columnVisibility },
     onSortingChange: setSorting,
@@ -146,7 +206,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
     getRowId: (row) => row.id,
   });
 
-  const onCreateRecord = useCallback(async () => {
+  const handleCreateRecord = useCallback(async () => {
+    if (onCreateRecordProp) {
+      const row = await onCreateRecordProp();
+      setSelectedRow(row);
+      setDetailMode("create");
+      setDetailOpen(true);
+      return;
+    }
     const newId = crypto.randomUUID?.() || `${Date.now()}`;
     const newRow: Row = { id: newId };
     entity.fields.forEach((f) => {
@@ -161,7 +228,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
     setSelectedRow(newRow);
     setDetailMode("create");
     setDetailOpen(true);
-  }, [entity]);
+  }, [entity, onCreateRecordProp]);
 
   const onRowClick = useCallback((row: Row) => {
     setSelectedRow({ ...row });
@@ -170,8 +237,8 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
   }, []);
 
   useHotkeys([
-    { hotkey: "Escape", callback: () => { if (detailOpen) setDetailOpen(false); } },
-    { hotkey: "mod+n", callback: (e) => { e.preventDefault(); onCreateRecord(); } },
+    { hotkey: "Escape", callback: () => { setDetailOpen(false); } },
+    { hotkey: "mod+n", callback: (e) => { e.preventDefault(); handleCreateRecord(); } },
   ]);
 
   const rows = table.getRowModel().rows;
@@ -196,10 +263,15 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
               className="w-44 pl-7 pr-2 py-1 text-xs rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder="Buscar..."
               value={searchQuery}
-              onChange={(e) => { setSearchQuery(e.target.value); table.setGlobalFilter(e.target.value); }}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                if (!enableSearch) {
+                  table.setGlobalFilter(e.target.value);
+                }
+              }}
             />
           </div>
-          <button onClick={onCreateRecord}
+          <button onClick={handleCreateRecord}
             className="px-3 py-1 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors ml-auto">
             <Plus className="w-3 h-3 inline mr-1" />Nuevo
           </button>
@@ -219,7 +291,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                 <>
                   <Search className="w-8 h-8 opacity-30" />
                   <span>No hay resultados para "{searchQuery}"</span>
-                  <button onClick={() => { setSearchQuery(""); table.setGlobalFilter(""); }} className="text-xs text-primary hover:underline">Limpiar búsqueda</button>
+                  <button onClick={() => { setSearchQuery(""); if (!enableSearch) table.setGlobalFilter(""); }} className="text-xs text-primary hover:underline">Limpiar búsqueda</button>
                 </>
               ) : (
                 <>
@@ -227,7 +299,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                     <Plus className="w-6 h-6 opacity-40" />
                   </div>
                   <span>Aún no hay {entity.label.toLowerCase()}</span>
-                  <button onClick={onCreateRecord} className="px-3 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90">
+                  <button onClick={handleCreateRecord} className="px-3 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90">
                     Crear primer registro
                   </button>
                 </>
@@ -281,11 +353,21 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                   isCreate={detailMode === "create"}
                   onSaveCreate={onSaveCreate || (async (val) => {
                     await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
-                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                    toast.success(`${entity.label} creado`);
+                    await new Promise(r => setTimeout(r, 250));
+                    await queryClient.refetchQueries({ queryKey: ["entity"] });
+                    return val as Row;
                   })}
                   onSaveUpdate={onSaveUpdate || (async (id, val) => {
                     await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
-                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                    toast.success(`${entity.label} actualizado`);
+                    setSelectedRow((prev) => prev && prev.id === id ? { ...prev, ...val } as Row : prev);
+                    queryClient.setQueryData(
+                      ["entity", entity.id, orgId, viewId, columnFilters],
+                      (old: any[]) => old ? old.map((r) => (r.id === id ? { ...r, ...val } : r)) : old
+                    );
+                    await new Promise(r => setTimeout(r, 250));
+                    await queryClient.refetchQueries({ queryKey: ["entity"] });
                   })}
                   onClose={() => { setDetailOpen(false); }}
                   customActions={customActions}
@@ -301,7 +383,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
           </div>
           {/* Mobile: bottom sheet */}
           <div className="lg:hidden fixed inset-0 z-50">
-            <div className="fixed inset-0 bg-black/50" onClick={() => { setDetailOpen(false); if (detailMode === "create") { setRefreshKey((k) => k + 1); } }} />
+            <div className="fixed inset-0 bg-black/50" onClick={() => { setDetailOpen(false); }} />
             <div className="fixed bottom-0 left-0 right-0 max-h-[90vh] bg-background rounded-t-xl border-t shadow-xl overflow-auto animate-in slide-in-from-bottom">
               <DetailPanel
                 entity={entity}
@@ -310,12 +392,23 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
           isCreate={detailMode === "create"}
                   onSaveCreate={onSaveCreate || (async (val) => {
                     await invoke("commit_event", { eventType: `${entity.id}.created`, payload: JSON.stringify(val) });
-                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                    toast.success(`${entity.label} creado`);
+                    await new Promise(r => setTimeout(r, 250));
+                    await queryClient.refetchQueries({ queryKey: ["entity"] });
+                    return val as Row;
                   })}
                   onSaveUpdate={onSaveUpdate || (async (id, val) => {
                     await invoke("commit_event", { eventType: `${entity.id}.updated`, payload: JSON.stringify(val) });
-                    queryClient.invalidateQueries({ queryKey: ["entity", entity.id, orgId] });
+                    toast.success(`${entity.label} actualizado`);
+                    setSelectedRow((prev) => prev && prev.id === id ? { ...prev, ...val } as Row : prev);
+                    queryClient.setQueryData(
+                      ["entity", entity.id, orgId, viewId, columnFilters],
+                      (old: any[]) => old ? old.map((r) => (r.id === id ? { ...r, ...val } : r)) : old
+                    );
+                    await new Promise(r => setTimeout(r, 250));
+                    await queryClient.refetchQueries({ queryKey: ["entity"] });
                   })}
+                  onClose={() => { setDetailOpen(false); }}
                   customActions={customActions}
               />
             </div>

@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-// import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { EntityGrid } from "../components/EntityGrid";
-import { customersEntity } from "../entities/customers";
+import { MemoryRouter } from "react-router-dom";
+import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
+import { customersEntity } from "../../entities/customers";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}), emit: vi.fn() }));
 import { invoke } from "@tauri-apps/api/core";
 
 const queryClient = new QueryClient({
@@ -30,9 +33,11 @@ describe("EntityGrid Editing Reactivity", () => {
 
     // 2. Render the grid
     render(
-      <QueryClientProvider client={queryClient}>
-        <EntityGrid entity={customersEntity} orgId="org-1" role="admin" />
-      </QueryClientProvider>
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <EntityGrid entity={customersEntity} orgId="org-1" role="admin" />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
 
     // 3. Wait for data to load
@@ -44,8 +49,8 @@ describe("EntityGrid Editing Reactivity", () => {
     fireEvent.click(row!);
     
     // 5. Wait for panel to open and click the "Editar" button to enter editMode
-    const editButton = await screen.findByText("Editar");
-    fireEvent.click(editButton);
+    const editButtons = await screen.findAllByText("Editar");
+    fireEvent.click(editButtons[0]);
 
     // 6. Find the name input
     const nameInput = await screen.findByDisplayValue("Acme Corp");

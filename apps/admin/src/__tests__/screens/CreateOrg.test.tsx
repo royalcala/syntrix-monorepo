@@ -10,16 +10,16 @@ describe("CreateOrg", () => {
 
   it("renders create org form", () => {
     render(<CreateOrg nodeId="test-node" onCreated={() => {}} />);
-    expect(screen.getByText("Crear organización")).toBeDefined();
+    expect(screen.getByText("Create your first organization")).toBeDefined();
   });
 
   it("calls create_org on submit and calls onCreated", async () => {
     const onCreated = vi.fn();
     (invoke as any).mockResolvedValue(undefined);
     render(<CreateOrg nodeId="test-node" onCreated={onCreated} />);
-    const input = screen.getByPlaceholderText("Nombre de la organización");
+    const input = screen.getByPlaceholderText("e.g. Acme Corp");
     fireEvent.change(input, { target: { value: "TestOrg" } });
-    fireEvent.click(screen.getByText("Crear"));
+    fireEvent.click(screen.getByText("Create Organization"));
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("create_org", { name: "TestOrg" });
       expect(onCreated).toHaveBeenCalled();
@@ -30,8 +30,8 @@ describe("CreateOrg", () => {
     const onCreated = vi.fn();
     (invoke as any).mockRejectedValue(new Error("org exists"));
     render(<CreateOrg nodeId="test-node" onCreated={onCreated} />);
-    fireEvent.change(screen.getByPlaceholderText("Nombre de la organización"), { target: { value: "Dup" } });
-    fireEvent.click(screen.getByText("Crear"));
+    fireEvent.change(screen.getByPlaceholderText("e.g. Acme Corp"), { target: { value: "Dup" } });
+    fireEvent.click(screen.getByText("Create Organization"));
     await waitFor(() => {
       expect(screen.getByText(/org exists/)).toBeDefined();
       expect(onCreated).not.toHaveBeenCalled();
@@ -40,7 +40,7 @@ describe("CreateOrg", () => {
 
   it("does not call invoke with empty name", async () => {
     render(<CreateOrg nodeId="test-node" onCreated={() => {}} />);
-    fireEvent.click(screen.getByText("Crear"));
+    fireEvent.click(screen.getByText("Create Organization"));
     expect(invoke).not.toHaveBeenCalled();
   });
 });

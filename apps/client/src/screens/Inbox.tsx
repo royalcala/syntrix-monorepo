@@ -1,6 +1,6 @@
-import { Card, CardContent } from "../components/ui/card";
-import { Button } from "../components/ui/button";
-import { Badge } from "../components/ui/badge";
+import { Card, CardContent } from "@syntrix/ui/components/ui/card";
+import { Button } from "@syntrix/ui/components/ui/button";
+import { Badge } from "@syntrix/ui/components/ui/badge";
 import { Mail, Check } from "lucide-react";
 import { PageLayout } from "@syntrix/ui/components/PageLayout";
 

@@ -12,7 +12,7 @@ import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
 import { Inbox } from "./screens/Inbox";
-import { EntityGrid } from "./components/EntityGrid";
+import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
 import { useTimelineCursor } from "./hooks/useTimelineCursor";
 import { customersEntity } from "./entities/customers";
 import { invoicesEntity } from "./entities/invoices";
@@ -197,7 +197,7 @@ export default function App() {
               className="h-full"
               contentClassName="flex-1 min-h-0 flex flex-col"
             >
-              <EntityGrid entity={customersEntity} orgId={activeOrg} role={role} />
+              <EntityGrid entity={customersEntity} orgId={activeOrg} role={role} enableSearch={true} />
             </PageLayout>
           } />
           <Route path="/invoices" element={
@@ -207,7 +207,7 @@ export default function App() {
               className="h-full"
               contentClassName="flex-1 min-h-0 flex flex-col"
             >
-              <EntityGrid entity={invoicesEntity} orgId={activeOrg} role={role} />
+              <EntityGrid entity={invoicesEntity} orgId={activeOrg} role={role} enableSearch={true} />
             </PageLayout>
           } />
           <Route path="/products" element={
@@ -217,7 +217,7 @@ export default function App() {
               className="h-full"
               contentClassName="flex-1 min-h-0 flex flex-col"
             >
-              <EntityGrid entity={productsEntity} orgId={activeOrg} role={role} />
+              <EntityGrid entity={productsEntity} orgId={activeOrg} role={role} enableSearch={true} />
             </PageLayout>
           } />
           <Route path="/orders" element={
@@ -227,7 +227,7 @@ export default function App() {
               className="h-full"
               contentClassName="flex-1 min-h-0 flex flex-col"
             >
-              <EntityGrid entity={ordersEntity} orgId={activeOrg} role={role} />
+              <EntityGrid entity={ordersEntity} orgId={activeOrg} role={role} enableSearch={true} />
             </PageLayout>
           } />
           <Route path="/sync" element={<SyncDetailsPage org={activeOrg} nodeId={nodeId} />} />

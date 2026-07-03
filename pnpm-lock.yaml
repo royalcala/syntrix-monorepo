@@ -142,9 +142,6 @@ importers:
 
   apps/client:
     dependencies:
-      '@radix-ui/react-select':
-        specifier: ^2.3.1
-        version: 2.3.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@syntrix/ui':
         specifier: workspace:^
         version: link:../../packages/syntrix-ui
@@ -166,12 +163,6 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: ^2
         version: 2.5.4
-      class-variance-authority:
-        specifier: ^0.7.1
-        version: 0.7.1
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2
@@ -190,9 +181,6 @@ importers:
       sonner:
         specifier: ^2
         version: 2.0.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      tailwind-merge:
-        specifier: ^2.6.0
-        version: 2.6.1
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -265,6 +253,9 @@ importers:
 
   packages/syntrix-ui:
     dependencies:
+      '@fontsource-variable/geist':
+        specifier: ^5.2.9
+        version: 5.2.9
       '@radix-ui/react-dialog':
         specifier: ^1.1.14
         version: 1.1.17(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -304,12 +295,18 @@ importers:
       react-router-dom:
         specifier: ^7
         version: 7.18.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      shadcn:
+        specifier: ^4.11.0
+        version: 4.11.0(typescript@5.8.3)
       sonner:
         specifier: ^2
         version: 2.0.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       tailwind-merge:
         specifier: ^2.6.0
         version: 2.6.1
+      tw-animate-css:
+        specifier: ^1.4.0
+        version: 1.4.0
       zod:
         specifier: ^3.25.76
         version: 3.25.76

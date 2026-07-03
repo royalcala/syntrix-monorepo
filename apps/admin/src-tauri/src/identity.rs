@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -12,29 +13,26 @@ use serde::{Deserialize, Serialize};
 
 pub use syntrix_core::parse_device_addr;
 
+fn run_to_completion(stmt: &mut turso_core::Statement) -> anyhow::Result<()> {
+    loop {
+        match stmt.step()? {
+            turso_core::StepResult::Row => {}
+            turso_core::StepResult::Done => break,
+            turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                stmt._io().step()?;
+            }
+            turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                anyhow::bail!("database busy or interrupted");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OrgConfig {
     pub name: String,
     pub topic_id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct PersistedDevice {
-    org: String,
-    node_id: String,
-    active: bool,
-    role: String,
-    person: String,
-    name: String,
-    device_addr: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct PersistedRole {
-    org: String,
-    name: String,
-    can_open: Vec<String>,
-    can_write: Vec<String>,
 }
 
 pub struct AppState {
@@ -44,8 +42,6 @@ pub struct AppState {
     heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>>,
     registry: Arc<RwLock<NamespaceRegistry>>,
     orgs: HashMap<String, OrgState>,
-    devices: HashMap<String, HashMap<String, DeviceInfo>>,
-    roles: HashMap<String, HashMap<String, RoleInfo>>,
     data_dir: PathBuf,
     pub db: Arc<turso_core::Connection>,
 }
@@ -101,106 +97,93 @@ impl AppState {
             process_event_loop(event_rx, hb_ev, db_ev, p2p_ev, registry_ev).await;
         });
 
-        let mut orgs = HashMap::new();
-        let mut devices: HashMap<String, HashMap<String, DeviceInfo>> = HashMap::new();
-        let mut roles: HashMap<String, HashMap<String, RoleInfo>> = HashMap::new();
-
-        // Load persisted devices & roles
-        let devices_path = data_dir.join("devices.json");
-        if devices_path.exists() {
-            if let Ok(json_str) = std::fs::read_to_string(&devices_path) {
-                if let Ok(persisted) = serde_json::from_str::<Vec<PersistedDevice>>(&json_str) {
-                    for d in persisted {
-                        devices
-                            .entry(d.org.clone())
-                            .or_default()
-                            .insert(d.node_id.clone(), DeviceInfo {
-                                node_id: d.node_id.clone(),
-                                active: d.active,
-                                role: d.role.clone(),
-                                person: d.person.clone(),
-                                name: d.name.clone(),
-                                device_addr: d.device_addr.clone(),
-                            });
-                        if let Ok(mut reg) = registry.write() {
-                            let node_id_bytes = hex::decode(&d.node_id).unwrap_or_default();
-                            let mut id = [0u8; 32];
-                            let len = node_id_bytes.len().min(32);
-                            id[..len].copy_from_slice(&node_id_bytes[..len]);
-                            reg.upsert_device(d.org.clone(), id, Device {
-                                node_id: id,
-                                active: d.active,
-                                role: d.role.clone(),
-                                person: d.person.clone(),
-                                name: d.name.clone(),
-                            });
-                            let grants = default_role_grants(&d.role);
-                            reg.upsert_role(d.org.clone(), d.role.clone(), RoleGrants {
-                                can_open: grants.can_open,
-                                can_write: grants.can_write,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        let roles_path = data_dir.join("roles.json");
-        if roles_path.exists() {
-            if let Ok(json_str) = std::fs::read_to_string(&roles_path) {
-                if let Ok(persisted) = serde_json::from_str::<Vec<PersistedRole>>(&json_str) {
-                    for r in persisted {
-                        roles
-                            .entry(r.org.clone())
-                            .or_default()
-                            .insert(r.name.clone(), RoleInfo {
-                                name: r.name.clone(),
-                                can_open: r.can_open.clone(),
-                                can_write: r.can_write.clone(),
-                            });
-                        if let Ok(mut reg) = registry.write() {
-                            reg.upsert_role(r.org.clone(), r.name.clone(), RoleGrants {
-                                can_open: r.can_open,
-                                can_write: r.can_write,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Load org config
-        let orgs_config_path = data_dir.join("orgs.json");
         let node_id_bytes = peer_id_to_bytes(local_peer_id);
         let node_id_hex = hex::encode(node_id_bytes);
+
+        // Load orgs from SQL (or migrate from legacy JSON)
+        let orgs_config_path = data_dir.join("orgs.json");
+        let mut orgs = HashMap::new();
         if orgs_config_path.exists() {
             if let Ok(orgs_json) = std::fs::read_to_string(&orgs_config_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<OrgConfig>>(&orgs_json) {
                     for cfg in configs {
                         let topic_id_str = format!("syntrix-org-{}", cfg.name);
-
                         if let Ok(mut reg) = registry.write() {
                             reg.set_topic_id(cfg.name.clone(), topic_id_str.clone());
                         }
-
                         let org_name = cfg.name.clone();
                         orgs.insert(org_name.clone(), OrgState {
                             name: org_name.clone(),
                             topic_id: topic_id_str.clone(),
                         });
-                        devices.entry(org_name.clone()).or_default();
-                        roles.entry(org_name.clone()).or_default();
-
                         let _ = p2p.join_topic(&topic_id_str);
-
-                        // Start admin heartbeat for this org
                         start_admin_heartbeat(
-                            p2p.clone(),
-                            org_name.clone(),
-                            node_id_hex.clone(),
-                            heartbeats.clone(),
+                            p2p.clone(), org_name.clone(), node_id_hex.clone(), heartbeats.clone(),
                         ).await;
+                        // Try to migrate legacy org into SQL
+                        if let Ok(mut stmt) = db.prepare("INSERT OR IGNORE INTO admin_orgs (name, topic_id) VALUES (?1, ?2)") {
+                            let _ = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_name.clone()));
+                            let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(topic_id_str.clone()));
+                            let _ = run_to_completion(&mut stmt);
+                        }
                     }
+                }
+            }
+        }
+
+        // Load devices & roles from SQL into the registry
+        if let Ok(mut stmt) = db.prepare("SELECT org_id, node_id, active, role, person, name FROM admin_devices") {
+            loop {
+                match stmt.step()? {
+                    turso_core::StepResult::Row => {
+                        if let Some(row) = stmt.row() {
+                            let org: String = row.get(0)?;
+                            let node_id_hex: String = row.get(1)?;
+                            let active: i64 = row.get(2)?;
+                            let role: String = row.get(3)?;
+                            let person: String = row.get(4)?;
+                            let name: String = row.get(5)?;
+                            if let Ok(mut reg) = registry.write() {
+                                let node_id_bytes = hex::decode(&node_id_hex).unwrap_or_default();
+                                let mut id = [0u8; 32];
+                                let len = node_id_bytes.len().min(32);
+                                id[..len].copy_from_slice(&node_id_bytes[..len]);
+                                reg.upsert_device(org, id, Device {
+                                    node_id: id, active: active != 0, role, person, name,
+                                });
+                            }
+                        }
+                    }
+                    turso_core::StepResult::Done => break,
+                    turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                        stmt._io().step()?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Ok(mut stmt) = db.prepare("SELECT org_id, role_name, can_open, can_write FROM admin_roles") {
+            loop {
+                match stmt.step()? {
+                    turso_core::StepResult::Row => {
+                        if let Some(row) = stmt.row() {
+                            let org: String = row.get(0)?;
+                            let role_name: String = row.get(1)?;
+                            let can_open_str: String = row.get(2)?;
+                            let can_write_str: String = row.get(3)?;
+                            let can_open: Vec<String> = serde_json::from_str(&can_open_str).unwrap_or_default();
+                            let can_write: Vec<String> = serde_json::from_str(&can_write_str).unwrap_or_default();
+                            if let Ok(mut reg) = registry.write() {
+                                reg.upsert_role(org, role_name, RoleGrants { can_open, can_write });
+                            }
+                        }
+                    }
+                    turso_core::StepResult::Done => break,
+                    turso_core::StepResult::IO | turso_core::StepResult::Yield => {
+                        stmt._io().step()?;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -244,8 +227,6 @@ impl AppState {
             heartbeats,
             registry,
             orgs,
-            devices,
-            roles,
             data_dir,
             db,
         })
@@ -269,8 +250,6 @@ impl AppState {
 
     pub fn add_org(&mut self, name: &str, topic_id: String) {
         self.orgs.insert(name.to_string(), OrgState { name: name.to_string(), topic_id });
-        self.devices.entry(name.to_string()).or_default();
-        self.roles.entry(name.to_string()).or_default();
     }
 
     pub fn save_org_config(&self, name: &str, topic_id: &str) -> anyhow::Result<()> {
@@ -310,14 +289,21 @@ impl AppState {
     }
 
     pub fn remember_device(&mut self, org: &str, node_id: &str, role: &str, person: &str, name: &str, active: bool, device_addr: &str) {
-        self.devices.entry(org.into()).or_default().insert(node_id.into(), DeviceInfo {
-            node_id: node_id.into(), active, role: role.into(), person: person.into(), name: name.into(),
-            device_addr: device_addr.into(),
-        });
+        // Write to SQL
+        if let Ok(mut stmt) = self.db.prepare(
+            "INSERT OR REPLACE INTO admin_devices (org_id, node_id, active, role, person, name, device_addr, change_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch('now') * 1000)"
+        ) {
+            let _ = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string()));
+            let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()));
+            let _ = stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(if active { 1 } else { 0 }));
+            let _ = stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(role.to_string()));
+            let _ = stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(person.to_string()));
+            let _ = stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(name.to_string()));
+            let _ = stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_text(device_addr.to_string()));
+            let _ = run_to_completion(&mut stmt);
+        }
 
-        // Register device + role (if new) in the in-memory registry.
-        // Roles created explicitly via create_role must not be overwritten
-        // by the default_role_grants fallback.
+        // Register device in the in-memory registry
         if let Ok(mut reg) = self.registry.write() {
             let node_id_bytes = hex::decode(node_id).unwrap_or_default();
             let mut id = [0u8; 32];
@@ -326,7 +312,6 @@ impl AppState {
             reg.upsert_device(org.into(), id, Device {
                 node_id: id, active, role: role.into(), person: person.into(), name: name.into(),
             });
-            // Only upsert the role if it doesn't exist yet
             let existing_roles = reg.list_roles(&org.to_string());
             if !existing_roles.iter().any(|(name, _)| name == role) {
                 let grants = default_role_grants(role);
@@ -336,13 +321,19 @@ impl AppState {
             }
         }
 
-        self.roles.entry(org.into()).or_default().entry(role.into()).or_insert_with(|| {
+        // Ensure default role exists in SQL
+        if let Ok(mut stmt) = self.db.prepare(
+            "INSERT OR IGNORE INTO admin_roles (org_id, role_name, can_open, can_write) VALUES (?1, ?2, ?3, ?4)"
+        ) {
             let grants = default_role_grants(role);
-            RoleInfo { name: role.into(), can_open: grants.can_open, can_write: grants.can_write }
-        });
-
-        self.save_devices();
-        self.save_roles();
+            let can_open_json = serde_json::to_string(&grants.can_open).unwrap_or_else(|_| "[]".to_string());
+            let can_write_json = serde_json::to_string(&grants.can_write).unwrap_or_else(|_| "[]".to_string());
+            let _ = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string()));
+            let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role.to_string()));
+            let _ = stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(can_open_json));
+            let _ = stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(can_write_json));
+            let _ = run_to_completion(&mut stmt);
+        }
     }
 
     pub fn update_device(
@@ -354,104 +345,132 @@ impl AppState {
         name: Option<String>,
         person: Option<String>,
     ) {
-        if let Some(devs) = self.devices.get_mut(org) {
-            if let Some(d) = devs.get_mut(node_id) {
-                d.active = active;
-                if let Some(r) = &role { d.role = r.clone(); }
-                if let Some(n) = &name { d.name = n.clone(); }
-                if let Some(p) = &person { d.person = p.clone(); }
-            }
+        // Update SQL: only update columns that are provided
+        if let Ok(mut stmt) = self.db.prepare(
+            "UPDATE admin_devices SET active = ?3, role = COALESCE(?4, role), name = COALESCE(?5, name), person = COALESCE(?6, person), change_time = unixepoch('now') * 1000 WHERE org_id = ?1 AND node_id = ?2"
+        ) {
+            let _ = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string()));
+            let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()));
+            let _ = stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_i64(if active { 1 } else { 0 }));
+            let role_val = role.clone().unwrap_or_default();
+            let _ = stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(role_val));
+            let name_val = name.clone().unwrap_or_default();
+            let _ = stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(name_val));
+            let person_val = person.clone().unwrap_or_default();
+            let _ = stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(person_val));
+            let _ = run_to_completion(&mut stmt);
         }
+
+        // Read current values from SQL for the registry update
+        let current_role = role.unwrap_or_else(|| {
+            if let Ok(mut stmt) = self.db.prepare("SELECT role FROM admin_devices WHERE org_id = ?1 AND node_id = ?2") {
+                if let Ok(_) = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string())) {
+                    let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()));
+                    loop {
+                        match stmt.step() {
+                            Ok(turso_core::StepResult::Row) => {
+                                if let Some(row) = stmt.row() {
+                                    let r: String = row.get(0).unwrap_or_default();
+                                    return r;
+                                }
+                            }
+                            Ok(turso_core::StepResult::Done) => break,
+                            Ok(turso_core::StepResult::IO | turso_core::StepResult::Yield) => { let _ = stmt._io().step(); }
+                            _ => break,
+                        }
+                    }
+                }
+            }
+            String::new()
+        });
+
         if let Ok(mut reg) = self.registry.write() {
             let node_id_bytes = hex::decode(node_id).unwrap_or_default();
             let mut id = [0u8; 32];
             let len = node_id_bytes.len().min(32);
             id[..len].copy_from_slice(&node_id_bytes[..len]);
-
-            let mut current_role = String::new();
-            let mut current_person = String::new();
-            let mut current_name = String::new();
-
-            if let Some(devs) = self.devices.get(org) {
-                if let Some(d) = devs.get(node_id) {
-                    current_role = d.role.clone();
-                    current_person = d.person.clone();
-                    current_name = d.name.clone();
-                }
-            }
-
             reg.upsert_device(org.into(), id, Device {
                 node_id: id, active,
-                role: role.unwrap_or(current_role),
-                person: person.unwrap_or(current_person),
-                name: name.unwrap_or(current_name),
+                role: current_role,
+                person: person.clone().unwrap_or_default(),
+                name: name.clone().unwrap_or_default(),
             });
         }
-
-        self.save_devices();
     }
 
     pub fn list_org_devices(&self, org: &str) -> Vec<DeviceInfo> {
-        self.devices.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
+        let mut devices = Vec::new();
+        if let Ok(mut stmt) = self.db.prepare("SELECT node_id, active, role, person, name, device_addr FROM admin_devices WHERE org_id = ?1") {
+            if let Ok(_) = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string())) {
+                loop {
+                    match stmt.step() {
+                        Ok(turso_core::StepResult::Row) => {
+                            if let Some(row) = stmt.row() {
+                                devices.push(DeviceInfo {
+                                    node_id: row.get::<String>(0).unwrap_or_default(),
+                                    active: row.get::<i64>(1).unwrap_or(1) != 0,
+                                    role: row.get::<String>(2).unwrap_or_default(),
+                                    person: row.get::<String>(3).unwrap_or_default(),
+                                    name: row.get::<String>(4).unwrap_or_default(),
+                                    device_addr: row.get::<String>(5).unwrap_or_default(),
+                                });
+                            }
+                        }
+                        Ok(turso_core::StepResult::Done) => break,
+                        Ok(turso_core::StepResult::IO | turso_core::StepResult::Yield) => {
+                            let _ = stmt._io().step();
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+        devices
     }
 
     pub fn list_org_roles(&self, org: &str) -> Vec<RoleInfo> {
-        self.roles.get(org).map(|m| m.values().cloned().collect()).unwrap_or_default()
+        let mut roles = Vec::new();
+        if let Ok(mut stmt) = self.db.prepare("SELECT role_name, can_open, can_write FROM admin_roles WHERE org_id = ?1") {
+            if let Ok(_) = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string())) {
+                loop {
+                    match stmt.step() {
+                        Ok(turso_core::StepResult::Row) => {
+                            if let Some(row) = stmt.row() {
+                                let can_open_str: String = row.get::<String>(1).unwrap_or_else(|_| "[]".to_string());
+                                let can_write_str: String = row.get::<String>(2).unwrap_or_else(|_| "[]".to_string());
+                                roles.push(RoleInfo {
+                                    name: row.get::<String>(0).unwrap_or_default(),
+                                    can_open: serde_json::from_str(&can_open_str).unwrap_or_default(),
+                                    can_write: serde_json::from_str(&can_write_str).unwrap_or_default(),
+                                });
+                            }
+                        }
+                        Ok(turso_core::StepResult::Done) => break,
+                        Ok(turso_core::StepResult::IO | turso_core::StepResult::Yield) => {
+                            let _ = stmt._io().step();
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+        roles
     }
 
     pub fn set_role(&mut self, org: &str, name: &str, can_open: Vec<String>, can_write: Vec<String>) {
-        if let Some(roles_map) = self.roles.get_mut(org) {
-            roles_map.insert(name.into(), RoleInfo {
-                name: name.into(),
-                can_open: can_open.clone(),
-                can_write: can_write.clone(),
-            });
+        let can_open_json = serde_json::to_string(&can_open).unwrap_or_else(|_| "[]".to_string());
+        let can_write_json = serde_json::to_string(&can_write).unwrap_or_else(|_| "[]".to_string());
+        if let Ok(mut stmt) = self.db.prepare(
+            "INSERT OR REPLACE INTO admin_roles (org_id, role_name, can_open, can_write, change_time) VALUES (?1, ?2, ?3, ?4, unixepoch('now') * 1000)"
+        ) {
+            let _ = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string()));
+            let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(name.to_string()));
+            let _ = stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(can_open_json));
+            let _ = stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_text(can_write_json));
+            let _ = run_to_completion(&mut stmt);
         }
         if let Ok(mut reg) = self.registry.write() {
-            reg.upsert_role(org.into(), name.into(), RoleGrants {
-                can_open,
-                can_write,
-            });
-        }
-        self.save_roles();
-    }
-
-    fn save_devices(&self) {
-        let mut all: Vec<PersistedDevice> = Vec::new();
-        for (org, devs) in &self.devices {
-            for (_, d) in devs {
-                all.push(PersistedDevice {
-                    org: org.clone(),
-                    node_id: d.node_id.clone(),
-                    active: d.active,
-                    role: d.role.clone(),
-                    person: d.person.clone(),
-                    name: d.name.clone(),
-                    device_addr: d.device_addr.clone(),
-                });
-            }
-        }
-        let path = self.data_dir.join("devices.json");
-        if let Ok(bytes) = serde_json::to_vec(&all) {
-            let _ = std::fs::write(&path, bytes);
-        }
-    }
-
-    fn save_roles(&self) {
-        let mut all: Vec<PersistedRole> = Vec::new();
-        for (org, roles_map) in &self.roles {
-            for (_, r) in roles_map {
-                all.push(PersistedRole {
-                    org: org.clone(),
-                    name: r.name.clone(),
-                    can_open: r.can_open.clone(),
-                    can_write: r.can_write.clone(),
-                });
-            }
-        }
-        let path = self.data_dir.join("roles.json");
-        if let Ok(bytes) = serde_json::to_vec(&all) {
-            let _ = std::fs::write(&path, bytes);
+            reg.upsert_role(org.into(), name.into(), RoleGrants { can_open, can_write });
         }
     }
 }

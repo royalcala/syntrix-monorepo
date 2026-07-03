@@ -86,12 +86,12 @@ async fn test_admin_create_org_gossip_and_heartbeat() {
         .expect("admin should appear in sync-info peer list");
     assert_eq!(admin_peer.status, "online", "admin should show as online");
 
-    assert!(
-        data_dir.join("devices.json").exists(),
-        "devices.json should be persisted"
-    );
-    assert!(
-        data_dir.join("roles.json").exists(),
-        "roles.json should be persisted"
-    );
+    // Verify devices were persisted to SQL
+    let devices = state.list_org_devices("testorg");
+    assert!(!devices.is_empty(), "devices should be persisted to SQL");
+    assert!(devices.iter().any(|d| d.role == "admin"), "admin device should exist");
+
+    // Verify roles were persisted to SQL
+    let roles = state.list_org_roles("testorg");
+    assert!(!roles.is_empty(), "roles should be persisted to SQL");
 }
