@@ -5,7 +5,7 @@ export const productsEntity: EntityDefinition = {
   id: "products",
   label: "Productos",
   icon: "package",
-  loadData: () => fetchEntityData("products"),
+  loadData: (orgId?: string) => fetchEntityData("products", undefined, undefined, orgId),
   fields: [
     { key: "id", label: "ID", type: "text", width: 100, editable: false, sortable: true },
     { key: "name", label: "Nombre", type: "text", width: 200, editable: true, sortable: true },

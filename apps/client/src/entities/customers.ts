@@ -5,7 +5,7 @@ export const customersEntity: EntityDefinition = {
   id: "customers",
   label: "Clientes",
   icon: "users",
-  loadData: () => fetchEntityData("customers"),
+  loadData: (orgId?: string) => fetchEntityData("customers", undefined, undefined, orgId),
   fields: [
     { key: "id", label: "ID", type: "text", width: 100, editable: false, sortable: true },
     { key: "name", label: "Nombre", type: "text", width: 200, editable: true, sortable: true },

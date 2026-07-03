@@ -5,7 +5,7 @@ export const invoicesEntity: EntityDefinition = {
   id: "invoices",
   label: "Facturas",
   icon: "receipt",
-  loadData: () => fetchEntityData("invoices"),
+  loadData: (orgId?: string) => fetchEntityData("invoices", undefined, undefined, orgId),
   fields: [
     { key: "id", label: "Folio", type: "text", width: 110, editable: false, sortable: true },
     { key: "customer_id", label: "Cliente", type: "relation", width: 200, editable: true, sortable: true },

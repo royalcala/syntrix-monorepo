@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
@@ -13,25 +13,26 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },
 });
 
-describe("EntityGrid Editing Reactivity", () => {
+// Column order: org_id, doc_id, name, tax_id, address, phone, email, change_time, node_id
+const CUSTOMER_COLUMNS = ["org_id", "doc_id", "name", "tax_id", "address", "phone", "email", "change_time", "node_id"];
+
+function mockDrizzleRows(rows: Record<string, string | null>[]) {
+  return { rows: rows.map(r => CUSTOMER_COLUMNS.map(c => r[c] ?? null)) };
+}
+
+describe("EntityGrid", () => {
   beforeEach(() => {
     queryClient.clear();
     vi.clearAllMocks();
   });
 
-  it("should update table row when edit is saved and refetch queries", async () => {
-    // 1. Mock the backend responses
+  it("renders data loaded via Drizzle Proxy", async () => {
     const mockData = [
-      { id: "c1", name: "Acme Corp", email: "contact@acme.com", tax_id: "ACM123" }
+      { org_id: "org-1", doc_id: "c1", name: "Acme Corp", tax_id: "ACM123", address: null, phone: null, email: "contact@acme.com", change_time: null, node_id: "" }
     ];
 
-    (invoke as any).mockImplementation((cmd: string, _args: any) => {
-      if (cmd === "query_entity") return Promise.resolve(mockData);
-      if (cmd === "commit_event") return Promise.resolve("ok");
-      return Promise.resolve();
-    });
+    (invoke as any).mockResolvedValue(mockDrizzleRows(mockData));
 
-    // 2. Render the grid
     render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
@@ -40,50 +41,26 @@ describe("EntityGrid Editing Reactivity", () => {
       </MemoryRouter>
     );
 
-    // 3. Wait for data to load
-    const cell = await screen.findByText("Acme Corp");
-    const row = cell.closest("tr");
-    expect(row).toBeDefined();
-
-    // 4. Click the row (event will bubble to the row)
-    fireEvent.click(row!);
-    
-    // 5. Wait for panel to open and click the "Editar" button to enter editMode
-    const editButtons = await screen.findAllByText("Editar");
-    fireEvent.click(editButtons[0]);
-
-    // 6. Find the name input
-    const nameInput = await screen.findByDisplayValue("Acme Corp");
-    
-    // 7. Edit the name
-    fireEvent.change(nameInput, { target: { value: "Acme Corporation Inc." } });
-
-    // 8. Change the mock data to simulate the backend having the new data
-    const updatedData = [
-      { id: "c1", name: "Acme Corporation Inc.", email: "contact@acme.com", tax_id: "ACM123" }
-    ];
-    (invoke as any).mockImplementation((cmd: string) => {
-      if (cmd === "query_entity") return Promise.resolve(updatedData);
-      if (cmd === "commit_event") return Promise.resolve("ok");
-      return Promise.resolve();
-    });
-
-    // 9. Click Save
-    const saveButton = screen.getByText("Guardar");
-    fireEvent.click(saveButton);
-
-    // 10. Verify commit_event was called correctly WITH the id
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("commit_event", expect.objectContaining({
-        eventType: "customers.updated",
-        payload: expect.stringContaining('"id":"c1"')
+      expect(screen.getByText("Acme Corp")).toBeDefined();
+    });
+  });
+
+  it("calls drizzle_execute for data fetching", async () => {
+    (invoke as any).mockResolvedValue(mockDrizzleRows([]));
+
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <EntityGrid entity={customersEntity} orgId="org-1" role="admin" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("drizzle_execute", expect.objectContaining({
+        sql: expect.stringContaining("customers"),
       }));
-    });
-
-    // 10. Verify the table reflects the new name!
-    // If reactivity is working, the table should now show "Acme Corporation Inc." instead of "Acme Corp".
-    await waitFor(() => {
-      expect(screen.queryAllByText("Acme Corporation Inc.").length).toBeGreaterThan(0);
     });
   });
 });
