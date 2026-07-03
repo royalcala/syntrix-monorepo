@@ -358,18 +358,18 @@ async fn process_event_loop(
                     Event::InviteReceived { peer: _, payload } => {
                         invite_handler.push(payload);
                     }
-                    Event::CatchupRequestReceived { peer: _, org_id, since_hlc, response_id } => {
-                        if let Ok(events) = indexer.query_events_since(&org_id, since_hlc, 10000) {
-                            let event_data: Vec<serde_json::Value> = events.into_iter().map(|e| {
-                                serde_json::json!({
-                                    "type": e.event_type,
-                                    "hlc": e.hlc,
-                                    "schema_version": e.schema_version,
-                                    "payload": e.payload,
-                                })
-                            }).collect();
-                            let _ = p2p.respond_catchup(response_id, event_data);
+                    Event::CatchupRequestReceived { peer: _, org_id, since_hlc: _, response_id } => {
+                        let mut events: Vec<serde_json::Value> = Vec::new();
+                        match syntrix_network::cdc::snapshot_org_rows(&indexer.conn, &org_id) {
+                            Ok(snapshot) if !snapshot.is_empty() => {
+                                events.push(serde_json::json!({ "kind": "cdc_batch", "events": snapshot }));
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!(target: "syntrix", org = %org_id, error = %e, "catchup: failed to snapshot org rows");
+                            }
                         }
+                        let _ = p2p.respond_catchup(response_id, events);
                     }
                     Event::PeerConnected(_) | Event::PeerDisconnected(_) => {}
                 }

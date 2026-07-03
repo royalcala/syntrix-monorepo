@@ -3,6 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::identity::AppState;
 use syntrix_core::{can_access, schema_version_for};
 
+// Tracks the highest wall-clock timestamp ever emitted, so HLC never goes
+// backward even if the system clock jumps backwards (NTP correction, suspend).
+static LAST_HLC_TS: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Hlc {
     pub ts: u64,
@@ -17,10 +21,11 @@ impl Hlc {
             .unwrap()
             .as_micros() as u64;
 
+        let ts = LAST_HLC_TS.fetch_max(now, Ordering::SeqCst).max(now);
         let count = counter.fetch_add(1, Ordering::SeqCst) as u32;
 
         Self {
-            ts: now,
+            ts,
             count,
             node: node_id_hex[..16].to_string(),
         }

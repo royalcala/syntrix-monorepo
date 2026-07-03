@@ -93,7 +93,11 @@ impl Drop for HeadlessApp {
 #[ignore = "must run locally with GTK — use: just test-binary-e2e"]
 fn test_binary_invite_and_bidirectional_sync() {
     // --- Find binaries ---
-    let admin_bin = env!("CARGO_BIN_EXE_syntrix-admin");
+    // Allow SYNTRIX_ADMIN_BIN to override the compile-time CARGO_BIN_EXE path
+    // (needed when the test binary was compiled remotely but runs locally)
+    let admin_bin_env = std::env::var("SYNTRIX_ADMIN_BIN").ok()
+        .filter(|p| std::path::Path::new(p).exists());
+    let admin_bin = admin_bin_env.as_deref().unwrap_or_else(|| env!("CARGO_BIN_EXE_syntrix-admin"));
 
     // Find client binary: check SYNTRIX_CLIENT_BIN env, then common paths
     let client_bin = std::env::var("SYNTRIX_CLIENT_BIN").ok()

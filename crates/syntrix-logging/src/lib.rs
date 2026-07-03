@@ -699,6 +699,7 @@ pub fn init_logging(app_name: &str, data_dir: PathBuf) -> LogHandle {
         "syntrix=info".to_string()
     });
     let console_layer = tracing_subscriber::fmt::layer()
+        .with_writer(|| std::io::stderr())
         .with_target(true)
         .with_filter(EnvFilter::new(&console_filter));
 

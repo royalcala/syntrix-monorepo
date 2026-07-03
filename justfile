@@ -151,9 +151,10 @@ test-binary-e2e:
     scp -o ConnectTimeout=10 "server-1:$REMOTE_BIN_PATH" "$LOCAL_BIN_DIR/binary_e2e_test"
     chmod +x "$LOCAL_BIN_DIR/binary_e2e_test"
     echo "=== Ejecutando test binario localmente ==="
-    CLIENT_BIN="$(cd apps/client/src-tauri && pwd)/target/debug/syntrix-client"
+    CLIENT_BIN="$(pwd)/target/debug/syntrix-client"
+    ADMIN_BIN="$(pwd)/target/debug/syntrix-admin"
     TEST_BIN="$LOCAL_BIN_DIR/binary_e2e_test"
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; SYNTRIX_CLIENT_BIN="'"$CLIENT_BIN"'" "'"$TEST_BIN"'" --ignored --nocapture'
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; SYNTRIX_CLIENT_BIN="'"$CLIENT_BIN"'" SYNTRIX_ADMIN_BIN="'"$ADMIN_BIN"'" "'"$TEST_BIN"'" --ignored --nocapture'
 
 # Tests Rust completos (unit + integration)
 test-rust:
