@@ -33,7 +33,7 @@ pub struct AppState {
     p2p: P2PNode,
     hlc_counter: AtomicU64,
     registry: Arc<RwLock<NamespaceRegistry>>,
-    orgs: HashMap<String, OrgState>,
+    orgs: Arc<RwLock<HashMap<String, OrgState>>>,
     active_org: Option<String>,
     data_dir: PathBuf,
     pub indexer: Arc<crate::indexes::SqlEngine>,
@@ -47,6 +47,7 @@ pub struct AppState {
     cdc_topics: Arc<RwLock<HashMap<String, String>>>,
 }
 
+#[derive(Clone)]
 pub struct OrgState {
     pub name: String,
     pub role: String,
@@ -91,7 +92,7 @@ impl AppState {
         let (invite_handler, invite_rx) = InviteHandler::new();
 
         let mut topic_to_org: HashMap<String, String> = HashMap::new();
-        let mut orgs = HashMap::new();
+        let orgs: Arc<RwLock<HashMap<String, OrgState>>> = Arc::new(RwLock::new(HashMap::new()));
         let node_id_bytes: [u8; 32] = peer_id_to_bytes(local_peer_id);
         let node_id_hex = hex::encode(node_id_bytes);
         let orgs_config_path = data_dir.join("orgs.json");
@@ -100,10 +101,12 @@ impl AppState {
         let p2p_ev = p2p.clone();
         let invite_handler_ev = invite_handler.clone();
         let topic_to_org_ev = topic_to_org.clone();
+        let orgs_ev = orgs.clone();
+        let node_id_ev = node_id_hex.clone();
 
         // Spawn background event processor
         tokio::spawn(async move {
-            process_event_loop(event_rx, idx_ev, p2p_ev, invite_handler_ev, topic_to_org_ev).await;
+            process_event_loop(event_rx, idx_ev, p2p_ev, invite_handler_ev, topic_to_org_ev, orgs_ev, node_id_ev).await;
         });
 
         // Shared with `add_org` (kept in sync below and in `AppState::add_org`) so the CDC
@@ -225,7 +228,7 @@ impl AppState {
                             node_id_hex.clone(), hb_broadcast, hb_store,
                         );
 
-                        orgs.insert(cfg.org_id.clone(), OrgState {
+                        orgs.write().unwrap().insert(cfg.org_id.clone(), OrgState {
                             name: cfg.name,
                             role: cfg.role,
                             topic_id: topic_id_str,
@@ -267,13 +270,13 @@ impl AppState {
     pub fn conn(&self) -> Arc<turso_core::Connection> { self.conn.clone() }
 
     pub fn list_orgs(&self) -> Vec<OrgInfo> {
-        self.orgs.iter().map(|(id, o)| OrgInfo {
+        self.orgs.read().unwrap().iter().map(|(id, o)| OrgInfo {
             id: id.clone(), name: o.name.clone(), role: o.role.clone(),
         }).collect()
     }
 
     pub fn set_active_org(&mut self, org_id: &str) -> Result<(), String> {
-        if self.orgs.contains_key(org_id) {
+        if self.orgs.read().unwrap().contains_key(org_id) {
             self.active_org = Some(org_id.to_string());
             Ok(())
         } else {
@@ -290,7 +293,7 @@ impl AppState {
         if let Ok(mut cdc_map) = self.cdc_topics.write() {
             cdc_map.insert(org_id.to_string(), topic_id.clone());
         }
-        self.orgs.insert(org_id.into(), OrgState {
+        self.orgs.write().unwrap().insert(org_id.into(), OrgState {
             name: name.into(),
             role: role.into(),
             topic_id,
@@ -314,8 +317,8 @@ impl AppState {
         Ok(())
     }
 
-    pub fn get_org(&self, org_id: &str) -> Option<&OrgState> {
-        self.orgs.get(org_id)
+    pub fn get_org(&self, org_id: &str) -> Option<OrgState> {
+        self.orgs.read().unwrap().get(org_id).cloned()
     }
 }
 
@@ -325,6 +328,8 @@ async fn process_event_loop(
     p2p: P2PNode,
     invite_handler: InviteHandler,
     topic_to_org: HashMap<String, String>,
+    orgs: Arc<RwLock<HashMap<String, OrgState>>>,
+    local_node_id: String,
 ) {
     use syntrix_network::Event;
 
@@ -353,6 +358,25 @@ async fn process_event_loop(
                             apply_cdc_batch(&org_id, &val, &indexer);
                         } else {
                             process_gossip_event(&org_id, &val, &indexer);
+                            // Update OrgState when device.updated arrives for the local node.
+                            // This keeps the in-memory role in sync with the admin's assignment,
+                            // so commit_event permission checks use the correct role.
+                            if val.get("type").and_then(|t| t.as_str()) == Some("device.updated") {
+                                if let Some(payload) = val.get("payload") {
+                                    if let Some(node_id) = payload.get("node_id").and_then(|v| v.as_str()) {
+                                        if node_id == local_node_id {
+                                            if let Some(role) = payload.get("role").and_then(|v| v.as_str()) {
+                                                if let Ok(mut orgs_lock) = orgs.write() {
+                                                    if let Some(org_state) = orgs_lock.get_mut(&org_id) {
+                                                        org_state.role = role.to_string();
+                                                        tracing::info!(org = %org_id, role = %role, "device reassignment: updated local OrgState role");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     Event::InviteReceived { peer: _, payload } => {

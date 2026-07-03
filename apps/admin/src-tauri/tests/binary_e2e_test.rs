@@ -39,7 +39,6 @@ impl HeadlessApp {
         let mut child = Command::new(bin)
             .arg("--headless")
             .env("SYNTRIX_DATA_DIR", data_dir)
-            .env("RUST_LOG", "syntrix=info")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -63,10 +62,23 @@ impl HeadlessApp {
         writeln!(self.stdin, "{}", line).expect("write cmd");
         self.stdin.flush().expect("flush");
 
-        let mut response_line = String::new();
-        self.stdout.read_line(&mut response_line).expect("read response");
-        eprintln!("[test] {} ← {}", self.label, response_line.trim());
-        serde_json::from_str(&response_line).expect("parse response")
+        // Read lines until we get valid JSON (skip any log output that leaked to stdout)
+        loop {
+            let mut response_line = String::new();
+            self.stdout.read_line(&mut response_line).expect("read response");
+            let trimmed = response_line.trim();
+            if trimmed.is_empty() { continue; }
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(v) => {
+                    eprintln!("[test] {} ← {}", self.label, trimmed);
+                    return v;
+                }
+                Err(_) => {
+                    eprintln!("[test] {} ← (skip non-JSON) {}", self.label, trimmed);
+                    continue;
+                }
+            }
+        }
     }
 
     fn cmd_ok(&mut self, req: &Value) -> Value {
@@ -90,7 +102,7 @@ impl Drop for HeadlessApp {
 }
 
 #[test]
-#[ignore = "must run locally with GTK — use: just test-binary-e2e"]
+#[ignore = "requires GTK locally; run via SYNTRIX_CLIENT_BIN=... cargo test -- --ignored (or just test-binary-e2e)"]
 fn test_binary_invite_and_bidirectional_sync() {
     // --- Find binaries ---
     // Allow SYNTRIX_ADMIN_BIN to override the compile-time CARGO_BIN_EXE path
