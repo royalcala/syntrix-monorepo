@@ -335,19 +335,6 @@ async fn test_role_update_propagates() {
 
 #[tokio::test]
 async fn test_device_reassignment_propagates() {
-    // IGNORED: this test requires the client to dynamically update its active
-    // org's role when a `device.updated` gossip arrives for its own node_id.
-    // Currently, `commit_event` reads `org.role` from the in-memory `OrgState`
-    // (set once during `join_org_impl`), while the gossip handler only updates
-    // the SQL `members` table — they're out of sync. Fixing this requires:
-    // 1. `process_gossip_event` to update `OrgState.role` for the own device, or
-    // 2. `commit_event` to read the role from the members table instead.
-    let _ = ();
-}
-
-/*
-#[tokio::test]
-async fn test_device_reassignment_propagates_original() {
     let (_adir, adir) = syntrix_testkit::temp_node_dir("t15_admin");
     let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t15_client1");
 
@@ -373,17 +360,26 @@ async fn test_device_reassignment_propagates_original() {
     .await
     .expect("reassign device to admin");
 
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
+    // Poll until the client's OrgState reflects the new role (gossip propagation)
     set_client_org(&mut c1, &org_id);
-    let result = syntrix_client_lib::commit_event_impl(
-        &c1,
-        "payroll.updated",
-        r#"{"id":"pay-admin","amount":999}"#,
-    );
-    assert!(result.is_ok(), "client reassigned to admin should write payroll");
+    let config = syntrix_testkit::PollConfig {
+        max_retries: 30,
+        base_delay: std::time::Duration::from_millis(500),
+        max_delay: std::time::Duration::from_secs(5),
+    };
+    let poll_result: Result<(), String> = syntrix_testkit::poll_until(
+        || {
+            let result = syntrix_client_lib::commit_event_impl(
+                &c1,
+                "payroll.updated",
+                r#"{"id":"pay-admin","amount":999}"#,
+            );
+            async move { result.map(|_| ()).map_err(|e| format!("commit failed: {e}")) }
+        },
+        &config,
+    ).await;
+    assert!(poll_result.is_ok(), "client reassigned to admin should write payroll ({:?})", poll_result.err());
 }
-*/
 
 #[tokio::test]
 async fn test_device_deactivation_blocks_access() {

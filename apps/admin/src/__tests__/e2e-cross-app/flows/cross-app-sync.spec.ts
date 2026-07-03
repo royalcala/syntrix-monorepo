@@ -40,9 +40,9 @@ test.describe("Cross-app sync (admin + 2 clients)", () => {
     // STEP 1: Admin crea organización "acme"
     // =========================================================================
     await adminPage.goto("tauri://localhost");
-    await adminPage.waitForSelector("text=Crear organización", { timeout: 10000 });
-    await adminPage.fill("input[placeholder='Nombre de la organización']", ORG_NAME);
-    await adminPage.click("text=Crear");
+    await adminPage.waitForSelector("text=Create your first organization", { timeout: 10000 });
+    await adminPage.fill("input[placeholder='e.g. Acme Corp']", ORG_NAME);
+    await adminPage.click("text=Create Organization");
     await adminPage.waitForSelector(`text=${ORG_NAME}`, { timeout: 10000 });
     console.log("[admin] org created:", ORG_NAME);
 

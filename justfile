@@ -175,10 +175,48 @@ test-e2e-admin:
 test-e2e-client:
     cd apps/client && npx playwright test --config src/__tests__/e2e/playwright.config.ts
 
-# Tests E2E cross-app (admin + 2 clientes, requiere apps corriendo)
-# Lanza las apps primero: bash scripts/start-e2e-cross-app.sh
+# Tests E2E cross-app (admin + 2 clientes, lanza apps automáticamente)
 test-e2e-cross-app:
-    cd apps/admin && npx playwright test --config src/__tests__/e2e-cross-app/playwright.config.ts
+    #!/usr/bin/env bash
+    set -e
+    ROOT="$(pwd)"
+    E2E_DIR="/tmp/syntrix-e2e"
+    echo "=== Lanzando 3 apps Tauri (admin + 2 clientes) ==="
+    rm -rf "$E2E_DIR"
+    mkdir -p "$E2E_DIR/admin" "$E2E_DIR/client1" "$E2E_DIR/client2"
+    # Admin (server-1)
+    cd "$ROOT/apps/admin/src-tauri"
+    SYNTRIX_DATA_DIR="$E2E_DIR/admin" REMOTE_HOST="server-1" cargo tauri dev \
+      --config '{"build": {"devUrl": "http://localhost:1421"}}' \
+      -- -- --remote-debugging-port=9222 > "$E2E_DIR/admin.log" 2>&1 &
+    ADMIN_PID=$!
+    # Client 1 (server-2)
+    cd "$ROOT/apps/client/src-tauri"
+    SYNTRIX_DATA_DIR="$E2E_DIR/client1" REMOTE_HOST="server-2" cargo tauri dev \
+      --config '{"build": {"devUrl": "http://localhost:1420"}}' \
+      -- -- --remote-debugging-port=9223 > "$E2E_DIR/client1.log" 2>&1 &
+    CLIENT1_PID=$!
+    # Client 2 (server-2)
+    cd "$ROOT/apps/client/src-tauri"
+    SYNTRIX_DATA_DIR="$E2E_DIR/client2" REMOTE_HOST="server-2" cargo tauri dev \
+      --config '{"build": {"devUrl": "http://localhost:1425"}}' \
+      -- -- --remote-debugging-port=9224 > "$E2E_DIR/client2.log" 2>&1 &
+    CLIENT2_PID=$!
+    cd "$ROOT"
+    echo "Waiting for WebDriver endpoints..."
+    for port in 9222 9223 9224; do
+      echo -n "  port $port ..."
+      for i in $(seq 1 30); do
+        if curl -s "http://localhost:$port/json/version" > /dev/null 2>&1; then echo " ready"; break; fi
+        sleep 1
+      done
+    done
+    echo "=== Running Playwright test ==="
+    cd apps/admin && npx playwright test --config src/__tests__/e2e-cross-app/playwright.config.ts; TEST_EXIT=$?
+    echo "=== Killing apps ==="
+    kill $ADMIN_PID $CLIENT1_PID $CLIENT2_PID 2>/dev/null || true
+    wait $ADMIN_PID $CLIENT1_PID $CLIENT2_PID 2>/dev/null || true
+    exit $TEST_EXIT
 
 # Tests completos (todo incluyendo E2E)
 test-all: test test-e2e-admin test-e2e-client test-e2e-cross-app

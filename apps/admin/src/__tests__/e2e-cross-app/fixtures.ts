@@ -23,7 +23,7 @@ type CrossAppFixtures = {
 
 async function connectPage(envVar: string, fallbackPort: number): Promise<Page> {
   const url = process.env[envVar] || `ws://localhost:${fallbackPort}`;
-  const { chromium } = await import("playwright");
+  const { chromium } = await import("@playwright/test");
   const browser = await chromium.connect({ wsEndpoint: url });
   const context = await browser.newContext();
   const page = await context.newPage();
