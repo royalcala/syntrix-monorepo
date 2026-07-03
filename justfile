@@ -137,9 +137,23 @@ test-binary-e2e:
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-admin'
     echo "=== Compilando client en server-2 ==="
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-2"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-client'
+    echo "=== Compilando test binary en server-1 ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cd apps/admin/src-tauri && cargo test --test binary_e2e_test --no-run'
+    echo "=== Descargando test binary ==="
+    ssh -o ConnectTimeout=10 server-1 "ls -t /root/remote-builds/syntrix-monorepo/target-remote/debug/deps/binary_e2e_test-* 2>/dev/null | head -1" > /tmp/binary_e2e_test_remote_path.txt
+    REMOTE_BIN_PATH="$(cat /tmp/binary_e2e_test_remote_path.txt)"
+    if [ -z "$REMOTE_BIN_PATH" ]; then
+      echo "ERROR: No se encontró el binary de test en server-1"
+      exit 1
+    fi
+    LOCAL_BIN_DIR="apps/admin/src-tauri/target/debug"
+    mkdir -p "$LOCAL_BIN_DIR"
+    scp -o ConnectTimeout=10 "server-1:$REMOTE_BIN_PATH" "$LOCAL_BIN_DIR/binary_e2e_test"
+    chmod +x "$LOCAL_BIN_DIR/binary_e2e_test"
     echo "=== Ejecutando test binario localmente ==="
     CLIENT_BIN="$(cd apps/client/src-tauri && pwd)/target/debug/syntrix-client"
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/admin/src-tauri && SYNTRIX_CLIENT_BIN="'"$CLIENT_BIN"'" cargo test --test binary_e2e_test -- --ignored --nocapture'
+    TEST_BIN="$LOCAL_BIN_DIR/binary_e2e_test"
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; SYNTRIX_CLIENT_BIN="'"$CLIENT_BIN"'" "'"$TEST_BIN"'" --ignored --nocapture'
 
 # Tests Rust completos (unit + integration)
 test-rust:
