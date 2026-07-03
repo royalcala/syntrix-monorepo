@@ -79,7 +79,7 @@ export const invoices = sqliteTable("invoices", {
 
 export const invoiceItems = sqliteTable("invoice_items", {
   orgId: text("org_id").notNull(),
-  invoiceId: text("invoice_id").notNull(),
+  invoiceId: text("invoice_id").notNull().references(() => invoices.docId),
   lineId: text("line_id").notNull(),
   productId: text("product_id").notNull(),
   qty: real("qty").notNull(),
@@ -108,7 +108,7 @@ export const orders = sqliteTable("orders", {
 
 export const orderItems = sqliteTable("order_items", {
   orgId: text("org_id").notNull(),
-  orderId: text("order_id").notNull(),
+  orderId: text("order_id").notNull().references(() => orders.docId),
   lineId: text("line_id").notNull(),
   productId: text("product_id").notNull(),
   qty: real("qty").notNull(),

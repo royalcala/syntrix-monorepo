@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { invoke } from "@tauri-apps/api/core";
 import * as schema from "../../../packages/shared-drizzle/src/entities";
+import { invoicesRelations, ordersRelations } from "../../../packages/shared-drizzle/src/relations";
 
 export const db = drizzle<typeof schema>(
   async (sql, params, _method) => {
@@ -15,5 +16,9 @@ export const db = drizzle<typeof schema>(
       return { rows: [] };
     }
   },
-  { schema, logger: false },
+  {
+    schema,
+    relations: { invoices: invoicesRelations, orders: ordersRelations },
+    logger: false,
+  },
 );

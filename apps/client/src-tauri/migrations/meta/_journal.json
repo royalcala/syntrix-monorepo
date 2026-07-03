@@ -15,6 +15,13 @@
       "when": 1783038713565,
       "tag": "0001_sad_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783108108654,
+      "tag": "0002_good_sumo",
+      "breakpoints": true
     }
   ]
 }

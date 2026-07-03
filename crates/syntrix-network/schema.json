@@ -223,6 +223,43 @@
       }
     ]
   },
+  "invoice_items": {
+    "table": "invoice_items",
+    "columns": [
+      {
+        "name": "org_id",
+        "type": "text"
+      },
+      {
+        "name": "invoice_id",
+        "type": "text"
+      },
+      {
+        "name": "line_id",
+        "type": "text"
+      },
+      {
+        "name": "product_id",
+        "type": "text"
+      },
+      {
+        "name": "qty",
+        "type": "real"
+      },
+      {
+        "name": "price",
+        "type": "real"
+      },
+      {
+        "name": "change_time",
+        "type": "integer"
+      },
+      {
+        "name": "node_id",
+        "type": "text"
+      }
+    ]
+  },
   "orders": {
     "table": "orders",
     "columns": [
@@ -291,6 +328,39 @@
             "type": "text"
           }
         ]
+      }
+    ]
+  },
+  "order_items": {
+    "table": "order_items",
+    "columns": [
+      {
+        "name": "org_id",
+        "type": "text"
+      },
+      {
+        "name": "order_id",
+        "type": "text"
+      },
+      {
+        "name": "line_id",
+        "type": "text"
+      },
+      {
+        "name": "product_id",
+        "type": "text"
+      },
+      {
+        "name": "qty",
+        "type": "real"
+      },
+      {
+        "name": "change_time",
+        "type": "integer"
+      },
+      {
+        "name": "node_id",
+        "type": "text"
       }
     ]
   },

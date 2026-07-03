@@ -184,17 +184,18 @@ Not a separate test binary, but a backend + frontend feature verified by inline 
 ### Adding/changing an entity's fields
 1. Edit the entity's columns in `packages/shared-drizzle/src/entities.ts`
    (both apps import from this shared location, so one edit covers both).
-2. Edit the matching column metadata (`type`, `nullable`, `searchable`) in
-   `shared/drizzle/entity-schema-meta.mjs` — this is the single source of truth for the column
-   registry consumed by Rust.
-3. Run `just drizzle-gen` to regenerate SQL migrations (Drizzle Kit) **and**
-   `crates/syntrix-network/schema.json` (via `pnpm export-schema`). Do not hand-edit
-   `schema.json` — it's generated.
-4. Rust reads the registry via `syntrix_core::schema` (re-exported from
+2. If the new/changed column should be searchable (FTS), add it to
+   `shared/drizzle/columns-meta.mjs` under the entity's `searchableColumns` array.
+3. If adding a child table, add the parent-child relationship to
+   `shared/drizzle/columns-meta.mjs` under `childTables`.
+4. Run `just drizzle-gen` to regenerate SQL migrations (Drizzle Kit) **and**
+   `crates/syntrix-network/schema.json` (auto-generated from migration SQL +
+   columns-meta.mjs via `pnpm export-schema`). Do not hand-edit `schema.json`.
+5. Rust reads the registry via `syntrix_core::schema` (re-exported from
    `syntrix-network::schema`, which lives there to avoid a circular crate dependency). Never
    hardcode per-entity column lists in Rust — use `entity_meta`/`business_columns`/
    `child_business_columns`/`searchable_columns`.
-5. Dev DBs are not migrated/backfilled across schema changes — reset with
+6. Dev DBs are not migrated/backfilled across schema changes — reset with
    `just clean-data-admin` / `just clean-data-client` / `just clean-data-all`.
 
 ### CDC-native sync (not JSON-over-gossip)
