@@ -13,6 +13,7 @@ import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
 import { Inbox } from "./screens/Inbox";
 import { EntityGrid } from "./components/EntityGrid";
+import { useTimelineCursor } from "./hooks/useTimelineCursor";
 import { customersEntity } from "./entities/customers";
 import { invoicesEntity } from "./entities/invoices";
 import { productsEntity } from "./entities/products";
@@ -153,6 +154,10 @@ export default function App() {
     // (sync may not complete before the initial render, especially for 2nd+ peers)
     refetchInterval: 15_000,
   });
+
+  // Timeline cursor: poll CDC changes for the active org and invalidate
+  // react-query caches when remote peers make changes
+  useTimelineCursor(activeOrg);
 
   const filteredNavItems = navItems.filter((item) => {
     if (role === "admin") return true; // El admin local siempre ve todo por seguridad

@@ -475,7 +475,6 @@ fn process_gossip_event(
                     "can_write": payload.get("can_write"),
                 });
                 let _ = indexer.upsert_role_cfg(org_id, role_name, &role_cfg);
-                let _ = indexer.append_event(org_id, val);
             }
         }
         return;
@@ -485,7 +484,6 @@ fn process_gossip_event(
         if let Some(payload) = val.get("payload") {
             if let Some(node_id) = payload.get("node_id").and_then(|v| v.as_str()) {
                 let _ = indexer.upsert_member(org_id, node_id, payload);
-                let _ = indexer.append_event(org_id, val);
             }
         }
     }

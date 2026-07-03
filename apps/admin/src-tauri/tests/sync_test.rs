@@ -1,7 +1,7 @@
 mod common;
 use common::{
     spawn_admin, spawn_client, invite_one_client, invite_and_join, invite_and_join_two_clients,
-    find_client_org_id, wait_for_document, count_events, wait_for_audit_entry, set_client_org,
+    find_client_org_id, wait_for_document, wait_for_audit_entry, set_client_org,
     get_client_addr, node_id_from_addr,
 };
 
@@ -89,37 +89,6 @@ async fn test_admin_audit_sees_propagated_events() {
     assert_eq!(entry.entity, "customers");
 }
 
-#[tokio::test]
-async fn test_duplicate_event_prevention() {
-    let (_adir, adir) = syntrix_testkit::temp_node_dir("t4_admin");
-    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t4_client1");
-
-    let mut admin = spawn_admin(adir).await;
-    let mut c1 = spawn_client(c1dir).await;
-
-    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
-        .await
-        .expect("invite and join");
-
-    set_client_org(&mut c1, &org_id);
-    syntrix_client_lib::commit_event_impl(&c1, "customer.created", r#"{"id":"c-dup","name":"Dup"}"#)
-        .expect("commit");
-
-    let count_before = count_events(&c1, &org_id);
-    assert_eq!(count_before, 1, "exactly one event after first commit");
-
-    let idx = c1.indexer();
-    let event = serde_json::json!({
-        "type": "customer.created",
-        "hlc": {"ts": 1, "count": 0, "node": "dup-node"},
-        "schema_version": 1,
-        "payload": {"id": "c-dup", "name": "Dup"},
-    });
-    idx.append_event(&org_id, &event).expect("manual append");
-
-    let count_after = count_events(&c1, &org_id);
-    assert_eq!(count_after, 2, "manual append adds distinct event (HLC dedup is per-document)");
-}
 
 #[tokio::test]
 async fn test_multi_org_isolation() {
@@ -718,7 +687,63 @@ async fn test_update_replicates() {
 }
 
 // ===========================================================================
-// Layer 5 — Late joiner (offline simulation)
+// Layer 5 — Timeline cursor (get_updates_since)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_timeline_cursor_returns_cdc_events() {
+    // Verifies the timeline cursor flow: write → get_updates_since returns event
+    // → cursor advances → subsequent call returns empty → new write returns new event.
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t21_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t21_client1");
+
+    let mut admin = spawn_admin(adir).await;
+    let mut c1 = spawn_client(c1dir).await;
+
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
+        .await.expect("client join");
+    set_client_org(&mut c1, &org_id);
+
+    // Step 1: first write
+    syntrix_client_lib::commit_event_impl(
+        &c1, "customer.created",
+        r#"{"id":"tl-1","name":"Timeline Alpha"}"#,
+    ).expect("first write");
+
+    // Step 2: get_updates_since with cursor=0 returns the event
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await; // wait for CDC loop
+
+    let result1 = syntrix_client_lib::get_updates_since_impl(&c1, &org_id, 0)
+        .expect("get_updates_since(0)");
+    let events1 = result1["events"].as_array().expect("events array");
+    assert!(!events1.is_empty(), "should have at least one event");
+    let max_cursor = result1["max_change_id"].as_i64().expect("cursor");
+    assert!(max_cursor > 0, "cursor should advance");
+
+    // Step 3: call again with the cursor — no events
+    let result2 = syntrix_client_lib::get_updates_since_impl(&c1, &org_id, max_cursor)
+        .expect("get_updates_since(cursor)");
+    let events2 = result2["events"].as_array().expect("events array");
+    assert!(events2.is_empty(), "no events after cursor");
+
+    // Step 4: second write — returns new event from the old cursor
+    syntrix_client_lib::commit_event_impl(
+        &c1, "customer.created",
+        r#"{"id":"tl-2","name":"Timeline Beta"}"#,
+    ).expect("second write");
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let result3 = syntrix_client_lib::get_updates_since_impl(&c1, &org_id, max_cursor)
+        .expect("get_updates_since(old cursor)");
+    let events3 = result3["events"].as_array().expect("events array");
+    assert!(!events3.is_empty(), "second write should be picked up");
+    let new_cursor = result3["max_change_id"].as_i64().expect("new cursor");
+    assert!(new_cursor > max_cursor, "cursor advances again");
+}
+
+// ===========================================================================
+// Layer 6 — Late joiner (offline simulation)
 // ===========================================================================
 
 #[tokio::test]

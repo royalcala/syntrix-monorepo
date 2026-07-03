@@ -194,13 +194,7 @@ pub async fn wait_for_document(
     .map_err(|e| anyhow::anyhow!("wait_for_document({} in {}:{}): {}", doc_id, org_id, entity, e))
 }
 
-pub fn count_events(state: &ClientState, org_id: &str) -> usize {
-    state
-        .indexer()
-        .query_events_since(org_id, 0, 10000)
-        .map(|e| e.len())
-        .unwrap_or(0)
-}
+
 
 pub async fn wait_for_audit_entry(
     state: &AdminState,

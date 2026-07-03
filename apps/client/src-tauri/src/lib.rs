@@ -82,28 +82,6 @@ fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_n
 }
 
 #[tauri::command]
-fn sync_push(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle, org_id: String, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
-    let mut s = state.lock().map_err(|e| e.to_string())?;
-    let res = sync::sync_push(&mut s, &org_id, batch).map_err(|e| e.to_string());
-    if res.is_ok() {
-        let _ = app.emit("entity_changed", ());
-    }
-    res
-}
-
-#[tauri::command]
-fn sync_pull(state: tauri::State<'_, Mutex<AppState>>, org_id: String, cursor: Option<sync::HlcCursor>) -> Result<sync::SyncPullResult, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    Ok(sync::sync_pull(&s, &org_id, cursor))
-}
-
-#[tauri::command]
-fn sync_ping(state: tauri::State<'_, Mutex<AppState>>, org_id: String) -> Result<sync::ConnectionState, String> {
-    let s = state.lock().map_err(|e| e.to_string())?;
-    sync::sync_ping(&s, &org_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(sync::sync_status(&s))
@@ -113,6 +91,12 @@ fn sync_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, Strin
 fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Result<sync::SyncInfo, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     tauri::async_runtime::block_on(sync::get_sync_info_impl(&s, &org)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_updates_since(state: tauri::State<'_, Mutex<AppState>>, org_id: String, since_change_id: i64) -> Result<serde_json::Value, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    get_updates_since_impl(&s, &org_id, since_change_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -156,24 +140,34 @@ pub fn commit_event_impl(state: &AppState, event_type: &str, payload: &str) -> R
     events::commit_event(state, event_type, payload).map_err(|e| e.to_string())
 }
 
-pub fn sync_push_impl(state: &mut AppState, org_id: &str, batch: Vec<sync::SyncEventEncoded>) -> Result<(), String> {
-    sync::sync_push(state, org_id, batch).map_err(|e| e.to_string())
-}
-
-pub fn sync_pull_impl(state: &AppState, org_id: &str, cursor: Option<sync::HlcCursor>) -> sync::SyncPullResult {
-    sync::sync_pull(state, org_id, cursor)
-}
-
-pub fn sync_ping_impl(state: &AppState, org_id: &str) -> Result<sync::ConnectionState, String> {
-    sync::sync_ping(state, org_id).map_err(|e| e.to_string())
-}
-
 pub fn sync_status_impl(state: &AppState) -> String {
     sync::sync_status(state)
 }
 
 pub fn get_sync_info_impl(state: &AppState, org: &str) -> Result<sync::SyncInfo, String> {
     tauri::async_runtime::block_on(sync::get_sync_info_impl(state, org)).map_err(|e| e.to_string())
+}
+
+pub fn get_updates_since_impl(state: &AppState, org_id: &str, since_change_id: i64) -> Result<serde_json::Value, String> {
+    use syntrix_network::cdc::read_cdc_events;
+    let (events, new_cursor) = read_cdc_events(
+        &state.indexer().conn, since_change_id as u64, 500, None,
+    ).map_err(|e| e.to_string())?;
+    let org_events: Vec<serde_json::Value> = events.into_iter()
+        .filter(|e| e.org_id() == Some(org_id))
+        .map(|e| {
+            serde_json::json!({
+                "change_type": e.change_type,
+                "table": e.table,
+                "change_time": e.change_time,
+                "columns": e.columns,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "events": org_events,
+        "max_change_id": new_cursor,
+    }))
 }
 
 pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
@@ -547,9 +541,9 @@ pub fn run() {
         .manage(log_handle)
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, get_endpoint_addr,
-            commit_event, sync_status, sync_push, sync_pull, sync_ping, check_entity_access,
+            commit_event, sync_status, check_entity_access,
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
-            get_schema_registry, audit_query,
+            get_updates_since, get_schema_registry, audit_query,
             query_logs, summarize_logs, start_tail_logs,
             live_subscribe, live_unsubscribe,
         ])

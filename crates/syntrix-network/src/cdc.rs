@@ -819,4 +819,64 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn read_events_since_cursor_timeline() {
+        let (_dir, conn) = test_conn();
+        create_customers_table(&conn);
+        enable_cdc(&conn);
+
+        // Insert rows at different times (simulated by explicit change_time)
+        conn.execute(
+            "INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('org1', 'c1', 'Alice', 1000)",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('org1', 'c2', 'Bob', 2000)",
+        ).unwrap();
+
+        // Read all events since 0
+        let (all, cursor) = read_cdc_events(&conn, 0, 100, None).unwrap();
+        assert_eq!(all.len(), 2, "should get both INSERT events");
+        assert!(cursor > 0, "cursor should advance past both events");
+
+        // Read events since the cursor — should be empty
+        let (after, _) = read_cdc_events(&conn, cursor, 100, None).unwrap();
+        assert!(after.is_empty(), "no events after cursor");
+
+        // Insert a third row, read from the old cursor
+        conn.execute(
+            "INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('org1', 'c3', 'Charlie', 3000)",
+        ).unwrap();
+
+        let (after_c3, new_cursor) = read_cdc_events(&conn, cursor, 100, None).unwrap();
+        assert_eq!(after_c3.len(), 1, "should get only the third INSERT");
+        assert!(after_c3[0].get_str("doc_id") == Some("c3"), "third row is Charlie");
+        assert!(new_cursor > cursor, "cursor advanced again");
+
+        // Verify org_id filtering
+        assert!(after_c3.iter().all(|e| e.org_id() == Some("org1")));
+    }
+
+    #[test]
+    fn read_events_since_respects_limit() {
+        let (_dir, conn) = test_conn();
+        create_customers_table(&conn);
+        enable_cdc(&conn);
+
+        // Insert 5 rows
+        for i in 1..=5 {
+            conn.execute(&format!(
+                "INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('org1', 'c{i}', 'User{i}', {i}000)",
+            )).unwrap();
+        }
+
+        // Read with limit 3
+        let (events, cursor) = read_cdc_events(&conn, 0, 3, None).unwrap();
+        assert_eq!(events.len(), 3, "limited to 3 events");
+        assert!(cursor > 0, "cursor still advances past limit");
+
+        // Continuing from cursor should get remaining events
+        let (remaining, _) = read_cdc_events(&conn, cursor, 100, None).unwrap();
+        assert_eq!(remaining.len(), 2, "remaining 2 events");
+    }
 }

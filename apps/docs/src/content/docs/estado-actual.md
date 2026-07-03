@@ -65,6 +65,9 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Infraestructura Core:** Admin crea organización con namespaces por entidad, agrega dispositivos y comparte tickets selectivos por rol.
 - **Registry de Esquemas:** Definición centralizada de entidades, campos, tipos, índices, relaciones y versiones. Exportable a JSON para frontend.
 - **Motor SQL Schema-Driven:** Generación de tablas SQL con columnas tipadas, índices sortables y FTS desde el Registry.
+- **Entidades compartidas:** Las definiciones de entidades (customers, products, invoices, etc.) viven en `packages/shared-drizzle/` y ambas apps las importan. `drizzle-zod` genera schemas Zod automáticamente.
+- **Legacy sync eliminado:** Se eliminó `sync_push`/`sync_pull`/`sync_ping` (código muerto), `append_event` y la tabla `event_log` del cliente. CDC reemplazó completamente el transporte legacy.
+- **Timeline CDC (Opción C):** El frontend usa `get_updates_since` con cursor almacenado en localStorage para recibir cambios en tiempo real sin polling bruto. Verificado por tests en `cdc.rs`.
 - **FTS Nativo (Limbo):** Indexación automática de columnas `#[searchable]` mediante FTS5, con BM25, fuzzy search y snippets.
 - **Upcasters y Migraciones:** Eventos con `schema_version`, cadena de upcasters deterministas. Ejemplo: CustomerV1ToV2 (address string → struct).
 - **CDC Sync + Live Queries:** Captura de cambios nativa en `turso_cdc`, replicación P2P
@@ -97,7 +100,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 1. **Persistencia de Membresía e Identidades P2P:** Reemplazar `MemStore` y claves efímeras en `identity.rs` por almacenamiento persistente para que la membresía y sync sobreviva a reinicios.
 2. **Sistema de Presencia (Heartbeat):** Implementar protocolo de latido escribiendo un timestamp en `control_doc` cada 30s para identificar clientes offline y online con exactitud real, con vista en el Admin Dashboard de Sync.
 3. **Virtualización del Grid:** Implementar TanStack Virtual en `EntityGrid` para scroll a 60 FPS con miles de filas.
-4. **Push Events de Reactividad:** Reemplazar el `refetchQueries` manual por un listener global (`emit("entity_changed")` desde Rust) para reaccionar a cambios hechos por *otros* peers en tiempo real.
+4. **Migrar Legacy Catchup a CDC:** El handler `CatchupRequestReceived` aún usa `query_events_since` (event_log legacy). Cambiarlo a `snapshot_org_rows`.
 5. **Codegen Zod desde Registry:** Generar tipos TypeScript y esquemas Zod automáticamente desde `get_schema_registry()`.
 
 ### 🛠️ Pendiente (Herramientas de Consola Admin)

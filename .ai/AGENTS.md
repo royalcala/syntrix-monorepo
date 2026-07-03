@@ -10,6 +10,7 @@ Monorepo for the Syntrix Peer-to-Peer (P2P) local-first application suite, featu
 - **Frontend**: React + Vite + Tailwind CSS + Radix/shadcn primitives
 - **Monorepo Manager**: `pnpm` workspaces (apps and shared package)
 - **Shared UI**: `@syntrix/ui` (under `packages/syntrix-ui/`)
+- **Shared Drizzle entities**: `@syntrix/shared-drizzle` (under `packages/shared-drizzle/`)
 
 ---
 
@@ -108,6 +109,15 @@ Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. 
 - Uses `--headless` mode: both apps read JSON commands from stdin and write JSON responses to stdout.
 - Tests: create org → create role → get client address → send invite (with real P2P dial) → check inbox → accept invite → write records → verify bidirectional gossip sync.
 
+### Tier 3b — Timeline CDC (`get_updates_since` + `useTimelineCursor`)
+Not a separate test binary, but a backend + frontend feature tested via inline tests:
+- **Backend**: `get_updates_since(sinceChangeId)` Tauri command reads `turbo_cdc` from a cursor
+  and returns new events + `max_change_id`. Verified by `read_events_since_cursor_timeline`
+  and `read_events_since_respects_limit` in `cdc.rs`.
+- **Frontend**: `useTimelineCursor` hook in `apps/client/src/hooks/useTimelineCursor.ts`
+  polls every 2s, stores cursor in localStorage, and invalidates `react-query` entity caches
+  when new CDC events arrive.
+
 ### Tier 4 — Playwright E2E tests
 - See `apps/admin/src/__tests__/e2e-cross-app/` for the cross-app test.
 - Requires 3 Tauri apps running with `--remote-debugging-port` and WebDriver.
@@ -142,9 +152,20 @@ Entity tables use **typed SQL columns** (not a generic `payload` JSON blob) — 
 `.kilo/plans/1782949593655-relational-cdc-migration.md` for the full migration history and
 rationale.
 
+### Tier 3b — Timeline CDC (`get_updates_since` + `useTimelineCursor`)
+Not a separate test binary, but a backend + frontend feature verified by inline tests:
+- **Backend**: `get_updates_since(sinceChangeId)` Tauri command reads `turbo_cdc` from a cursor
+  and returns new events + `max_change_id`. Verified by `read_events_since_cursor_timeline`
+  and `read_events_since_respects_limit` in `cdc.rs`.
+- **Frontend**: `useTimelineCursor` hook in `apps/client/src/hooks/useTimelineCursor.ts`
+  polls every 2s, stores cursor in localStorage, and invalidates `react-query` entity caches
+  when new CDC events arrive. This replaces `event_log`-based polling and provides near-real-time
+  updates without `LiveManager` or WebSockets.
+- Tests: 17/17 CDC tests pass (including 2 timeline cursor tests).
+
 ### Adding/changing an entity's fields
-1. Edit the entity's columns in `apps/client/drizzle/schema.ts` **and** `apps/admin/drizzle/schema.ts`
-   (both apps replicate the same relational shape).
+1. Edit the entity's columns in `packages/shared-drizzle/src/entities.ts`
+   (both apps import from this shared location, so one edit covers both).
 2. Edit the matching column metadata (`type`, `nullable`, `searchable`) in
    `shared/drizzle/entity-schema-meta.mjs` — this is the single source of truth for the column
    registry consumed by Rust.

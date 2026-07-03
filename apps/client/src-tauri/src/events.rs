@@ -136,7 +136,6 @@ pub fn commit_event(
     });
 
     let indexer = state.indexer();
-    let _ = indexer.append_event(org_id, &value);
 
     let doc_id = payload_val.get("id")
         .and_then(|v| v.as_str())

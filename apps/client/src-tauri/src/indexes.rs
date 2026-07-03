@@ -174,37 +174,6 @@ impl SqlEngine {
             .clone()
     }
 
-    pub fn append_event(&self, org_id: &str, event_json: &serde_json::Value) -> anyhow::Result<String> {
-        let event_type = event_json["type"].as_str().unwrap_or("unknown");
-        let entity = entity_from_event_type(event_type);
-
-        let hlc_val = &event_json["hlc"];
-        let hlc_ts = hlc_val["ts"].as_u64().unwrap_or(0);
-        let hlc_count = hlc_val["count"].as_u64().unwrap_or(0);
-        let hlc_node = hlc_val["node"].as_str().unwrap_or("");
-        let schema_version = event_json["schema_version"].as_u64().unwrap_or(1);
-        let payload = event_json.get("payload").cloned().unwrap_or_default();
-        let payload_str = serde_json::to_string(&payload)?;
-
-        let key = format!("evt:{}:{:020}:{:08}:{}", org_id, hlc_ts, hlc_count, hlc_node);
-
-        let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO event_log (key, org_id, event_type, hlc_ts, hlc_count, hlc_node, schema_version, entity, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )?;
-        stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(key.clone()))?;
-        stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
-        stmt.bind_at(NonZero::new(3).unwrap(), turso_core::Value::from_text(event_type.to_string()))?;
-        stmt.bind_at(NonZero::new(4).unwrap(), turso_core::Value::from_i64(hlc_ts as i64))?;
-        stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_i64(hlc_count as i64))?;
-        stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(hlc_node.to_string()))?;
-        stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_i64(schema_version as i64))?;
-        stmt.bind_at(NonZero::new(8).unwrap(), turso_core::Value::from_text(entity.to_string()))?;
-        stmt.bind_at(NonZero::new(9).unwrap(), turso_core::Value::from_text(payload_str.clone()))?;
-        run_to_completion(&mut stmt, "append_event")?;
-
-        Ok(key)
-    }
-
     pub fn query_events_since(
         &self,
         org_id: &str,
@@ -256,7 +225,6 @@ impl SqlEngine {
                 }
             }
         }
-
         Ok(results)
     }
 
