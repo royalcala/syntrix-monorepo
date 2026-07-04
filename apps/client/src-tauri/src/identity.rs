@@ -320,6 +320,14 @@ impl AppState {
     pub fn get_org(&self, org_id: &str) -> Option<OrgState> {
         self.orgs.read().unwrap().get(org_id).cloned()
     }
+
+    pub fn set_org_role(&self, org_id: &str, role: &str) {
+        if let Ok(mut orgs_lock) = self.orgs.write() {
+            if let Some(org_state) = orgs_lock.get_mut(org_id) {
+                org_state.role = role.to_string();
+            }
+        }
+    }
 }
 
 async fn process_event_loop(

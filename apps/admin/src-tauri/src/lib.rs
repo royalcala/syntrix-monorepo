@@ -413,6 +413,16 @@ fn run_headless() {
                     let devs = admin::list_devices(&mut state, org).await?;
                     Ok(serde_json::to_value(devs)?)
                 }
+                "update_device" => {
+                    let org = req["org"].as_str().unwrap_or("");
+                    let node_id = req["node_id"].as_str().unwrap_or("");
+                    let active = req["active"].as_bool().unwrap_or(true);
+                    let role = req["role"].as_str().map(String::from);
+                    let name = req["name"].as_str().map(String::from);
+                    let person = req["person"].as_str().map(String::from);
+                    admin::update_device(&mut state, org, node_id, active, role, name, person).await?;
+                    Ok(serde_json::json!({"updated": true}))
+                }
                 "ping" => Ok(serde_json::json!("pong")),
                 _ => Err(anyhow::anyhow!("unknown command: {}", cmd)),
             }

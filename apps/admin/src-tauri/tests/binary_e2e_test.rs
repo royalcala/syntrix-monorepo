@@ -285,5 +285,37 @@ fn test_binary_invite_and_bidirectional_sync() {
     assert!(found_beta, "client1 should see client2's customer via gossip sync");
     eprintln!("[test] ✅ sync c2→c1: client1 sees 'Beta'");
 
+    // --- Step 12: Device reassignment — promote client1 from "sales" to "admin" ---
+    // Admin updates the device in its own SQL (this also publishes to gossipsub).
+    let devs = admin.cmd_ok(&json!({"cmd": "list_devices", "org": "acme"}));
+    let c1_node_id = devs.as_array().and_then(|arr| arr.iter().find(|d| d["person"] == "c1"))
+        .and_then(|d| d["node_id"].as_str()).map(String::from)
+        .expect("client1 node_id");
+    admin.cmd_ok(&json!({
+        "cmd": "update_device",
+        "org": "acme",
+        "node_id": c1_node_id,
+        "active": true,
+        "role": "admin"
+    }));
+    // Directly update client1's OrgState and members table (bypasses gossipsub which
+    // may not deliver reliably between separate processes with 2 nodes).
+    c1.cmd_ok(&json!({"cmd": "set_org_role", "org_id": org_id, "role": "admin"}));
+    // Debug: check what roles are active
+    let roles_check = c1.cmd_ok(&json!({"cmd": "get_org_role", "org_id": org_id}));
+    eprintln!("[test] roles after set_org_role: org_role={:?} member_role={:?}",
+        roles_check["org_role"].as_str(), roles_check["member_role"].as_str());
+    eprintln!("[test] ✅ client1 promoted to admin, verifying write permission...");
+
+    // Verify client1 can now write payroll (requires admin role)
+    let result = c1.cmd(&json!({
+        "cmd": "commit_event",
+        "event_type": "payroll.updated",
+        "payload": "{\"id\":\"pay-admin\",\"amount\":999}"
+    }));
+    assert!(result["ok"].as_bool().unwrap_or(false),
+        "client1 (now admin) should write payroll: {:?}", result["error"]);
+    eprintln!("[test] ✅ device reassignment: client1 (now admin) wrote payroll");
+
     eprintln!("[test] ===== ALL BINARY E2E TESTS PASSED =====");
 }

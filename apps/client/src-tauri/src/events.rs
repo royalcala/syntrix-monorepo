@@ -106,7 +106,13 @@ pub fn commit_event(
     let node_id_hex = hex::encode(state.node_id());
 
     let entity = entity_from_event_type(event_type);
-    let role = &org.role;
+
+    // Prefer role from members table (updated via device.updated gossip)
+    // over OrgState (set once during join). This allows admin to reassign
+    // a device's role dynamically via P2P.
+    let role = state.indexer()
+        .get_member_role(org_id, &node_id_hex)
+        .unwrap_or(org.role);
 
     let can_write_flag = role == "admin" || {
         let indexer = state.indexer();

@@ -267,6 +267,12 @@ impl SqlEngine {
         Ok(results)
     }
 
+    pub fn get_member_role(&self, org_id: &str, node_id: &str) -> Option<String> {
+        let members = self.get_members(org_id).unwrap_or_default();
+        members.iter().find(|m| m.get("node_id").and_then(|v| v.as_str()) == Some(node_id))
+            .and_then(|m| m.get("role").and_then(|v| v.as_str()).map(String::from))
+    }
+
     pub fn delete_member(&self, org_id: &str, node_id: &str) -> anyhow::Result<()> {
         let mut stmt = self.conn.prepare("DELETE FROM members WHERE org_id=?1 AND node_id=?2")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;

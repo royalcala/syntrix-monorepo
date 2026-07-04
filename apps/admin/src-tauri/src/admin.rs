@@ -65,7 +65,15 @@ pub async fn add_device(
 pub async fn update_device(
     state: &mut AppState, org: &str, node_id: &str, active: bool, role: Option<String>, name: Option<String>, person: Option<String>,
 ) -> anyhow::Result<()> {
-    state.update_device(org, node_id, active, role.clone(), name, person);
+    // Resolve effective role: if not provided, read current from SQL
+    let effective_role = if role.is_some() {
+        role.clone()
+    } else {
+        state.list_org_devices(org).into_iter()
+            .find(|d| d.node_id == node_id)
+            .map(|d| d.role)
+    };
+    state.update_device(org, node_id, active, role, name, person);
 
     let event = serde_json::json!({
         "type": "device.updated",
@@ -74,12 +82,14 @@ pub async fn update_device(
             "org": org,
             "node_id": node_id,
             "active": active,
-            "role": role.unwrap_or_default(),
+            "role": effective_role.unwrap_or_default(),
         },
     });
     let topic = format!("syntrix-org-{}", org);
     if let Ok(bytes) = serde_json::to_vec(&event) {
-        let _ = state.p2p().publish(&topic, bytes);
+        if let Err(e) = state.p2p().publish(&topic, bytes) {
+            tracing::warn!(target: "syntrix_admin_lib::admin", org = %org, error = %e, "update_device: publish failed");
+        }
     }
 
     Ok(())

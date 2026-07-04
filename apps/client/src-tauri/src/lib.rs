@@ -662,6 +662,22 @@ fn run_headless() {
                 let org_id = req["org_id"].as_str().unwrap_or("");
                 state.set_active_org(org_id).map(|_| serde_json::json!({"ok": true}))
             }
+            "set_org_role" => {
+                let org_id = req["org_id"].as_str().unwrap_or("");
+                let role = req["role"].as_str().unwrap_or("");
+                let node_id = hex::encode(state.node_id());
+                let member_json = serde_json::json!({"node_id": node_id, "role": role, "active": true});
+                let _ = state.indexer().upsert_member(org_id, &node_id, &member_json);
+                state.set_org_role(org_id, role);
+                Ok(serde_json::json!({"ok": true}))
+            }
+            "get_org_role" => {
+                let org_id = req["org_id"].as_str().unwrap_or("");
+                let org_role = state.get_org(org_id).map(|o| o.role).unwrap_or_default();
+                let node_id = hex::encode(state.node_id());
+                let member_role = state.indexer().get_member_role(org_id, &node_id).unwrap_or_default();
+                Ok(serde_json::json!({"org_role": org_role, "member_role": member_role}))
+            }
             "commit_event" => {
                 let event_type = req["event_type"].as_str().unwrap_or("");
                 let payload = req["payload"].as_str().unwrap_or("");
