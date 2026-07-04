@@ -155,9 +155,8 @@ pub fn get_sync_info_impl(state: &AppState, org: &str) -> Result<sync::SyncInfo,
 }
 
 pub fn get_updates_since_impl(state: &AppState, org_id: &str, since_change_id: i64) -> Result<serde_json::Value, String> {
-    use syntrix_network::cdc::read_cdc_events;
-    let (events, new_cursor) = read_cdc_events(
-        &state.indexer().conn, since_change_id as u64, 500, None,
+    let (events, new_cursor) = state.indexer().read_cdc_events(
+        since_change_id as u64, 500, None,
     ).map_err(|e| e.to_string())?;
     let org_events: Vec<serde_json::Value> = events.into_iter()
         .filter(|e| e.org_id() == Some(org_id))
@@ -177,44 +176,7 @@ pub fn get_updates_since_impl(state: &AppState, org_id: &str, since_change_id: i
 }
 
 pub fn drizzle_execute_impl(state: &AppState, sql: &str, params: &[String]) -> Result<serde_json::Value, String> {
-    use std::num::NonZero;
-    use turso_core::StepResult;
-
-    let conn = state.conn();
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-
-    for (i, p) in params.iter().enumerate() {
-        stmt.bind_at(NonZero::new(i + 1).unwrap(), turso_core::Value::from_text(p.clone()))
-            .map_err(|e| e.to_string())?;
-    }
-
-    let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
-    loop {
-        match stmt.step().map_err(|e| e.to_string())? {
-            StepResult::Row => {
-                if let Some(row) = stmt.row() {
-                    let mut cols: Vec<serde_json::Value> = Vec::new();
-                    for idx in 0..32 {
-                        let s: String = match row.get(idx) {
-                            Ok(v) => v,
-                            Err(_) => break,
-                        };
-                        cols.push(serde_json::Value::String(s));
-                    }
-                    rows.push(cols);
-                }
-            }
-            StepResult::Done => break,
-            StepResult::IO | StepResult::Yield => {
-                stmt._io().step().map_err(|e| e.to_string())?;
-            }
-            StepResult::Interrupt | StepResult::Busy => {
-                return Err("drizzle_execute: database busy".into());
-            }
-        }
-    }
-
-    Ok(serde_json::json!({ "rows": rows }))
+    state.indexer().drizzle_execute(sql, params)
 }
 
 pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
@@ -406,8 +368,7 @@ pub fn search_entity_impl(
     if resolved_org_id.is_empty() { return Ok(vec![]); }
 
     let limit_val = limit.unwrap_or(20);
-    let engine = search::SearchEngine::new(state.conn());
-    engine.search(&resolved_org_id, query, entities, limit_val).map_err(|e| e.to_string())
+    state.indexer().search(&resolved_org_id, query, entities, limit_val).map_err(|e| e.to_string())
 }
 
 // ===== Thin Tauri command wrappers =====

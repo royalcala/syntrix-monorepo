@@ -1,8 +1,9 @@
 use std::num::NonZero;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use syntrix_core::schema::{ColumnMeta, ColumnType, ChildTableMeta, EntityMeta};
+use syntrix_network::cdc::CdcEvent;
 
 pub use syntrix_core::entity_table_name;
 
@@ -71,6 +72,12 @@ pub struct EventEntry {
 
 pub struct SqlEngine {
     pub conn: Arc<turso_core::Connection>,
+    /// Serializes ALL database operations on `conn`. turso_core's WAL only
+    /// supports ONE read transaction at a time per connection — without this
+    /// lock, the background CDC publish loop, gossip event processing, and
+    /// Tauri command handlers race on the same connection and cause a panic
+    /// in wal.rs ("cannot start a new read tx without ending an existing one").
+    pub db_lock: Arc<Mutex<()>>,
     /// Per-org mutexes for serializing CDC event application. Gossipsub
     /// can deliver the same CDC batch twice (direct + admin-forwarded).
     /// Without serialization, concurrent processing of duplicate batches
@@ -157,11 +164,19 @@ impl SqlEngine {
     pub fn new(data_dir: PathBuf) -> anyhow::Result<Self> {
         let conn = crate::storage::open_limbo(&data_dir)?;
         crate::storage::run_migrations(&conn)?;
-        Ok(Self { conn, apply_locks: std::sync::Mutex::new(std::collections::HashMap::new()) })
+        Ok(Self {
+            conn,
+            db_lock: Arc::new(Mutex::new(())),
+            apply_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
     }
 
     pub fn with_connection(conn: Arc<turso_core::Connection>) -> Self {
-        Self { conn, apply_locks: std::sync::Mutex::new(std::collections::HashMap::new()) }
+        Self {
+            conn,
+            db_lock: Arc::new(Mutex::new(())),
+            apply_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 
     /// Returns a per-org mutex for serializing CDC event application.
@@ -180,6 +195,7 @@ impl SqlEngine {
         cursor_ts: u64,
         limit: usize,
     ) -> anyhow::Result<Vec<EventEntry>> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare(
             "SELECT key, event_type, hlc_ts, hlc_count, hlc_node, schema_version, entity, payload FROM event_log WHERE org_id=?1 AND hlc_ts>?2 ORDER BY hlc_ts, hlc_count LIMIT ?3",
         )?;
@@ -229,6 +245,7 @@ impl SqlEngine {
     }
 
     pub fn upsert_member(&self, org_id: &str, node_id: &str, member_json: &serde_json::Value) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let data = serde_json::to_string(member_json)?;
         let mut stmt = self.conn.prepare(
             "INSERT OR REPLACE INTO members (org_id, node_id, data) VALUES (?1, ?2, ?3)",
@@ -240,6 +257,7 @@ impl SqlEngine {
     }
 
     pub fn get_members(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare("SELECT data FROM members WHERE org_id=?1")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
 
@@ -274,6 +292,7 @@ impl SqlEngine {
     }
 
     pub fn delete_member(&self, org_id: &str, node_id: &str) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare("DELETE FROM members WHERE org_id=?1 AND node_id=?2")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()))?;
@@ -281,6 +300,7 @@ impl SqlEngine {
     }
 
     pub fn upsert_role_cfg(&self, org_id: &str, role_name: &str, role_json: &serde_json::Value) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let data = serde_json::to_string(role_json)?;
         let mut stmt = self.conn.prepare(
             "INSERT OR REPLACE INTO roles (org_id, role_name, data) VALUES (?1, ?2, ?3)",
@@ -292,6 +312,7 @@ impl SqlEngine {
     }
 
     pub fn get_roles(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare("SELECT data FROM roles WHERE org_id=?1")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
 
@@ -320,6 +341,7 @@ impl SqlEngine {
     }
 
     pub fn delete_role(&self, org_id: &str, role_name: &str) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare("DELETE FROM roles WHERE org_id=?1 AND role_name=?2")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
         stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(role_name.to_string()))?;
@@ -355,6 +377,7 @@ impl SqlEngine {
     }
 
     pub fn upsert_heartbeat(&self, org_id: &str, node_id: &str, hb_json: &serde_json::Value) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let ts = hb_json["ts"].as_i64().unwrap_or(0);
         let data = serde_json::to_string(hb_json)?;
         let mut stmt = self.conn.prepare(
@@ -368,6 +391,7 @@ impl SqlEngine {
     }
 
     pub fn get_heartbeats(&self, org_id: &str) -> anyhow::Result<std::collections::HashMap<String, i64>> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare("SELECT node_id, ts FROM heartbeats WHERE org_id=?1")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
 
@@ -406,6 +430,7 @@ impl SqlEngine {
         change_time: i64,
         node_id: &str,
     ) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let meta = syntrix_core::entity_meta(entity)?;
         let business_cols = syntrix_core::business_columns(meta);
 
@@ -515,6 +540,7 @@ impl SqlEngine {
         entity: &str,
         options: &QueryOptions,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _lock = self.db_lock.lock().unwrap();
         let meta = syntrix_core::entity_meta(entity)?;
         let business_cols = syntrix_core::business_columns(meta);
 
@@ -588,6 +614,7 @@ impl SqlEngine {
         entity: &str,
         doc_id: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
+        let _lock = self.db_lock.lock().unwrap();
         let meta = syntrix_core::entity_meta(entity)?;
         let business_cols = syntrix_core::business_columns(meta);
 
@@ -679,6 +706,7 @@ impl SqlEngine {
     }
 
     pub fn delete_document(&self, org_id: &str, entity: &str, doc_id: &str) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let meta = syntrix_core::entity_meta(entity)?;
 
         for child in &meta.children {
@@ -700,6 +728,7 @@ impl SqlEngine {
 
     /// Last `turso_cdc.change_id` successfully published for this org (Fase 3, tarea 17).
     pub fn get_cdc_cursor(&self, org_id: &str) -> anyhow::Result<u64> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare("SELECT last_change_id FROM cdc_cursor WHERE org_id=?1")?;
         bind_value(&mut stmt, 1, turso_core::Value::from_text(org_id.to_string()))?;
         let mut cursor = 0u64;
@@ -724,6 +753,7 @@ impl SqlEngine {
     }
 
     pub fn set_cdc_cursor(&self, org_id: &str, change_id: u64) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
         let mut stmt = self.conn.prepare(
             "INSERT INTO cdc_cursor (org_id, last_change_id, updated_at) VALUES (?1, ?2, ?3) \
              ON CONFLICT(org_id) DO UPDATE SET last_change_id=excluded.last_change_id, updated_at=excluded.updated_at",
@@ -732,6 +762,132 @@ impl SqlEngine {
         bind_value(&mut stmt, 2, turso_core::Value::from_i64(change_id as i64))?;
         bind_value(&mut stmt, 3, turso_core::Value::from_i64(current_millis()))?;
         run_to_completion(&mut stmt, "set_cdc_cursor")
+    }
+
+    // ===== Lock-wrapped database operations for external callers =====
+
+    /// Read CDC events from `turso_cdc`, acquiring `db_lock` for the duration.
+    pub fn read_cdc_events(
+        &self,
+        since_change_id: u64,
+        limit: usize,
+        table_filter: Option<&str>,
+    ) -> anyhow::Result<(Vec<syntrix_network::cdc::CdcEvent>, u64)> {
+        let _lock = self.db_lock.lock().unwrap();
+        syntrix_network::cdc::read_cdc_events(&self.conn, since_change_id, limit, table_filter)
+    }
+
+    /// Apply CDC events to the local database, acquiring `db_lock` for the duration.
+    pub fn apply_cdc_events(
+        &self,
+        events: &[syntrix_network::cdc::CdcEvent],
+        perm: &dyn syntrix_network::cdc::AuthorPermissionCheck,
+    ) -> anyhow::Result<()> {
+        let _lock = self.db_lock.lock().unwrap();
+        syntrix_network::cdc::apply_cdc_events(&self.conn, events, perm)
+    }
+
+    /// Execute arbitrary SQL with params, acquiring `db_lock` for the duration.
+    /// Returns rows as JSON value. Used by `drizzle_execute_impl`.
+    pub fn drizzle_execute(&self, sql: &str, params: &[String]) -> Result<serde_json::Value, String> {
+        use turso_core::StepResult;
+        let _lock = self.db_lock.lock().unwrap();
+        let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
+
+        for (i, p) in params.iter().enumerate() {
+            stmt.bind_at(NonZero::new(i + 1).unwrap(), turso_core::Value::from_text(p.clone()))
+                .map_err(|e| e.to_string())?;
+        }
+
+        let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+        loop {
+            match stmt.step().map_err(|e| e.to_string())? {
+                StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let mut cols: Vec<serde_json::Value> = Vec::new();
+                        for idx in 0..32 {
+                            let s: String = match row.get(idx) {
+                                Ok(v) => v,
+                                Err(_) => break,
+                            };
+                            cols.push(serde_json::Value::String(s));
+                        }
+                        rows.push(cols);
+                    }
+                }
+                StepResult::Done => break,
+                StepResult::IO | StepResult::Yield => {
+                    stmt._io().step().map_err(|e| e.to_string())?;
+                }
+                StepResult::Interrupt | StepResult::Busy => {
+                    return Err("drizzle_execute: database busy".into());
+                }
+            }
+        }
+
+        Ok(serde_json::json!({ "rows": rows }))
+    }
+
+    /// Execute live query SQL on the connection, acquiring `db_lock` for the duration.
+    /// Returns rows as JSON objects. Used by live query notification.
+    pub fn execute_sql_query(&self, sql: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _lock = self.db_lock.lock().unwrap();
+        let mut stmt = self.conn.prepare(sql)?;
+        use turso_core::StepResult;
+
+        let num_cols = stmt.num_columns();
+        let col_names: Vec<String> = (0..num_cols).map(|i| stmt.get_column_name(i).to_string()).collect();
+
+        let mut rows = Vec::new();
+        loop {
+            match stmt.step()? {
+                StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let mut obj = serde_json::Map::new();
+                        for i in 0..num_cols {
+                            let col_name = col_names.get(i).cloned().unwrap_or_else(|| format!("col_{}", i));
+                            if let Ok(val) = row.get::<String>(i) {
+                                obj.insert(col_name, serde_json::Value::String(val));
+                            } else if let Ok(val) = row.get::<i64>(i) {
+                                obj.insert(col_name, serde_json::json!(val));
+                            } else if let Ok(val) = row.get::<f64>(i) {
+                                obj.insert(col_name, serde_json::json!(val));
+                            } else {
+                                obj.insert(col_name, serde_json::Value::Null);
+                            }
+                        }
+                        rows.push(serde_json::Value::Object(obj));
+                    }
+                }
+                StepResult::Done => break,
+                StepResult::IO | StepResult::Yield => {
+                    stmt._io().step()?;
+                }
+                StepResult::Interrupt | StepResult::Busy => {
+                    anyhow::bail!("sql query interrupted or busy");
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    /// Snapshot all rows for an org as CDC events, acquiring `db_lock` for the duration.
+    pub fn snapshot_org_rows(&self, org_id: &str) -> anyhow::Result<Vec<syntrix_network::cdc::CdcEvent>> {
+        let _lock = self.db_lock.lock().unwrap();
+        syntrix_network::cdc::snapshot_org_rows(&self.conn, org_id)
+    }
+
+    /// Search across entities using full-text search, acquiring `db_lock` for the duration.
+    pub fn search(
+        &self,
+        org_id: &str,
+        query: &str,
+        entities: Option<Vec<String>>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<crate::search::SearchResult>> {
+        let _lock = self.db_lock.lock().unwrap();
+        let engine = crate::search::SearchEngine::new(self.conn.clone());
+        engine.search(org_id, query, entities, limit)
     }
 }
 

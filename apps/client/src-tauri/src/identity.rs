@@ -392,7 +392,7 @@ async fn process_event_loop(
                     }
                     Event::CatchupRequestReceived { peer: _, org_id, since_hlc: _, response_id } => {
                         let mut events: Vec<serde_json::Value> = Vec::new();
-                        match syntrix_network::cdc::snapshot_org_rows(&indexer.conn, &org_id) {
+                        match indexer.snapshot_org_rows(&org_id) {
                             Ok(snapshot) if !snapshot.is_empty() => {
                                 events.push(serde_json::json!({ "kind": "cdc_batch", "events": snapshot }));
                             }
@@ -441,7 +441,7 @@ fn apply_cdc_batch(
 
     let perm = |node_id_hex: &str, entity: &str| indexer.can_node_write(org_id, node_id_hex, entity);
 
-    if let Err(e) = syntrix_network::cdc::apply_cdc_events(&indexer.conn, &events, &perm) {
+    if let Err(e) = indexer.apply_cdc_events(&events, &perm) {
         tracing::warn!(target: "syntrix", org = %org_id, error = %e, "apply_cdc_batch: failed to apply events");
     }
 }

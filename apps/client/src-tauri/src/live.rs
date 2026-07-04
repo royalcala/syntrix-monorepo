@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::Emitter;
 
@@ -46,9 +46,11 @@ impl LiveManager {
 
     pub fn notify_table_changed(
         &self,
+        db_lock: &Mutex<()>,
         conn: &Arc<turso_core::Connection>,
         changed_tables: &[String],
     ) {
+        let _lock = db_lock.lock().unwrap();
         let subs = match self.subscriptions.read() {
             Ok(s) => s.clone(),
             Err(_) => return,

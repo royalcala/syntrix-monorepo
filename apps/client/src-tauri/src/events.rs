@@ -161,7 +161,7 @@ pub fn commit_event(
     let change_time_millis = (hlc.ts / 1000) as i64;
     let _ = indexer.upsert_document_full(org_id, entity, &doc_id, &upcasted, change_time_millis, &node_id_hex);
 
-    state.live_manager().notify_table_changed(&state.conn(), &[entity.to_string()]);
+    state.live_manager().notify_table_changed(state.indexer().db_lock(), &state.conn(), &[entity.to_string()]);
 
     // NOTE (Fase 3, Decisión 4): entity data no longer propagates via an immediate gossip
     // publish of this JSON event. The typed row just written above (via

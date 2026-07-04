@@ -40,7 +40,7 @@ pub fn apply_catchup_event(org_id: &str, event: &serde_json::Value, indexer: &Sq
             None => return,
         };
         let perm = |node_id_hex: &str, entity: &str| indexer.can_node_write(org_id, node_id_hex, entity);
-        if let Err(e) = syntrix_network::cdc::apply_cdc_events(&indexer.conn, &events, &perm) {
+        if let Err(e) = indexer.apply_cdc_events(&events, &perm) {
             tracing::warn!(target: "syntrix", org = %org_id, error = %e, "catchup: failed to apply cdc_batch snapshot");
         }
         return;

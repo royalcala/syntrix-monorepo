@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use syntrix_network::cdc::read_cdc_events;
 use syntrix_network::P2PNode;
 
 use crate::indexes::SqlEngine;
@@ -64,7 +63,7 @@ fn publish_org_cdc_batch(
     local_node_id: &str,
 ) -> anyhow::Result<()> {
     let cursor = indexer.get_cdc_cursor(org_id)?;
-    let (events, new_cursor) = read_cdc_events(&indexer.conn, cursor, CDC_READ_LIMIT, None)?;
+    let (events, new_cursor) = indexer.read_cdc_events(cursor, CDC_READ_LIMIT, None)?;
 
     // Only publish events authored by this node — events received and applied
     // from peers also generate local CDC entries (via apply_cdc_events →
