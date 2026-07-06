@@ -358,11 +358,34 @@ interface ModuleDefinition {
 
 ### Fase A
 
-1. **Crear `crates/syntrix-ai/`** — `lib.rs`, `tools.rs`, `router.rs`, `bench.rs`. Tool schemas, `check_read_access` enforcement.
+1. ✅ **Crear `crates/syntrix-ai/`** — `lib.rs`, `tools.rs`, `router.rs`, `bench.rs`. Tool schemas, `check_read_access` enforcement.
+   - `Cargo.toml` con deps: `syntrix-core`, `serde`, `serde_json`, `anyhow`, `tokio`, `tracing`, `uuid`
+   - `lib.rs`: `ai_chat_impl` (agent loop scaffold con tool schemas), `ai_status_impl`, `AiContext` trait
+   - `tools.rs`: 5 tools (`get_schema`, `query_entity_tool`, `search_entity_tool`, `save_view_tool`, `list_views_tool`) con validación SELECT-only + `check_read_access`
+   - `router.rs`: `TaskType` classifier (8 tipos), `ModelRouter` trait, `DefaultRouter` con selección por tarea
+   - `bench.rs`: 10 `BenchmarkTask` implementaciones, `run_benchmark_suite`, `compute_summary`
+   - Tests: 15 unit tests (tools, router, bench, lib)
+   - `crates/syntrix-ai/src/` — 4 archivos, 0 dependencias Tauri (headless-testable)
+   - Build: `just test-rust` para compilar remotamente en server-1 (timeout por Nix cache)
+   - ModelRouter actualizado con modelos reales del usuario: granite3.2:2b, granite4.1:3b, qwen2.5-coder:3b, deepseek-r1:1.5b
 
-2. **Agregar Rig + Ollama provider** — `Cargo.toml`: `rig-core`. `OpenAICompatibleProvider` para Ollama (`localhost:11434`). Groq/DeepSeek como cloud fallback.
+2. ✅ **Agregar Rig + Ollama provider** — `Cargo.toml`: `rig-core`. `OpenAICompatibleProvider` para Ollama (`localhost:11434`). Groq/DeepSeek como cloud fallback.
+   - `crates/syntrix-ai/src/provider.rs`: `ModelProvider` trait + `ToolDefinition`, `ChatMessage`, `ToolCall`, `ProviderResponse`, `ProviderChunk`, `MockProvider` para tests
+   - `apps/client/src-tauri/src/ai_provider.rs`: `OllamaProvider` implementa `ModelProvider` vía HTTP a Ollama API (OpenAI-compatible format en `localhost:11434/v1`). Soporta `chat`, `chat_stream`, `health`.
+   - `apps/client/src-tauri/Cargo.toml`: +`syntrix-ai`, +`rig-core`, +`reqwest`
+   - `OllamaProvider` usa `reqwest::blocking::Client` con timeout 120s
+   - Test unitario: `test_mock_provider_returns_response`, `test_mock_provider_with_tool_calls`, `test_mock_provider_health`
 
-3. **Implementar `ai_chat_impl`** — Agent loop: user msg → LLM → tool calls → execute locally → LLM → final answer. Streaming via Tauri event `ai_chat_event`. Mutex lock discipline: lock→extract→drop→LLM→lock→execute→drop.
+3. ✅ **Implementar `ai_chat_impl`** — Agent loop real con tool-calling.
+   - `ai_chat_impl(ctx, provider, router, req)`:
+     1. Clasifica task type → selecciona modelo via router
+     2. Build system prompt con schema actual de la DB
+     3. Envía mensajes + 5 tool definitions al provider
+     4. Si LLM responde con tool calls → ejecuta via `execute_tool()` → añade resultados → repite (max 10 rounds)
+     5. Retorna `AiChatResponse` con reply + tool_call_records
+   - `execute_tool()` despacha a: `get_schema`, `query_entity`, `search_entity`, `save_view`, `list_views` con `check_read_access` y validación SELECT-only
+   - `AiContext` implementado para `AppState` (usa `execute_sql_query` para queries reales contra Limbo)
+   - Views almacenadas temporalmente en `OnceLock<Mutex<Vec>>` (hasta Tasks 7-8)
 
 4. **Implementar `ModelRouter`** — Clasifica task type → selecciona modelo. Fallback cascade: local model → larger local model → cloud.
 
@@ -461,3 +484,38 @@ interface ModuleDefinition {
 - Facturación electrónica SAT (CFDI) — módulo específico, no infraestructura
 - Hardware físico específico (modelos, proveedores, precios) — solo specs mínimas documentadas
 - Multi-idioma (i18n) — el sistema actual es monolingüe español
+
+---
+
+## 11. Progreso
+
+| # | Tarea | Estado | Fecha |
+|---|-------|--------|-------|
+| 1 | `crates/syntrix-ai/` — lib, tools, router, bench | ✅ Completo | 2026-07-06 |
+| 2 | Rig + Ollama provider (`OllamaProvider`, `ModelProvider` trait) | ✅ Completo | 2026-07-06 |
+| | Modelos: granite3.2:2b, granite4.1:3b, qwen2.5-coder:3b, deepseek-r1:1.5b | ✅ Descargados por usuario | 2026-07-06 |
+| 3 | `ai_chat_impl` agent loop real (tool-calling, execute_tool, AiContext for AppState) | ✅ Completo | 2026-07-06 |
+| 4 | ModelRouter real (Ollama) | ✅ (en `router.rs` con modelos del usuario) | 2026-07-06 |
+| 5 | Tauri commands thin wrappers (`ai_chat`, `ai_status`) + headless mode | ✅ Completo | 2026-07-06 |
+| 4 | ModelRouter real (Ollama) | 🔲 Pendiente | — |
+| 5 | Tauri commands thin wrappers | 🔲 Pendiente | — |
+| 6 | Benchmark suite contra modelos reales | 🔲 Pendiente | — |
+| 7 | Entidad `view_definitions` | 🔲 Pendiente | — |
+| 8 | Entidad `ia_queries` | 🔲 Pendiente | — |
+| 9 | Extender Admin `/devices` | 🔲 Pendiente | — |
+| 10 | Extender Admin `/sync` | 🔲 Pendiente | — |
+| 11 | Admin `/views` pantalla | 🔲 Pendiente | — |
+| 12 | Admin `/modules` placeholder | 🔲 Pendiente | — |
+| 13 | Catálogo componentes `@syntrix/ui` | 🔲 Pendiente | — |
+| 14 | Shell Universal client app | 🔲 Pendiente | — |
+| 15 | Voice input | 🔲 Pendiente | — |
+| 16 | Cola CDC fallback | 🔲 Pendiente | — |
+| 17 | Migración entidades actuales | 🔲 Pendiente | — |
+
+### Docs actualizados tras cada tarea
+
+| Documento | Propósito |
+|-----------|-----------|
+| `.kilo/plans/1783125232147-syntrix-p2p-ia-platform.md` | Plan maestro + progreso (este archivo) |
+| `.ai/AGENTS.md` | Contexto para agentes de IA: nuevo crate, dependencias, patrones |
+| `apps/docs/src/content/docs/` | Documentación de Astro Starlight (visión, estado-actual) |
