@@ -497,6 +497,8 @@ interface ModuleDefinition {
 | 3 | `ai_chat_impl` agent loop real (tool-calling, execute_tool, AiContext for AppState) | ✅ Completo | 2026-07-06 |
 | 4 | ModelRouter real (Ollama) | ✅ (en `router.rs` con modelos del usuario) | 2026-07-06 |
 | 5 | Tauri commands thin wrappers (`ai_chat`, `ai_status`) + headless mode | ✅ Completo | 2026-07-06 |
+| — | Fix bug: `events.rs` `db_lock()` → `db_lock` (campo vs método) | ✅ Fix preexistente | 2026-07-06 |
+| — | Nix cache poblado en server-2 (compilación 4.5s) | ✅ server-2 ready, server-1 caído | 2026-07-06 |
 | 4 | ModelRouter real (Ollama) | 🔲 Pendiente | — |
 | 5 | Tauri commands thin wrappers | 🔲 Pendiente | — |
 | 6 | Benchmark suite contra modelos reales | 🔲 Pendiente | — |
