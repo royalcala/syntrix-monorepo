@@ -7,6 +7,7 @@ members = [
     "crates/syntrix-network",
     "crates/syntrix-testkit",
     "crates/syntrix-logging",
+    "crates/syntrix-ai",
 ]
 
 [workspace.dependencies]

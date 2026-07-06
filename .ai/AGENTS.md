@@ -72,7 +72,7 @@ ssh server-1 "nix store gc --extra-experimental-features 'nix-command flakes'"
 - `packages/syntrix-ui/` — Shared UI component library (`@syntrix/ui/*`)
 - `packages/shared-drizzle/` — Shared Drizzle schemas + `drizzle-zod` helpers
 - `bin/` — Helper scripts including the `cargo` remote compiler bridge
-- `crates/` — Shared Rust libraries (e.g., `syntrix-core`)
+- `crates/` — Shared Rust libraries (e.g., `syntrix-core`, `syntrix-ai`)
 - `justfile` — Project automation runner
 
 ---

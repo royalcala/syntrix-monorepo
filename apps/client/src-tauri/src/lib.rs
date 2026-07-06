@@ -16,8 +16,11 @@ pub mod storage;
 pub mod catchup;
 pub mod live;
 pub mod cdc_sync;
+pub mod ai_provider;
 
 use syntrix_core::ENTITY_NAMES;
+use syntrix_ai::tools::{AiContext, QueryResult, SearchResult, ViewDefinition};
+use syntrix_ai::{AiChatRequest, AiChatResponse, AiStatusInfo, router, ai_chat_impl, ai_status_impl};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SchemaFilter {
@@ -177,6 +180,72 @@ pub fn get_updates_since_impl(state: &AppState, org_id: &str, since_change_id: i
 
 pub fn drizzle_execute_impl(state: &AppState, sql: &str, params: &[String]) -> Result<serde_json::Value, String> {
     state.indexer().drizzle_execute(sql, params)
+}
+
+use std::sync::OnceLock;
+
+fn ai_views_store() -> &'static std::sync::Mutex<Vec<ViewDefinition>> {
+    static STORE: OnceLock<std::sync::Mutex<Vec<ViewDefinition>>> = OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+impl AiContext for AppState {
+    fn check_read_access(&self, org_id: &str, entity: &str) -> Result<(), String> {
+        check_read_access(self, org_id, entity)
+    }
+
+    fn query_entity(&self, _org_id: &str, sql: &str, _params: &[String]) -> Result<QueryResult, String> {
+        let row_objects = self.indexer().execute_sql_query(sql).map_err(|e| e.to_string())?;
+        let columns: Vec<String> = row_objects
+            .first()
+            .map(|obj| {
+                obj.as_object()
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        let rows: Vec<Vec<serde_json::Value>> = row_objects
+            .into_iter()
+            .map(|obj| {
+                columns
+                    .iter()
+                    .map(|col| {
+                        obj.as_object()
+                            .and_then(|m| m.get(col).cloned())
+                            .unwrap_or(serde_json::Value::Null)
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(QueryResult { columns, rows })
+    }
+
+    fn search_entity(
+        &self,
+        org_id: &str,
+        query: &str,
+        entities: Option<Vec<String>>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, String> {
+        let results = search_entity_impl(self, Some(org_id), query, entities, Some(limit))?;
+        Ok(results.into_iter().map(|r| SearchResult {
+            entity: r.entity,
+            doc_id: r.doc_id,
+            score: r.score as f64,
+            snippet: r.snippet,
+        }).collect())
+    }
+
+    fn save_view(&self, view: &ViewDefinition) -> Result<(), String> {
+        let mut store = ai_views_store().lock().map_err(|e| e.to_string())?;
+        store.push(view.clone());
+        Ok(())
+    }
+
+    fn list_views(&self, org_id: &str, _tags: Option<&[String]>) -> Result<Vec<ViewDefinition>, String> {
+        let store = ai_views_store().lock().map_err(|e| e.to_string())?;
+        Ok(store.iter().filter(|v| v.org_id == org_id).cloned().collect())
+    }
 }
 
 pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
@@ -403,6 +472,26 @@ fn search_entity(
 }
 
 #[tauri::command]
+fn ai_chat(
+    state: tauri::State<'_, Mutex<AppState>>,
+    ai: tauri::State<'_, ai_provider::OllamaProvider>,
+    org_id: String,
+    messages: Vec<syntrix_ai::AiMessage>,
+    model: Option<String>,
+) -> Result<AiChatResponse, String> {
+    let ctx = state.lock().map_err(|e| e.to_string())?;
+    let router = router::DefaultRouter;
+    let req = AiChatRequest { org_id, messages, model };
+    ai_chat_impl(&*ctx, &*ai, &router, &req)
+}
+
+#[tauri::command]
+fn ai_status(ai: tauri::State<'_, ai_provider::OllamaProvider>) -> Result<AiStatusInfo, String> {
+    let uptime = ai.uptime();
+    Ok(ai_status_impl(uptime))
+}
+
+#[tauri::command]
 fn get_schema_registry() -> Result<serde_json::Value, String> {
     let entities: Vec<serde_json::Value> = ENTITY_NAMES.iter().map(|name| {
         serde_json::json!({
@@ -547,6 +636,7 @@ pub fn run() {
         })
         .manage(Mutex::new(app_state))
         .manage(log_handle)
+        .manage(ai_provider::OllamaProvider::new(None))
         .invoke_handler(tauri::generate_handler![
             get_node_id, list_orgs, set_active_org, join_org, get_invites, get_endpoint_addr,
             commit_event, sync_status, check_entity_access,
@@ -554,6 +644,7 @@ pub fn run() {
             get_updates_since, drizzle_execute, get_schema_registry, audit_query,
             query_logs, summarize_logs, start_tail_logs,
             live_subscribe, live_unsubscribe,
+            ai_chat, ai_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-client");
@@ -576,6 +667,9 @@ fn run_headless() {
     let (mut state, _invite_rx) = rt.block_on(async {
         AppState::new().await.expect("failed to initialize libp2p")
     });
+
+    let ai_provider = ai_provider::OllamaProvider::new(None);
+    let router = router::DefaultRouter;
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::BufWriter::new(std::io::stdout());
@@ -650,6 +744,24 @@ fn run_headless() {
                 let entity = req["entity"].as_str().unwrap_or("");
                 query_entity_impl(&state, org_id, entity, None, None)
                     .map(|docs| serde_json::Value::Array(docs))
+            }
+            "ai_chat" => {
+                let org_id = req["org_id"].as_str().unwrap_or("");
+                let msg_text = req["text"].as_str().unwrap_or("");
+                let ai_req = syntrix_ai::AiChatRequest {
+                    org_id: org_id.to_string(),
+                    messages: vec![syntrix_ai::AiMessage {
+                        role: "user".to_string(),
+                        content: msg_text.to_string(),
+                    }],
+                    model: req["model"].as_str().map(String::from),
+                };
+                let result = syntrix_ai::ai_chat_impl(&state, &ai_provider, &router, &ai_req);
+                result.map(|r| serde_json::to_value(r).unwrap_or_default())
+            }
+            "ai_status" => {
+                let info = syntrix_ai::ai_status_impl(ai_provider.uptime());
+                Ok(serde_json::to_value(info).unwrap_or_default())
             }
             "ping" => Ok(serde_json::json!("pong")),
             _ => Err(format!("unknown command: {}", cmd)),
