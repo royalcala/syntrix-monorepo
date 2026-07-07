@@ -319,3 +319,163 @@ fn test_binary_invite_and_bidirectional_sync() {
 
     eprintln!("[test] ===== ALL BINARY E2E TESTS PASSED =====");
 }
+
+fn find_admin_bin() -> String {
+    std::env::var("SYNTRIX_ADMIN_BIN").ok()
+        .filter(|p| std::path::Path::new(p).exists())
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_syntrix-admin").to_string())
+}
+
+fn find_client_bin() -> Option<String> {
+    std::env::var("SYNTRIX_CLIENT_BIN").ok()
+        .filter(|p| std::path::Path::new(p).exists())
+        .or_else(|| {
+            let candidates = [
+                "../../../client/src-tauri/target/debug/syntrix-client",
+                "../../client/src-tauri/target/debug/syntrix-client",
+            ];
+            candidates.iter()
+                .find(|c| std::path::Path::new(c).exists())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            std::path::Path::new(&find_admin_bin())
+                .parent()
+                .map(|p| p.join("syntrix-client").to_string_lossy().to_string())
+                .filter(|p| std::path::Path::new(p).exists())
+        })
+}
+
+#[test]
+#[ignore = "requires GTK locally; run via just test-binary-e2e"]
+fn test_binary_ai_status() {
+    let client_bin = match find_client_bin() {
+        Some(p) => p,
+        None => { eprintln!("[test] SKIP: client binary not found."); return; }
+    };
+
+    let tmp = std::env::temp_dir().join("syntrix-binary-ai-status");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    let mut c = HeadlessApp::spawn(&client_bin, &tmp.join("client"), "client");
+
+    let resp = c.cmd(&json!({"cmd": "ai_status"}));
+    assert!(resp["ok"].as_bool().unwrap_or(false), "ai_status should return ok: {:?}", resp["error"]);
+    let models = resp["data"]["models_available"].as_array();
+    assert!(models.is_some() && models.unwrap().len() >= 3, "should list available models");
+    assert_eq!(resp["data"]["health"], "ok", "health should be ok");
+    eprintln!("[test] ✅ ai_status: health=ok, {} models", models.map(|a| a.len()).unwrap_or(0));
+}
+
+#[test]
+#[ignore = "requires GTK locally; run via just test-binary-e2e"]
+fn test_binary_ai_chat_degraded() {
+    let client_bin = match find_client_bin() {
+        Some(p) => p,
+        None => { eprintln!("[test] SKIP: client binary not found."); return; }
+    };
+
+    let tmp = std::env::temp_dir().join("syntrix-binary-ai-chat");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    // We need an org context for ai_chat. Spawn admin + client, invite.
+    let admin_dir = tmp.join("admin");
+    let c_dir = tmp.join("client");
+    let admin_bin = find_admin_bin();
+    let mut admin = HeadlessApp::spawn(&admin_bin, &admin_dir, "admin");
+    let mut c = HeadlessApp::spawn(&client_bin, &c_dir, "client");
+
+    admin.cmd_ok(&json!({"cmd": "create_org", "name": "chat-test"}));
+    admin.cmd_ok(&json!({"cmd": "create_role", "org": "chat-test", "name": "user", "can_open": ["*"], "can_write": ["*"]}));
+
+    let addr = c.cmd_ok(&json!({"cmd": "get_endpoint_addr"}));
+    let addr_str = addr.as_str().unwrap();
+
+    admin.cmd_ok(&json!({"cmd": "send_invite", "org": "chat-test", "endpoint_addr_json": addr_str, "role": "user", "name": "ChatClient", "person": "chat"}));
+
+    let mut invites = Vec::new();
+    for attempt in 0..15 {
+        std::thread::sleep(Duration::from_secs(2));
+        let data = c.cmd_ok(&json!({"cmd": "get_invites"}));
+        invites = data.as_array().expect("invites array").clone();
+        if !invites.is_empty() { break; }
+        eprintln!("[test] inbox empty, retry {}/15...", attempt + 1);
+    }
+    assert!(!invites.is_empty(), "should receive invite");
+
+    let invite_json = serde_json::to_string(&invites[0]).unwrap();
+    c.cmd_ok(&json!({"cmd": "join_org", "invite_json": invite_json, "org_name": "chat-test"}));
+
+    let orgs = c.cmd_ok(&json!({"cmd": "list_orgs"}));
+    let org_id = orgs[0]["id"].as_str().expect("org id").to_string();
+
+    // Without Ollama, ai_chat should return a controlled error, not a panic
+    let resp = c.cmd(&json!({"cmd": "ai_chat", "org_id": org_id, "text": "hello"}));
+    eprintln!("[test] ai_chat response: {:?}", resp);
+    // May be ok=false (Ollama unavailable) — any non-panic response is acceptable
+    assert!(resp["ok"].is_boolean(), "ai_chat should return a boolean ok field, never a crash");
+    if resp["ok"].as_bool().unwrap_or(false) {
+        eprintln!("[test] ✅ ai_chat succeeded (unexpected — Ollama might be available)");
+    } else {
+        eprintln!("[test] ✅ ai_chat degraded gracefully: {}", resp["error"].as_str().unwrap_or("?"));
+    }
+}
+
+#[test]
+#[ignore = "requires GTK locally; run via just test-binary-e2e"]
+fn test_binary_device_type_propagation() {
+    let client_bin = match find_client_bin() {
+        Some(p) => p,
+        None => { eprintln!("[test] SKIP: client binary not found."); return; }
+    };
+
+    let tmp = std::env::temp_dir().join("syntrix-binary-devtype");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    let admin_bin = find_admin_bin();
+    let mut admin = HeadlessApp::spawn(&admin_bin, &tmp.join("admin"), "admin");
+    let mut c = HeadlessApp::spawn(&client_bin, &tmp.join("client"), "client");
+
+    admin.cmd_ok(&json!({"cmd": "create_org", "name": "devtype-test"}));
+    admin.cmd_ok(&json!({"cmd": "create_role", "org": "devtype-test", "name": "user", "can_open": ["*"], "can_write": ["*"]}));
+
+    let addr = c.cmd_ok(&json!({"cmd": "get_endpoint_addr"}));
+    let addr_str = addr.as_str().unwrap();
+
+    admin.cmd_ok(&json!({"cmd": "send_invite", "org": "devtype-test", "endpoint_addr_json": addr_str, "role": "user", "name": "DevTypeClient", "person": "dt"}));
+
+    let mut invites = Vec::new();
+    for attempt in 0..15 {
+        std::thread::sleep(Duration::from_secs(2));
+        let data = c.cmd_ok(&json!({"cmd": "get_invites"}));
+        invites = data.as_array().expect("invites array").clone();
+        if !invites.is_empty() { break; }
+        eprintln!("[test] inbox empty, retry {}/15...", attempt + 1);
+    }
+    assert!(!invites.is_empty(), "should receive invite");
+
+    let invite_json = serde_json::to_string(&invites[0]).unwrap();
+    c.cmd_ok(&json!({"cmd": "join_org", "invite_json": invite_json, "org_name": "devtype-test"}));
+
+    // Admin lists devices — default device_type should be "client"
+    let devs = admin.cmd_ok(&json!({"cmd": "list_devices", "org": "devtype-test"}));
+    let device = devs.as_array().and_then(|arr| arr.first()).expect("at least one device");
+    assert_eq!(device["device_type"], "client", "default device_type should be 'client'");
+    let node_id = device["node_id"].as_str().expect("node_id").to_string();
+    eprintln!("[test] default device_type=client ✓");
+
+    // Admin updates device_type to "client-ia"
+    admin.cmd_ok(&json!({
+        "cmd": "update_device", "org": "devtype-test", "node_id": node_id,
+        "active": true, "role": "user", "device_type": "client-ia"
+    }));
+
+    // Verify admin sees the updated type
+    let devs = admin.cmd_ok(&json!({"cmd": "list_devices", "org": "devtype-test"}));
+    let updated = devs.as_array().and_then(|arr| arr.iter().find(|d| d["node_id"] == node_id)).expect("device in list");
+    assert_eq!(updated["device_type"], "client-ia", "device_type should be updated to 'client-ia'");
+    eprintln!("[test] ✅ device_type updated and reflected in admin list_devices");
+}

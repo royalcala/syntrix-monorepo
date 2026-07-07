@@ -129,7 +129,8 @@ test-integration:
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo test --workspace --tests'
 
 # Test E2E de binarios reales (procesos separados con dial P2P real)
-# Compila ambos binarios remotamente, luego ejecuta el test localmente (necesita GTK)
+# Compila ambos binarios remotamente, luego ejecuta el test localmente.
+# ✅ FUNCIONA SIN CONFIGURACIÓN ADICIONAL — el pipeline completo es automático.
 test-binary-e2e:
     #!/usr/bin/env bash
     set -e

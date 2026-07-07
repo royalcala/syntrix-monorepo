@@ -31,7 +31,8 @@
   ("Tier 3b" ×2, logging ×2), sin mención de crate `syntrix-ai`, catálogo, Shell Universal ni del hallazgo
   del benchmark (modelos locales 0% tool-calling nativo).
 - **Compilación**: usar el bridge (`export PATH="$PWD/bin:$PATH"`, `REMOTE_HOST=server-1|server-2`).
-  NO compilar local. Tier 3 (binary e2e) requiere GTK local.
+  NO compilar local. Tier 3 (binary e2e): `just test-binary-e2e` compila remoto + ejecuta local.
+  **No requiere configuración adicional** — `just` se encarga de todo el pipeline.
 
 ## Decisiones resueltas
 

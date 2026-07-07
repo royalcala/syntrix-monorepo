@@ -810,6 +810,13 @@ fn run_headless() {
                 let info = syntrix_ai::ai_status_impl(ai_provider.uptime());
                 Ok(serde_json::to_value(info).unwrap_or_default())
             }
+            "drizzle_execute" => {
+                let sql = req["sql"].as_str().unwrap_or("");
+                let params: Vec<String> = req["params"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                drizzle_execute_impl(&state, sql, &params)
+            }
             "ping" => Ok(serde_json::json!("pong")),
             _ => Err(format!("unknown command: {}", cmd)),
         };
