@@ -1,5 +1,5 @@
 use libp2p::{
-    gossipsub, identify, kad, ping, request_response,
+    autonat, dcutr, gossipsub, identify, kad, ping, relay, request_response,
 };
 use libp2p_swarm_derive::NetworkBehaviour;
 
@@ -11,6 +11,9 @@ pub enum CustomBehaviourEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     Rr(request_response::Event<NetworkRequest, NetworkResponse>),
+    Autonat(autonat::Event),
+    RelayClient(relay::client::Event),
+    Dcutr(dcutr::Event),
 }
 
 impl From<gossipsub::Event> for CustomBehaviourEvent {
@@ -28,6 +31,15 @@ impl From<ping::Event> for CustomBehaviourEvent {
 impl From<request_response::Event<NetworkRequest, NetworkResponse>> for CustomBehaviourEvent {
     fn from(e: request_response::Event<NetworkRequest, NetworkResponse>) -> Self { Self::Rr(e) }
 }
+impl From<autonat::Event> for CustomBehaviourEvent {
+    fn from(e: autonat::Event) -> Self { Self::Autonat(e) }
+}
+impl From<relay::client::Event> for CustomBehaviourEvent {
+    fn from(e: relay::client::Event) -> Self { Self::RelayClient(e) }
+}
+impl From<dcutr::Event> for CustomBehaviourEvent {
+    fn from(e: dcutr::Event) -> Self { Self::Dcutr(e) }
+}
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "CustomBehaviourEvent")]
@@ -37,4 +49,7 @@ pub struct CustomBehaviour {
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
     pub rr: request_response::Behaviour<CombinedCodec>,
+    pub autonat: autonat::Behaviour,
+    pub relay_client: relay::client::Behaviour,
+    pub dcutr: dcutr::Behaviour,
 }

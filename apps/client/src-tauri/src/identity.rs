@@ -74,6 +74,7 @@ impl AppState {
         let local_peer_id = keypair.public().to_peer_id();
         let listen_on: Vec<Multiaddr> = vec![
             "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
+            "/ip4/0.0.0.0/tcp/0".parse().unwrap(),
         ];
 
         let config = syntrix_network::NetworkConfig {
@@ -403,7 +404,17 @@ async fn process_event_loop(
                         }
                         let _ = p2p.respond_catchup(response_id, events);
                     }
-                    Event::PeerConnected(_) | Event::PeerDisconnected(_) => {}
+                    Event::PeerConnected(pid) => {
+                        tracing::info!(target: "syntrix", peer = %pid, "peer connected");
+                    }
+                    Event::PeerDisconnected(pid) => {
+                        tracing::info!(target: "syntrix", peer = %pid, "peer disconnected, scheduling reconnect");
+                        let p2p = p2p.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            p2p.ensure_connected(pid, vec![]);
+                        });
+                    }
                 }
             }
             else => break,

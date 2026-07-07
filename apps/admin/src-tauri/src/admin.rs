@@ -91,6 +91,16 @@ pub async fn update_device(
         }
     }
 
+    // Block peer at network level when device is deactivated
+    if !active {
+        if let Some(device) = state.list_org_devices(org).into_iter().find(|d| d.node_id == node_id) {
+            if let Some(peer_id) = syntrix_core::parse_device_addr(&device.device_addr) {
+                state.p2p().block_peer(peer_id);
+                tracing::info!(target: "syntrix_admin_lib::admin", peer = %peer_id, "blocked deactivated device");
+            }
+        }
+    }
+
     Ok(())
 }
 
