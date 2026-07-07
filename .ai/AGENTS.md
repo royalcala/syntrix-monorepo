@@ -69,10 +69,15 @@ ssh server-1 "nix store gc --extra-experimental-features 'nix-command flakes'"
 ## Directory Structure
 - `apps/admin/` — Admin Console application (Tauri + React)
 - `apps/client/` — Client/Worker application (Tauri + React)
-- `packages/syntrix-ui/` — Shared UI component library (`@syntrix/ui/*`)
+- `packages/syntrix-ui/` — Shared UI component library (`@syntrix/ui/*`), including catalog renderers (`DataTable`, `MetricCard`, `EntityDetail`, `Form`, `ViewRenderer`, etc.)
 - `packages/shared-drizzle/` — Shared Drizzle schemas + `drizzle-zod` helpers
 - `bin/` — Helper scripts including the `cargo` remote compiler bridge
-- `crates/` — Shared Rust libraries (e.g., `syntrix-core`, `syntrix-ai`)
+- `crates/` — Shared Rust libraries:
+  - `syntrix-core` — core types, schema registry, entity metadata
+  - `syntrix-ai` — AI agent loop (`ai_chat_impl`/`ai_status_impl`), model router, tool definitions, benchmarking, Ollama/Mock providers
+  - `syntrix-network` — libp2p networking, CDC codecs, P2PNode
+  - `syntrix-testkit` — test utilities (temp_limbo_db, poll_until, seed_test_document, etc.)
+  - `syntrix-logging` — structured NDJSON logging with query/summarize API
 - `justfile` — Project automation runner
 
 ---
@@ -91,6 +96,10 @@ Every `#[tauri::command]` **must** be a thin wrapper around a public `*_impl(sta
 ### Convention
 - **New `#[tauri::command]`** → expose a pure `*_impl` function + integration test.
 - **New entity/table** → includes migration SQL (via Drizzle), SqlEngine methods, and an integration test.
+- **Shared UI components** (`packages/syntrix-ui/`) are tested from the **consuming app's vitest**
+  (`apps/client/src/__tests__/` or `apps/admin/src/__tests__/`), NOT inside `syntrix-ui`.
+  Precedent: `EntityGrid`/`DetailPanel` live in `packages/syntrix-ui/`, tested in
+  `apps/client/src/__tests__/components/`.
 
 ### Running tests
 Use `just test-rust` to run all Rust tests via the remote bridge on `server-1`. Do **not** run `cargo test` locally (laptop CPU restriction).
@@ -131,15 +140,22 @@ Both `syntrix-admin` and `syntrix-client` support a `--headless` CLI flag that:
 - Initializes `AppState` with P2P networking
 - Reads JSON commands from stdin: `{"cmd": "...", "arg": "..."}`
 - Writes JSON responses to stdout: `{"ok": true, "data": ...}`
-- Supported admin commands: `create_org`, `create_role`, `list_roles`, `send_invite`, `get_endpoint_addr`, `list_orgs`, `list_devices`, `ping`
-- Supported client commands: `get_invites`, `get_endpoint_addr`, `join_org`, `list_orgs`, `set_active_org`, `commit_event`, `query_entity`, `ping`
+- Supported admin commands: `create_org`, `create_role`, `list_roles`, `send_invite`, `get_endpoint_addr`, `list_orgs`, `list_devices`, `update_device`, `set_org_role`, `get_org_role`, `ping`
+- Supported client commands: `get_invites`, `get_endpoint_addr`, `join_org`, `list_orgs`, `set_active_org`, `commit_event`, `query_entity`, `ai_chat`, `ai_status`, `ping`
 - The `send_invite` command includes the full dial flow (add_device → dial all addresses → wait 1s for QUIC handshake → send invite via request-response).
 
 ### Test utility crate
 `crates/syntrix-testkit/` provides:
 - `temp_node_dir()` — isolated temp directories for per-test state.
+- `temp_limbo_db()` — in-memory Limbo database for tests (returns `(TempDir, Arc<Connection>)`).
 - `poll_until()` — async polling with exponential backoff for net-dependent assertions.
-- `make_invite_ticket()` — generate invite tickets without the admin crate.
+- `seed_test_document()` — insert a document into a typed entity table.
+- `wait_for_document_limbo()` — poll until a doc appears in a table.
+- `wait_for_event()` — poll for a CDC event by key.
+- `wait_for_sync()` — sleep helper for P2P convergence.
+- `create_entity_table()` / `create_event_log_table()` — create tables in a test Limbo db.
+- `parse_node_id()` — hex string → `[u8; 32]`.
+- `PollConfig` — configurable retries with exponential backoff.
 
 ### Approval gate
 Do not approve a backend feature without a green `just test-rust`.
@@ -153,18 +169,7 @@ Entity tables use **typed SQL columns** (not a generic `payload` JSON blob) — 
 `.kilo/plans/1782949593655-relational-cdc-migration.md` for the full migration history and
 rationale.
 
-### Tier 3b — Timeline CDC (`get_updates_since` + `useTimelineCursor`)
-Not a separate test binary, but a backend + frontend feature verified by inline tests:
-- **Backend**: `get_updates_since(sinceChangeId)` Tauri command reads `turbo_cdc` from a cursor
-  and returns new events + `max_change_id`. Verified by `read_events_since_cursor_timeline`
-  and `read_events_since_respects_limit` in `cdc.rs`.
-- **Frontend**: `useTimelineCursor` hook in `apps/client/src/hooks/useTimelineCursor.ts`
-  polls every 2s, stores cursor in localStorage, and invalidates `react-query` entity caches
-  when new CDC events arrive. This replaces `event_log`-based polling and provides near-real-time
-  updates without `LiveManager` or WebSockets.
-- Tests: 17/17 CDC tests pass (including 2 timeline cursor tests).
-
-### Tier 3c — Drizzle Proxy (`drizzle_execute`)
+### Tier 3b — Drizzle Proxy (`drizzle_execute`)
 - **What**: Frontend can use Drizzle ORM's full type-safe query API (select, joins, where,
   aggregations) via `drizzle-orm/sqlite-proxy`. Drizzle generates SQL on the frontend,
   sends it to the Rust backend via `invoke("drizzle_execute", { sql, params })`,
@@ -180,6 +185,14 @@ Not a separate test binary, but a backend + frontend feature verified by inline 
   Proxy bypass `can_open` (non-security concern — CDC layer enforces real permissions). This replaces `event_log`-based polling and provides near-real-time
   updates without `LiveManager` or WebSockets.
 - Tests: 17/17 CDC tests pass (including 2 timeline cursor tests).
+
+### ⚠️ REGLA ESTRICTA: NO EDITAR MIGRACIONES SQL DIRECTAMENTE
+
+NUNCA edites archivos `.sql` en `apps/*/src-tauri/migrations/` — son generados por `drizzle-kit`.
+- **Para cambiar el schema**: edita `packages/shared-drizzle/src/entities.ts` (o los schemas específicos de cada app).
+- **Para regenerar migraciones**: `just drizzle-gen` (ejecuta `drizzle-kit generate` + `export-schema`).
+- **Para limpiar datos locales tras un schema change**: `just clean-data-all`.
+- **Excepción**: solo puedes tocar un `.sql` de migración si el cambio es **idempotente** (ej. cambiar `CREATE TABLE` → `CREATE TABLE IF NOT EXISTS`), y aun así debes sincronizarlo con el schema de Drizzle después.
 
 ### Adding/changing an entity's fields
 1. Edit the entity's columns in `packages/shared-drizzle/src/entities.ts`
@@ -229,6 +242,33 @@ Not a separate test binary, but a backend + frontend feature verified by inline 
 
 ---
 
+## syntrix-ai Crate — AI Agent Loop
+
+The `crates/syntrix-ai/` crate implements the AI chat loop, tool execution, and model routing.
+
+### Modules
+- `lib.rs` — `ai_chat_impl(ctx, provider, router, req)` (main loop up to 10 rounds of tool-calling),
+  `ai_status_impl()` (health + available models), `execute_tool()` (routes to tools).
+- `tools.rs` — `AiContext` trait (query_entity, search_entity, save_view, list_views, check_read_access),
+  `ViewDefinition`/`ViewMeta` types, `get_schema_impl`, `query_entity_tool`, `save_view_tool`.
+- `router.rs` — `ModelRouter` trait, `DefaultRouter`, `TaskType::classify()` (task → model tier).
+- `provider.rs` — `ModelProvider` trait, `OllamaProvider` (via reqwest), `MockProvider`/`StatefulMockProvider` for tests.
+- `bench.rs` — tool-calling benchmark harness (9 test cases, local models + cloud fallback).
+
+### Entities (created by migration 0003 client / 0002 admin)
+- `view_definitions` — AI-generated views (sql, entity, components_json, root, meta_json, created_by, tags)
+- `ia_queries` — CDC fallback queue (text, status=pending/completed/seen, view_id)
+
+### Benchmark finding (bench_local_models)
+Local Ollama models (granite3.2:2b, qwen2.5-coder:3b, etc.) score **0% native tool-calling** —
+they return tool info in `content` text, not structured `tool_calls`. Llama.cpp GBNF grammars
+(Fase 2) will eliminate the need for text-based tool-call parsing.
+
+### UI Catalog (packages/syntrix-ui/src/components/catalog/)
+7 renderer components + `ViewRenderer.tsx` + `types.ts`. Tested from the consuming app's vitest
+(Option B, precedent: `EntityGrid`/`DetailPanel` in `packages/syntrix-ui/`, tested from
+`apps/client/src/__tests__/components/`).
+
 ## AI-First Logging (syntrix-logging)
 
 The crate `crates/syntrix-logging/` provides structured NDJSON logging with a query API designed for AI consumption.
@@ -241,9 +281,6 @@ The crate `crates/syntrix-logging/` provides structured NDJSON logging with a qu
   ```
   Available operations: `create_org`, `send_invite`, `join_org`, `commit_event`, `sync_push`, `sync_pull`, `heartbeat`, `subscribe_ingest`. Each macro creates a tracing span with `org`, `op`, `step`, and auto-generated `corr_id` (UUID). Event fields inherit the span context.
 - **Zero secrets in logs**: Sensitive fields (`secret_*`, `keypair`, `doc_ticket`, `ticket`) are auto-redacted. Never log keypairs or invite tickets directly.
-- **AI diagnosis**: Use `query_logs` (filtered/paginated) and `summarize_logs` (digest) instead of reading raw log files.
-- **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,iroh=warn`) and `IROH_DEBUG=1` (iroh debug to separate file); no code changes needed.
-- **Ring buffer**: Default 5000 entries, tunable via `SYNTRIX_LOG_RING` env var.
 - **AI diagnosis**: Use `query_logs` (filtered/paginated) and `summarize_logs` (digest) instead of reading raw log files.
 - **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,iroh=warn`) and `IROH_DEBUG=1` (iroh debug to separate file); no code changes needed.
 - **Ring buffer**: Default 5000 entries, tunable via `SYNTRIX_LOG_RING` env var.

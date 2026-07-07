@@ -12,9 +12,9 @@ anyhow = "1"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 [dev-dependencies]
 syntrix-testkit = { path = "../syntrix-testkit" }
 tempfile = "3"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["full"] }

@@ -934,3 +934,44 @@ async fn test_large_payload() {
     assert_eq!(doc["name"], "Big Address Co");
     assert_eq!(doc["address"], long_address, "large declared column value preserved");
 }
+
+#[tokio::test]
+async fn test_device_type_default_and_update() {
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t17_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t17_client1");
+
+    let mut admin = spawn_admin(adir).await;
+    let mut c1 = spawn_client(c1dir).await;
+
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
+        .await
+        .expect("invite and join");
+
+    let client_addr = get_client_addr(&c1).await;
+    let node_id_hex = node_id_from_addr(&client_addr);
+
+    // Default device_type should be "client"
+    let devices = admin.list_org_devices("acme");
+    let device = devices.iter().find(|d| d.node_id == node_id_hex)
+        .expect("client device in admin devices");
+    assert_eq!(device.device_type, "client", "default device_type should be 'client'");
+
+    // Update to "client-ia"
+    syntrix_admin_lib::admin::update_device(
+        &mut admin,
+        "acme",
+        &node_id_hex,
+        true,
+        Some("sales".into()),
+        None,
+        None,
+        Some("client-ia".into()),
+    )
+    .await
+    .expect("update device_type");
+
+    let devices = admin.list_org_devices("acme");
+    let device = devices.iter().find(|d| d.node_id == node_id_hex)
+        .expect("client device in admin devices after update");
+    assert_eq!(device.device_type, "client-ia", "device_type should be updated to 'client-ia'");
+}

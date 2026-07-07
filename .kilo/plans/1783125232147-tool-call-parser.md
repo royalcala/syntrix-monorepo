@@ -1,5 +1,9 @@
 # Tool-Call Parser para Modelos Locales
 
+> **SUPERSEDED** por `1783452736636-capability-tiered-inference.md`
+> (GBNF grammar-constrained generation elimina la necesidad de text-parsing).
+> No implementar — el roadmap `1783367768611` lo marca como obsoleto en Fase 0.
+
 ## El Problema
 
 Cuando el `ai_chat_impl` (agent loop) envía un mensaje a Ollama con herramientas definidas, el modelo **debería** responder con un campo estructurado `tool_calls` en el JSON:
