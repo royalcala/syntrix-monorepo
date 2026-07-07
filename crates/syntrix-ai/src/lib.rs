@@ -313,8 +313,33 @@ pub fn ai_status_impl(uptime_seconds: u64) -> AiStatusInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provider::StatefulMockProvider;
     use provider::test_utils::MockProvider;
-    use tools::{MockAiContext, ViewDefinition, ViewMeta};
+    use tools::{ViewDefinition, AiContext, QueryResult, SearchResult};
+
+    struct MockAiContext {
+        allow_access: bool,
+    }
+
+    impl MockAiContext {
+        fn new(allow_access: bool) -> Self {
+            Self { allow_access }
+        }
+    }
+
+    impl AiContext for MockAiContext {
+        fn check_read_access(&self, _org_id: &str, _entity: &str) -> Result<(), String> {
+            if self.allow_access { Ok(()) } else { Err("access denied".to_string()) }
+        }
+        fn query_entity(&self, _org_id: &str, _sql: &str, _params: &[String]) -> Result<QueryResult, String> {
+            Ok(QueryResult { columns: vec![], rows: vec![] })
+        }
+        fn search_entity(&self, _org_id: &str, _query: &str, _entities: Option<Vec<String>>, _limit: usize) -> Result<Vec<SearchResult>, String> {
+            Ok(vec![])
+        }
+        fn save_view(&self, _view: &ViewDefinition) -> Result<(), String> { Ok(()) }
+        fn list_views(&self, _org_id: &str, _tags: Option<&[String]>) -> Result<Vec<ViewDefinition>, String> { Ok(vec![]) }
+    }
 
     #[test]
     fn test_ai_chat_impl_with_mock_provider() {
@@ -339,15 +364,8 @@ mod tests {
     #[test]
     fn test_ai_chat_impl_executes_tool_call() {
         let ctx = MockAiContext::new(true);
-        let tool_calls = vec![ToolCall {
-            id: "call_1".to_string(),
-            name: "get_schema".to_string(),
-            args: serde_json::json!({"entity": "customers"}),
-        }];
-        let provider = MockProvider::with_tool_calls(
-            "Primero consulto el schema de customers.",
-            tool_calls,
-        );
+        let provider = StatefulMockProvider::new()
+            .with_tool_call("call_1", "get_schema", serde_json::json!({"entity": "customers"}));
         let router = router::DefaultRouter;
         let req = AiChatRequest {
             org_id: "org-1".to_string(),
@@ -366,14 +384,8 @@ mod tests {
     #[test]
     fn test_ai_chat_impl_multiple_tool_rounds() {
         let ctx = MockAiContext::new(true);
-        let provider = MockProvider::with_tool_calls(
-            "Procesando...",
-            vec![ToolCall {
-                id: "call_1".to_string(),
-                name: "query_entity".to_string(),
-                args: serde_json::json!({"sql": "SELECT * FROM customers"}),
-            }],
-        );
+        let provider = StatefulMockProvider::new()
+            .with_tool_call("call_1", "query_entity", serde_json::json!({"sql": "SELECT * FROM customers"}));
         let router = router::DefaultRouter;
         let req = AiChatRequest {
             org_id: "org-1".to_string(),

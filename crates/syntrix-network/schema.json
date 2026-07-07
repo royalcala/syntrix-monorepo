@@ -416,5 +416,89 @@
         "type": "text"
       }
     ]
+  },
+  "view_definitions": {
+    "table": "view_definitions",
+    "columns": [
+      {
+        "name": "org_id",
+        "type": "text"
+      },
+      {
+        "name": "doc_id",
+        "type": "text"
+      },
+      {
+        "name": "sql",
+        "type": "text"
+      },
+      {
+        "name": "entity",
+        "type": "text"
+      },
+      {
+        "name": "components_json",
+        "type": "text"
+      },
+      {
+        "name": "root",
+        "type": "text"
+      },
+      {
+        "name": "meta_json",
+        "type": "text"
+      },
+      {
+        "name": "created_by",
+        "type": "text"
+      },
+      {
+        "name": "tags",
+        "type": "text",
+        "nullable": true
+      },
+      {
+        "name": "change_time",
+        "type": "integer"
+      },
+      {
+        "name": "node_id",
+        "type": "text"
+      }
+    ]
+  },
+  "ia_queries": {
+    "table": "ia_queries",
+    "columns": [
+      {
+        "name": "org_id",
+        "type": "text"
+      },
+      {
+        "name": "doc_id",
+        "type": "text"
+      },
+      {
+        "name": "text",
+        "type": "text"
+      },
+      {
+        "name": "status",
+        "type": "text"
+      },
+      {
+        "name": "view_id",
+        "type": "text",
+        "nullable": true
+      },
+      {
+        "name": "change_time",
+        "type": "integer"
+      },
+      {
+        "name": "node_id",
+        "type": "text"
+      }
+    ]
   }
 }

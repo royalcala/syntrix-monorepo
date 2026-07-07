@@ -63,9 +63,8 @@ pub async fn add_device(
 }
 
 pub async fn update_device(
-    state: &mut AppState, org: &str, node_id: &str, active: bool, role: Option<String>, name: Option<String>, person: Option<String>,
+    state: &mut AppState, org: &str, node_id: &str, active: bool, role: Option<String>, name: Option<String>, person: Option<String>, device_type: Option<String>,
 ) -> anyhow::Result<()> {
-    // Resolve effective role: if not provided, read current from SQL
     let effective_role = if role.is_some() {
         role.clone()
     } else {
@@ -73,7 +72,7 @@ pub async fn update_device(
             .find(|d| d.node_id == node_id)
             .map(|d| d.role)
     };
-    state.update_device(org, node_id, active, role, name, person);
+    state.update_device(org, node_id, active, role, name, person, device_type);
 
     let event = serde_json::json!({
         "type": "device.updated",

@@ -136,3 +136,38 @@ export const payroll = sqliteTable("payroll", {
   primaryKey({ columns: [table.orgId, table.docId] }),
   index("idx_payroll_org").on(table.orgId),
 ]);
+
+// ---------------------------------------------------------------------------
+// View Definitions (AI-generated views, synced via CDC)
+// ---------------------------------------------------------------------------
+export const viewDefinitions = sqliteTable("view_definitions", {
+  orgId: text("org_id").notNull(),
+  docId: text("doc_id").notNull(),
+  sqlText: text("sql").notNull(),
+  entityName: text("entity").notNull(),
+  componentsJson: text("components_json").notNull(),
+  rootComponent: text("root").notNull(),
+  metaJson: text("meta_json").notNull(),
+  createdBy: text("created_by").notNull(),
+  tags: text("tags"),
+  ...syncMeta(),
+}, (table) => [
+  primaryKey({ columns: [table.orgId, table.docId] }),
+  index("idx_view_definitions_org").on(table.orgId),
+]);
+
+// ---------------------------------------------------------------------------
+// IA Queries (CDC fallback queue when IA is offline)
+// ---------------------------------------------------------------------------
+export const iaQueries = sqliteTable("ia_queries", {
+  orgId: text("org_id").notNull(),
+  docId: text("doc_id").notNull(),
+  queryText: text("text").notNull(),
+  status: text("status").notNull().default("pending"),
+  viewId: text("view_id"),
+  ...syncMeta(),
+}, (table) => [
+  primaryKey({ columns: [table.orgId, table.docId] }),
+  index("idx_ia_queries_org").on(table.orgId),
+  index("idx_ia_queries_status").on(table.orgId, table.status),
+]);

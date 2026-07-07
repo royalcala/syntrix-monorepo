@@ -52,6 +52,8 @@ export function generateSchemaJson(): Record<string, unknown> {
     orders: "orders",
     orderItems: "order_items",
     payroll: "payroll",
+    viewDefinitions: "view_definitions",
+    iaQueries: "ia_queries",
   };
 
   for (const [jsName, tableName] of Object.entries(entityExports)) {

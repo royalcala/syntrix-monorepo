@@ -39,7 +39,7 @@ impl TaskType {
         if q.contains("paso") || q.contains("multi") || q.contains("combinado") {
             return Self::MultiStep;
         }
-        if q.contains("vista") || q.contains("tabla") || q.contains("listado") {
+        if q.contains("vista") || q.contains("tabla") || q.contains("listado") || q.starts_with("lista") || q.starts_with("dame") {
             return Self::ViewGenerate;
         }
         Self::ToolSelect
@@ -145,9 +145,11 @@ mod tests {
     #[test]
     fn test_default_router_returns_models() {
         let router = DefaultRouter;
-        let sel = router.select(TaskType::ViewGenerate);
-        assert_eq!(sel.primary, "nous-hermes:8b");
-        assert_eq!(sel.fallback, "qwen2.5:3b");
-        assert!(sel.cloud.is_some());
+        let sel = router.select(TaskType::SchemaLookup);
+        assert_eq!(sel.primary, "granite3.2:2b");
+        assert_eq!(sel.fallback, "granite4.1:3b");
+        assert!(sel.cloud.is_none());
+        let sel2 = router.select(TaskType::SqlGenerate);
+        assert_eq!(sel2.primary, "qwen2.5-coder:3b");
     }
 }

@@ -15,6 +15,13 @@
       "when": 1783112056006,
       "tag": "0001_next_madripoor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783381690657,
+      "tag": "0002_shocking_firedrake",
+      "breakpoints": true
     }
   ]
 }

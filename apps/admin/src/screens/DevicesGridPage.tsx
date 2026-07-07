@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@syntrix/ui/components/ui/button";
-import { RefreshCw, Send, X } from "lucide-react";
+import { RefreshCw, Send, X, Bot } from "lucide-react";
 
 export function DevicesGridPage({ org }: { org: string }) {
   const queryClient = useQueryClient();
@@ -69,8 +69,9 @@ export function DevicesGridPage({ org }: { org: string }) {
         orgId={org} 
         onSaveUpdate={async (id, data) => {
           await invoke("update_device", {
-            org, nodeId: id, active: Boolean(data.active), 
-            role: data.role || null, name: data.name || null, person: data.person || null
+            org, nodeId: id, active: Boolean(data.active),
+            role: data.role || null, name: data.name || null, person: data.person || null,
+            device_type: data.device_type || null,
           });
           queryClient.invalidateQueries({ queryKey: ["entity", "devices", org] });
         }}
@@ -88,18 +89,42 @@ export function DevicesGridPage({ org }: { org: string }) {
           return data as any;
         }}
         customActions={(row: any) => (
-          <Button 
-            variant="outline" 
-            size="sm"
-            className="flex items-center gap-1.5"
-            onClick={() => {
-              setResendRow(row);
-              setDeviceAddr(row.device_addr || "");
-            }}
-          >
-            <RefreshCw size={13} />
-            Re-enviar Invitación
-          </Button>
+          <div className="flex gap-1">
+            {row.device_type !== "client-ia" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-1.5"
+                onClick={async () => {
+                  try {
+                    await invoke("update_device", {
+                      org, nodeId: row.node_id, active: true, role: null,
+                      name: null, person: null, device_type: "client-ia"
+                    });
+                    queryClient.invalidateQueries({ queryKey: ["entity", "devices", org] });
+                    toast.success("Dispositivo designado como IA de la org");
+                  } catch (e: any) {
+                    toast.error(e || "Error al designar IA");
+                  }
+                }}
+              >
+                <Bot size={13} />
+                Designar IA
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-1.5"
+              onClick={() => {
+                setResendRow(row);
+                setDeviceAddr(row.device_addr || "");
+              }}
+            >
+              <RefreshCw size={13} />
+              Re-enviar
+            </Button>
+          </div>
         )}
       />
 

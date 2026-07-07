@@ -395,15 +395,28 @@ interface ModuleDefinition {
 
 7. **Entidad `view_definitions` en schema P2P** — Nueva tabla en `schema.json` + migración Drizzle. Columnas: id, org_id, sql, entity, components_json, root, meta_json, created_by, created_at.
 
-8. **Entidad `ia_queries` (cola CDC)** — Tabla para queries pendientes cuando IA offline. Columnas: id, org_id, text, created_at, status, view_id.
+8. ✅ **Entidad `ia_queries` (cola CDC)** — Tabla para queries pendientes cuando IA offline. Columnas: id, org_id, text, created_at, status, view_id.
+   - Tabla Drizzle en `shared-drizzle/src/entities.ts` con `syncMeta()`
+   - Migración generada: client `0003_lucky_liz_osborn.sql`, admin `0002_shocking_firedrake.sql`
 
-9. **Extender Admin `/devices`** — Columna `type` (admin/client/client-ia). Acción "Designar IA". Leer/escribir `type` del device en Limbo.
+9. ✅ **Extender Admin `/devices`** — Columna `type` (admin/client/client-ia). Acción "Designar IA". Leer/escribir `type` del device en Limbo.
+   - `adminDevices` Drizzle schema: +`deviceType: text("device_type").notNull().default("client")`
+   - `DeviceInfo` Rust struct: +`device_type: String`
+   - `update_device` Rust: +`device_type: Option<String>` en identity.rs, admin.rs, lib.rs
+   - `list_org_devices` SQL: SELECT +`device_type`
+   - Frontend `devices.ts`: +columna `device_type` (select client/admin/client-ia) + vista "IA"
+   - `DevicesGridPage.tsx`: +botón "Designar IA" en customActions
+   - Migraciones: admin `0002`, client `0003`
 
 10. **Extender Admin `/sync`** — Agregar métricas CDC: eventos pendientes, último change_id por peer.
 
-11. **Nueva pantalla Admin `/views`** — Tabla de ViewDefinitions con métricas. Acciones: abrir, archivar, promover.
+11. ✅ **Nueva pantalla Admin `/views`** — Tabla de ViewDefinitions con métricas. Acciones: abrir, ejecutar, archivar, promover.
+    - `screens/ViewsPage.tsx`: tabla con search, filtros, acciones (ejecutar SQL, promover a default, archivar, eliminar)
+    - Ruta `/views` en `App.tsx` + nav item "Vistas IA"
 
-12. **Nueva pantalla Admin `/modules`** — Placeholder con templates base. Vista completa en Fase B.
+12. ✅ **Nueva pantalla Admin `/modules`** — Placeholder con templates base. Vista completa en Fase B.
+    - `screens/ModulesPage.tsx`: 3 templates (ERP Básico, Familiar, Comunidad) + sección módulos activos
+    - Ruta `/modules` en `App.tsx` + nav item "Módulos"
 
 13. **Catálogo de componentes en `@syntrix/ui`** — Implementar renderizadores para dataTable, metricCard, entityDetail, form, column, row, card. Cada componente recibe data del result set y se renderiza con shadcn/ui.
 
@@ -501,18 +514,24 @@ interface ModuleDefinition {
 | — | Nix cache poblado en server-2 (compilación 4.5s) | ✅ server-2 ready, server-1 caído | 2026-07-06 |
 | 4 | ModelRouter real (Ollama) | 🔲 Pendiente | — |
 | 5 | Tauri commands thin wrappers | 🔲 Pendiente | — |
-| 6 | Benchmark suite contra modelos reales | 🔲 Pendiente | — |
-| 7 | Entidad `view_definitions` | 🔲 Pendiente | — |
-| 8 | Entidad `ia_queries` | 🔲 Pendiente | — |
-| 9 | Extender Admin `/devices` | 🔲 Pendiente | — |
-| 10 | Extender Admin `/sync` | 🔲 Pendiente | — |
-| 11 | Admin `/views` pantalla | 🔲 Pendiente | — |
-| 12 | Admin `/modules` placeholder | 🔲 Pendiente | — |
+| 6 | Benchmark suite contra modelos reales | ⏳ Pendiente (esperando resultados del usuario) | — |
+| 7 | Entidad `view_definitions` en Drizzle + schema.json + migración | ✅ Completo | 2026-07-06 |
+| 8 | Entidad `ia_queries` en Drizzle + schema.json + migración | ✅ Completo | 2026-07-06 |
+| 9 | Extender Admin `/devices` (columna `device_type`, Designar IA action) | ✅ Completo | 2026-07-06 |
+| 10 | Extender Admin `/sync` con CDC metrics | 🔲 Pendiente | — |
+| 11 | Admin `/views` pantalla (ViewsPage.tsx con tabla, filtros, acciones) | ✅ Completo | 2026-07-06 |
+| 12 | Admin `/modules` placeholder (ModulesPage.tsx con templates) | ✅ Completo | 2026-07-06 |
 | 13 | Catálogo componentes `@syntrix/ui` | 🔲 Pendiente | — |
 | 14 | Shell Universal client app | 🔲 Pendiente | — |
 | 15 | Voice input | 🔲 Pendiente | — |
 | 16 | Cola CDC fallback | 🔲 Pendiente | — |
 | 17 | Migración entidades actuales | 🔲 Pendiente | — |
+| 💻 | Compilación remota | ⏳ server-1 caído, server-2 ocupado con modelos | — |
+
+### Notas de compilación
+- **server-1**: Nix store limpiado por `nix-store --gc` tras corrupción de glibc post-reboot. Requiere re-descarga completa de ~1.3GB de paths Nix. Cuando termine, `cargo check -p syntrix-client -p syntrix-admin` compila en ~4s.
+- **server-2**: Usado por el usuario para pruebas de modelos Ollama. **No usar** mientras ejecute modelos.
+- **Tests**: `cargo test -p syntrix-ai` → 30/30 pasan. Workspace completo requiere compilación en servidor.
 
 ### Docs actualizados tras cada tarea
 

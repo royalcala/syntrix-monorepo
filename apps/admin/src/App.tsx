@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Users, Shield, Building2, Terminal, Database, ScrollText, Plus, TerminalSquare } from "lucide-react";
+import { Users, Shield, Building2, Terminal, Database, ScrollText, Plus, TerminalSquare, Eye, Puzzle } from "lucide-react";
 import { AppShell, type NavItem } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
@@ -16,6 +16,8 @@ import { OrgsGridPage } from "./screens/OrgsGridPage";
 import { SchemaExplorer } from "./screens/SchemaExplorer";
 import { AuditTrail } from "./screens/AuditTrail";
 import { SqlConsole } from "./screens/SqlConsole";
+import { ViewsPage } from "./screens/ViewsPage";
+import { ModulesPage } from "./screens/ModulesPage";
 
 type OrgInfo = { name: string };
 
@@ -23,6 +25,8 @@ const navItems: NavItem[] = [
   { href: "/devices", label: "Dispositivos", icon: Users },
   { href: "/roles", label: "Roles", icon: Shield },
   { href: "/orgs", label: "Organizaciones", icon: Building2 },
+  { href: "/views", label: "Vistas IA", icon: Eye },
+  { href: "/modules", label: "Módulos", icon: Puzzle },
   { href: "/schemas", label: "Esquemas", icon: Database },
   { href: "/audit", label: "Auditoría", icon: ScrollText },
   { href: "/sql", label: "Consola SQL", icon: TerminalSquare },
@@ -110,6 +114,26 @@ export default function App() {
                 contentClassName="flex-1 min-h-0"
               >
                 <SchemaExplorer />
+              </PageLayout>
+            } />
+            <Route path="/views" element={
+              <PageLayout
+                title="Vistas IA"
+                description="Vistas generadas por la IA. Explora, ejecuta y administra las vistas guardadas."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0 flex flex-col"
+              >
+                <ViewsPage org={activeOrg} />
+              </PageLayout>
+            } />
+            <Route path="/modules" element={
+              <PageLayout
+                title="Módulos"
+                description="Templates y módulos activos. Los módulos extienden Syntrix con nuevas entidades y reglas."
+                className="h-[calc(100vh-4rem)] lg:h-screen"
+                contentClassName="flex-1 min-h-0"
+              >
+                <ModulesPage />
               </PageLayout>
             } />
             <Route path="/audit" element={

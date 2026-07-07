@@ -344,10 +344,10 @@ impl AppState {
         role: Option<String>,
         name: Option<String>,
         person: Option<String>,
+        device_type: Option<String>,
     ) {
-        // Update SQL: only update columns that are provided
         if let Ok(mut stmt) = self.db.prepare(
-            "UPDATE admin_devices SET active = ?3, role = COALESCE(?4, role), name = COALESCE(?5, name), person = COALESCE(?6, person), change_time = unixepoch('now') * 1000 WHERE org_id = ?1 AND node_id = ?2"
+            "UPDATE admin_devices SET active = ?3, role = COALESCE(?4, role), name = COALESCE(?5, name), person = COALESCE(?6, person), device_type = COALESCE(?7, device_type), change_time = unixepoch('now') * 1000 WHERE org_id = ?1 AND node_id = ?2"
         ) {
             let _ = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string()));
             let _ = stmt.bind_at(NonZero::new(2).unwrap(), turso_core::Value::from_text(node_id.to_string()));
@@ -358,6 +358,8 @@ impl AppState {
             let _ = stmt.bind_at(NonZero::new(5).unwrap(), turso_core::Value::from_text(name_val));
             let person_val = person.clone().unwrap_or_default();
             let _ = stmt.bind_at(NonZero::new(6).unwrap(), turso_core::Value::from_text(person_val));
+            let dt_val = device_type.unwrap_or_default();
+            let _ = stmt.bind_at(NonZero::new(7).unwrap(), turso_core::Value::from_text(dt_val));
             let _ = run_to_completion(&mut stmt);
         }
 
@@ -400,7 +402,7 @@ impl AppState {
 
     pub fn list_org_devices(&self, org: &str) -> Vec<DeviceInfo> {
         let mut devices = Vec::new();
-        if let Ok(mut stmt) = self.db.prepare("SELECT node_id, active, role, person, name, device_addr FROM admin_devices WHERE org_id = ?1") {
+        if let Ok(mut stmt) = self.db.prepare("SELECT node_id, active, role, person, name, device_addr, device_type FROM admin_devices WHERE org_id = ?1") {
             if let Ok(_) = stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org.to_string())) {
                 loop {
                     match stmt.step() {
@@ -413,6 +415,7 @@ impl AppState {
                                     person: row.get::<String>(3).unwrap_or_default(),
                                     name: row.get::<String>(4).unwrap_or_default(),
                                     device_addr: row.get::<String>(5).unwrap_or_default(),
+                                    device_type: row.get::<String>(6).unwrap_or_default(),
                                 });
                             }
                         }

@@ -18,17 +18,25 @@ pub fn open_limbo(data_dir: &PathBuf) -> anyhow::Result<Arc<turso_core::Connecti
     Ok(conn)
 }
 
-pub fn run_migrations(conn: &Arc<turso_core::Connection>) -> anyhow::Result<()> {
-    let sql = include_str!("../migrations/0000_easy_tomas.sql");
-    // Execute migration SQL — if tables already exist from a previous run,
-    // the error is benign and we continue. Drizzle-generated SQL doesn't use
-    // IF NOT EXISTS.
+fn run_single_migration(conn: &Arc<turso_core::Connection>, sql: &str, label: &str) -> anyhow::Result<()> {
     if let Err(e) = conn.execute(sql) {
         let msg = e.to_string();
         if !msg.contains("already exists") {
-            anyhow::bail!("migration failed: {e}");
+            anyhow::bail!("migration {label} failed: {e}");
         }
     }
+    Ok(())
+}
+
+pub fn run_migrations(conn: &Arc<turso_core::Connection>) -> anyhow::Result<()> {
+    let sql = include_str!("../migrations/0000_easy_tomas.sql");
+    run_single_migration(conn, sql, "0000")?;
+    let sql = include_str!("../migrations/0001_sad_alice.sql");
+    run_single_migration(conn, sql, "0001")?;
+    let sql = include_str!("../migrations/0002_good_sumo.sql");
+    run_single_migration(conn, sql, "0002")?;
+    let sql = include_str!("../migrations/0003_lucky_liz_osborn.sql");
+    run_single_migration(conn, sql, "0003")?;
     conn.execute("PRAGMA capture_data_changes_conn='full'")?;
     Ok(())
 }

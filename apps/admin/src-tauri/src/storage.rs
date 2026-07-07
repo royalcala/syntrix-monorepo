@@ -33,6 +33,8 @@ pub fn run_migrations(conn: &Arc<turso_core::Connection>) -> anyhow::Result<()> 
     run_single_migration(conn, sql, "0000")?;
     let sql = include_str!("../migrations/0001_next_madripoor.sql");
     run_single_migration(conn, sql, "0001")?;
+    let sql = include_str!("../migrations/0002_shocking_firedrake.sql");
+    run_single_migration(conn, sql, "0002")?;
     conn.execute("PRAGMA capture_data_changes_conn='full'")?;
     Ok(())
 }

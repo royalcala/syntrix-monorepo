@@ -140,6 +140,62 @@ pub mod test_utils {
     }
 }
 
+pub struct StatefulMockProvider {
+    response: String,
+    tool_calls_on_first: Vec<ToolCall>,
+    call_count: std::sync::atomic::AtomicU64,
+}
+
+impl StatefulMockProvider {
+    pub fn new() -> Self {
+        Self {
+            response: String::new(),
+            tool_calls_on_first: vec![],
+            call_count: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    pub fn with_tool_call(mut self, id: &str, name: &str, args: serde_json::Value) -> Self {
+        self.tool_calls_on_first.push(ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            args,
+        });
+        self
+    }
+}
+
+impl ModelProvider for StatefulMockProvider {
+    fn chat(
+        &self,
+        _model: &str,
+        _system: &str,
+        _messages: &[ChatMessage],
+        _tools: &[ToolDefinition],
+    ) -> Result<ProviderResponse, String> {
+        let count = self.call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count == 0 && !self.tool_calls_on_first.is_empty() {
+            Ok(ProviderResponse::with_tool_calls(self.response.clone(), self.tool_calls_on_first.clone()))
+        } else {
+            Ok(ProviderResponse::new("Resultado final".to_string()))
+        }
+    }
+
+    fn chat_stream(
+        &self,
+        _model: &str,
+        _system: &str,
+        _messages: &[ChatMessage],
+        _tools: &[ToolDefinition],
+    ) -> Result<Box<dyn Iterator<Item = Result<ProviderChunk, String>> + Send>, String> {
+        Ok(Box::new(std::iter::empty()))
+    }
+
+    fn health(&self) -> Result<String, String> {
+        Ok("ok".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

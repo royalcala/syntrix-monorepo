@@ -357,6 +357,7 @@ async fn test_device_reassignment_propagates() {
         Some("admin".into()),
         None,
         None,
+        None,
     )
     .await
     .expect("reassign device to admin");
@@ -402,6 +403,7 @@ async fn test_device_deactivation_blocks_access() {
         "acme",
         &node_id_hex,
         false,
+        None,
         None,
         None,
         None,

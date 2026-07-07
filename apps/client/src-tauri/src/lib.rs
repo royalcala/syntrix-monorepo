@@ -19,7 +19,7 @@ pub mod cdc_sync;
 pub mod ai_provider;
 
 use syntrix_core::ENTITY_NAMES;
-use syntrix_ai::tools::{AiContext, QueryResult, SearchResult, ViewDefinition};
+use syntrix_ai::tools::{AiContext, QueryResult, SearchResult, ViewDefinition, ViewMeta};
 use syntrix_ai::{AiChatRequest, AiChatResponse, AiStatusInfo, router, ai_chat_impl, ai_status_impl};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -182,13 +182,6 @@ pub fn drizzle_execute_impl(state: &AppState, sql: &str, params: &[String]) -> R
     state.indexer().drizzle_execute(sql, params)
 }
 
-use std::sync::OnceLock;
-
-fn ai_views_store() -> &'static std::sync::Mutex<Vec<ViewDefinition>> {
-    static STORE: OnceLock<std::sync::Mutex<Vec<ViewDefinition>>> = OnceLock::new();
-    STORE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
-}
-
 impl AiContext for AppState {
     fn check_read_access(&self, org_id: &str, entity: &str) -> Result<(), String> {
         check_read_access(self, org_id, entity)
@@ -237,14 +230,68 @@ impl AiContext for AppState {
     }
 
     fn save_view(&self, view: &ViewDefinition) -> Result<(), String> {
-        let mut store = ai_views_store().lock().map_err(|e| e.to_string())?;
-        store.push(view.clone());
+        let meta_json = serde_json::to_string(&view.meta).unwrap_or_default();
+        let components_json = serde_json::to_string(&view.components).unwrap_or_default();
+        let tags = view.meta.tags.join(",");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let node_id_hex = hex::encode(self.node_id());
+        let sql = "INSERT OR REPLACE INTO view_definitions (org_id, doc_id, sql, entity, components_json, root, meta_json, created_by, tags, change_time, node_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
+        let params = vec![
+            view.org_id.clone(),
+            view.id.clone(),
+            view.sql.clone(),
+            view.entity.clone(),
+            components_json,
+            view.root.clone(),
+            meta_json,
+            view.meta.created_by.clone(),
+            tags,
+            now.to_string(),
+            node_id_hex,
+        ];
+        drizzle_execute_impl(self, sql, &params)?;
         Ok(())
     }
 
     fn list_views(&self, org_id: &str, _tags: Option<&[String]>) -> Result<Vec<ViewDefinition>, String> {
-        let store = ai_views_store().lock().map_err(|e| e.to_string())?;
-        Ok(store.iter().filter(|v| v.org_id == org_id).cloned().collect())
+        let sql = "SELECT doc_id, sql, entity, components_json, root, meta_json, created_by, tags FROM view_definitions WHERE org_id = ?1 ORDER BY change_time DESC";
+        let row_objects = self.indexer().execute_sql_query(sql).map_err(|e| e.to_string())?;
+        let mut views = Vec::new();
+        for row in row_objects {
+            let obj = row.as_object().ok_or_else(|| "invalid row".to_string())?;
+            let id = obj.get("doc_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let sql_text = obj.get("sql").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let entity = obj.get("entity").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let root = obj.get("root").and_then(|v| v.as_str()).unwrap_or("root").to_string();
+            let components = obj.get("components_json")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let meta: ViewMeta = obj.get("meta_json")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(ViewMeta {
+                    natural_language_query: String::new(),
+                    created_by: obj.get("created_by").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    created_at: 0,
+                    tags: obj.get("tags").and_then(|v| v.as_str())
+                        .map(|s| s.split(',').filter(|t| !t.is_empty()).map(String::from).collect())
+                        .unwrap_or_default(),
+                });
+            views.push(ViewDefinition {
+                id,
+                org_id: org_id.to_string(),
+                sql: sql_text,
+                entity,
+                components,
+                root,
+                meta,
+            });
+        }
+        Ok(views)
     }
 }
 

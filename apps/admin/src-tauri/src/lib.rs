@@ -28,6 +28,7 @@ pub struct DeviceInfo {
     pub person: String,
     pub name: String,
     pub device_addr: String,
+    pub device_type: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -74,11 +75,11 @@ fn add_device(
 #[tauri::command]
 fn update_device(
     state: tauri::State<'_, Mutex<AppState>>,
-    org: String, node_id: String, active: bool, role: Option<String>, name: Option<String>, person: Option<String>,
+    org: String, node_id: String, active: bool, role: Option<String>, name: Option<String>, person: Option<String>, device_type: Option<String>,
 ) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
     tauri::async_runtime::block_on(
-        admin::update_device(&mut state, &org, &node_id, active, role, name, person)
+        admin::update_device(&mut state, &org, &node_id, active, role, name, person, device_type)
     ).map_err(|e| e.to_string())
 }
 
@@ -420,7 +421,8 @@ fn run_headless() {
                     let role = req["role"].as_str().map(String::from);
                     let name = req["name"].as_str().map(String::from);
                     let person = req["person"].as_str().map(String::from);
-                    admin::update_device(&mut state, org, node_id, active, role, name, person).await?;
+                    let device_type = req["device_type"].as_str().map(String::from);
+                    admin::update_device(&mut state, org, node_id, active, role, name, person, device_type).await?;
                     Ok(serde_json::json!({"updated": true}))
                 }
                 "ping" => Ok(serde_json::json!("pong")),

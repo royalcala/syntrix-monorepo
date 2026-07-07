@@ -2,6 +2,7 @@
 export {
   customers, suppliers, products, invoices, invoiceItems,
   orders, orderItems, payroll,
+  viewDefinitions, iaQueries,
 } from "../../../packages/shared-drizzle/src/entities";
 
 import { sqliteTable, integer, text, index, primaryKey } from "drizzle-orm/sqlite-core";
@@ -23,6 +24,7 @@ export const adminDevices = sqliteTable("admin_devices", {
   person: text("person").notNull().default(""),
   name: text("name").notNull().default(""),
   deviceAddr: text("device_addr").notNull().default(""),
+  deviceType: text("device_type").notNull().default("client"),
   changeTime: integer("change_time").notNull().default(sql`(unixepoch('now') * 1000)`),
 }, (table) => [
   primaryKey({ columns: [table.orgId, table.nodeId] }),

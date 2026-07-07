@@ -2,6 +2,7 @@
 export {
   customers, suppliers, products, invoices, invoiceItems,
   orders, orderItems, payroll,
+  viewDefinitions, iaQueries,
 } from "../../../packages/shared-drizzle/src/entities";
 
 import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
