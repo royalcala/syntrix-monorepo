@@ -304,7 +304,7 @@ pub fn ai_status_impl(uptime_seconds: u64) -> AiStatusInfo {
             "qwen2.5-coder:3b".to_string(),
             "deepseek-r1:1.5b".to_string(),
         ],
-        default_model: "qwen2.5-coder:3b".to_string(),
+        default_model: "granite3.2:2b".to_string(),
         health: "ok".to_string(),
         uptime_seconds,
     }

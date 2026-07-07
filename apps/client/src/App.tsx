@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useQuery } from "@tanstack/react-query";
-import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check } from "lucide-react";
+import { FileText, Package, Users, ShoppingCart, Mail, Building2, Copy, Check, Home } from "lucide-react";
 import { AppShell, type NavItem, type OrgInfo } from "@syntrix/ui/components/AppShell";
 import { SyncStatusIndicator } from "@syntrix/ui/components/SyncStatusIndicator";
 import { SyncDetailsPage } from "@syntrix/ui/components/SyncDetailsPage";
@@ -11,9 +11,12 @@ import { PageLayout } from "@syntrix/ui/components/PageLayout";
 import { CommandPalette } from "@syntrix/ui/components/CommandPalette";
 import { Button } from "@syntrix/ui/components/ui/button";
 import { Badge } from "@syntrix/ui/components/ui/badge";
+import { HomeScreen } from "./screens/HomeScreen";
+import { ViewScreen } from "./screens/ViewScreen";
 import { Inbox } from "./screens/Inbox";
 import { EntityGrid } from "@syntrix/ui/components/EntityGrid";
 import { useTimelineCursor } from "./hooks/useTimelineCursor";
+import { useIAQueue } from "./hooks/useIAQueue";
 import { customersEntity } from "./entities/customers";
 import { invoicesEntity } from "./entities/invoices";
 import { productsEntity } from "./entities/products";
@@ -30,6 +33,7 @@ const navItems: NavItem[] = [
 ];
 
 const deviceNavItems: NavItem[] = [
+  { href: "/", label: "Inicio", icon: Home, section: "device" },
   { href: "/inbox", label: "Inbox", icon: Mail, section: "device" },
   { href: "/orgs", label: "Mis Orgs", icon: Building2, section: "device" },
 ];
@@ -159,6 +163,9 @@ export default function App() {
   // react-query caches when remote peers make changes
   useTimelineCursor(activeOrg);
 
+  // IA queue: poll completed ia_queries and show notifications
+  useIAQueue(activeOrg);
+
   const filteredNavItems = navItems.filter((item) => {
     if (role === "admin") return true; // El admin local siempre ve todo por seguridad
     if (!roleData) return false;
@@ -183,13 +190,15 @@ export default function App() {
     >
       <main className="h-[calc(100vh-4rem)] lg:h-screen flex flex-col overflow-y-auto">
         <Routes>
+          <Route path="/" element={<HomeScreen org={activeOrg} />} />
+          <Route path="/view/:viewId" element={<ViewScreen org={activeOrg} />} />
           <Route path="/inbox" element={<Inbox invites={invites} onAccept={async (invite) => {
             await invoke("join_org", { inviteJson: JSON.stringify(invite), orgName: invite.org_name });
             setInvites((prev) => prev.filter((i) => i !== invite));
             loadOrgs();
           }} />} />
           <Route path="/orgs" element={<OrgsScreen nodeId={nodeId} orgs={orgs} setActiveOrg={(id) => { setActiveOrg(id); invoke("set_active_org", { orgId: id }); }} />} />
-          <Route index element={<Navigate to="/customers" replace />} />
+          <Route index element={<Navigate to="/" replace />} />
           <Route path="/customers" element={
             <PageLayout
               title="Clientes"

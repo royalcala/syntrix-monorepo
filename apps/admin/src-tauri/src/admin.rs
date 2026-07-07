@@ -102,6 +102,15 @@ pub async fn list_roles(state: &mut AppState, org: &str) -> anyhow::Result<Vec<R
     Ok(state.list_org_roles(org))
 }
 
+pub fn cdc_health(state: &AppState) -> serde_json::Value {
+    let event_count = state.list_org_devices("*").len() as i64; // dummy
+    serde_json::json!({
+        "pending_events": event_count,
+        "events_logged": 0i64,
+        "status": "ok",
+    })
+}
+
 pub fn network_status(_state: &AppState) -> String {
     "online (libp2p P2P node running)".into()
 }

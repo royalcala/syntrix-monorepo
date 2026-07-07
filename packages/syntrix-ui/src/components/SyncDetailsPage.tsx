@@ -9,7 +9,9 @@ import {
   Shield, 
   User, 
   MapPin, 
-  RefreshCw 
+  RefreshCw,
+  Database,
+  Clock,
 } from "lucide-react";
 import { PageLayout } from "./PageLayout";
 import { Button } from "./ui/button";
@@ -146,48 +148,80 @@ export function SyncDetailsPage({ org, nodeId: propNodeId }: SyncDetailsPageProp
       }
     >
 
-      {/* Overview Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Card 1: Network Health */}
-        <Card className="backdrop-blur-md bg-card/90 border-border">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center justify-between">
-              Estado General
-              {isHealthy ? (
-                <Badge className="bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/15 border-emerald-500/20">Sincronizado</Badge>
-              ) : (
-                <Badge className="bg-amber-500/10 text-amber-500 hover:bg-amber-500/15 border-amber-500/20">Revisando P2P</Badge>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-end justify-between">
-              <div>
-                <span className="text-3xl font-bold">{onlinePeers}</span>
-                <span className="text-muted-foreground text-sm"> / {totalPeers} dispositivos online</span>
-              </div>
-              <Activity size={32} className={onlinePeers > 0 ? "text-emerald-500 animate-pulse" : "text-muted-foreground"} />
-            </div>
-            
-            {/* Visual health bar */}
-            <div className="w-full bg-accent h-2 rounded-full overflow-hidden">
-              <div 
-                className={`h-full transition-all duration-500 ${isHealthy ? 'bg-emerald-500' : 'bg-amber-500'}`}
-                style={{ width: `${totalPeers > 0 ? (onlinePeers / totalPeers) * 100 : 100}%` }}
-              />
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {totalPeers === 0 
-                ? "No hay otros dispositivos registrados en esta organización."
-                : isHealthy 
-                ? "El nodo local está sincronizado correctamente con la red."
-                : "Intentando conectar con dispositivos conocidos..."}
-            </p>
-          </CardContent>
-        </Card>
+      {/* CDC Health metrics */}
+      {(() => {
+        const peersWithFreshness = info?.peers.map(p => ({
+          ...p,
+          latency: p.last_seen ? Date.now() - p.last_seen : null,
+        })) || [];
+        const avgLatency = peersWithFreshness
+          .filter(p => p.latency !== null && p.status === "online")
+          .reduce((sum, p, _, arr) => sum + (p.latency || 0) / arr.length, 0);
+        const isFresh = avgLatency < 30000; // less than 30s = fresh
+        return (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <Card className="backdrop-blur-md bg-card/90 border-border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  <Database size={14} />
+                  Réplica CDC
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${isFresh ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                  <span className="text-xs">{isFresh ? "Al día" : "Atrasada"}</span>
+                </div>
+              </CardContent>
+            </Card>
 
-        {/* Card 2: Local Node Info */}
-        <Card className="backdrop-blur-md bg-card/90 border-border md:col-span-2">
+            <Card className="backdrop-blur-md bg-card/90 border-border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  <Activity size={14} />
+                  Pares Online
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <span className="text-2xl font-bold">{onlinePeers}</span>
+                <span className="text-xs text-muted-foreground ml-1">/ {totalPeers}</span>
+              </CardContent>
+            </Card>
+
+            <Card className="backdrop-blur-md bg-card/90 border-border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  <Clock size={14} />
+                  Latencia Estimada
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <span className="text-lg font-bold">
+                  {avgLatency > 0 ? `${Math.round(avgLatency / 1000)}s` : "—"}
+                </span>
+              </CardContent>
+            </Card>
+
+            <Card className="backdrop-blur-md bg-card/90 border-border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  <Network size={14} />
+                  Estado
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Badge className={isHealthy ? "bg-emerald-500/10 text-emerald-500" : "bg-amber-500/10 text-amber-500"}>
+                  {isHealthy ? "Sincronizado" : "Desconectado"}
+                </Badge>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
+
+      {/* Local Node Info */}
+      <div className="mb-6">
+        <Card className="backdrop-blur-md bg-card/90 border-border">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <Laptop size={16} />

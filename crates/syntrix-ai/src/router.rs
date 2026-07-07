@@ -77,33 +77,11 @@ pub trait ModelRouter: Send + Sync {
 pub struct DefaultRouter;
 
 impl ModelRouter for DefaultRouter {
-    fn select(&self, task: TaskType) -> ModelSelection {
-        match task {
-        TaskType::SchemaLookup | TaskType::FormGenerate => ModelSelection {
+    fn select(&self, _task: TaskType) -> ModelSelection {
+        ModelSelection {
             primary: "granite3.2:2b",
             fallback: "granite4.1:3b",
-            cloud: None,
-        },
-        TaskType::SqlGenerate | TaskType::ToolSelect | TaskType::SpanishAmbig => ModelSelection {
-            primary: "qwen2.5-coder:3b",
-            fallback: "granite4.1:3b",
             cloud: Some("groq/llama3-70b"),
-        },
-        TaskType::ViewGenerate | TaskType::RelationNavigate | TaskType::MultiStep => ModelSelection {
-            primary: "granite4.1:3b",
-            fallback: "qwen2.5-coder:3b",
-            cloud: Some("groq/llama3-70b"),
-        },
-        TaskType::ErrorRecovery => ModelSelection {
-            primary: "qwen2.5-coder:3b",
-            fallback: "deepseek-r1:1.5b",
-            cloud: Some("deepseek/deepseek-chat"),
-        },
-        TaskType::ModuleGenerate => ModelSelection {
-            primary: "granite4.1:3b",
-            fallback: "deepseek-r1:1.5b",
-            cloud: Some("deepseek/deepseek-chat"),
-        },
         }
     }
 }
@@ -148,8 +126,8 @@ mod tests {
         let sel = router.select(TaskType::SchemaLookup);
         assert_eq!(sel.primary, "granite3.2:2b");
         assert_eq!(sel.fallback, "granite4.1:3b");
-        assert!(sel.cloud.is_none());
+        assert!(sel.cloud.is_some());
         let sel2 = router.select(TaskType::SqlGenerate);
-        assert_eq!(sel2.primary, "qwen2.5-coder:3b");
+        assert_eq!(sel2.primary, "granite3.2:2b");
     }
 }

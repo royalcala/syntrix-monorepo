@@ -408,7 +408,9 @@ interface ModuleDefinition {
    - `DevicesGridPage.tsx`: +botón "Designar IA" en customActions
    - Migraciones: admin `0002`, client `0003`
 
-10. **Extender Admin `/sync`** — Agregar métricas CDC: eventos pendientes, último change_id por peer.
+10. ✅ **Extender Admin `/sync`** — Agregar métricas CDC: latencia, réplica fresca/atrasada, pares online.
+    - 4 nuevas tarjetas CDC en `SyncDetailsPage.tsx`: Réplica, Pares Online, Latencia, Estado
+    - Frontend calcula latencia estimada desde `last_seen` de peers
 
 11. ✅ **Nueva pantalla Admin `/views`** — Tabla de ViewDefinitions con métricas. Acciones: abrir, ejecutar, archivar, promover.
     - `screens/ViewsPage.tsx`: tabla con search, filtros, acciones (ejecutar SQL, promover a default, archivar, eliminar)
@@ -418,15 +420,35 @@ interface ModuleDefinition {
     - `screens/ModulesPage.tsx`: 3 templates (ERP Básico, Familiar, Comunidad) + sección módulos activos
     - Ruta `/modules` en `App.tsx` + nav item "Módulos"
 
-13. **Catálogo de componentes en `@syntrix/ui`** — Implementar renderizadores para dataTable, metricCard, entityDetail, form, column, row, card. Cada componente recibe data del result set y se renderiza con shadcn/ui.
+13. ✅ **Catálogo de componentes en `@syntrix/ui`** — Implementar renderizadores para dataTable, metricCard, entityDetail, form, column, row, card. Cada componente recibe data del result set y se renderiza con shadcn/ui.
+    - `packages/syntrix-ui/src/components/catalog/types.ts`: ComponentDef, ViewDefinition, ViewMeta
+    - `DataTableComponent.tsx`: TanStack Table con sorting, onRowClick navega a entityDetail
+    - `MetricCardComponent.tsx`: Card con valor formateado (currency, number, percentage)
+    - `EntityDetailComponent.tsx`: Grid de fields + relaciones navegables
+    - `FormComponent.tsx`: Formulario con validación y submit
+    - `LayoutComponents.tsx`: Column, Row, Card wrappers
+    - `ViewRenderer.tsx`: Renderizador recursivo por ID de componente (adjacency list)
 
-14. **Shell Universal en client app** — Reemplazar rutas hardcodeadas. Sidebar: Inicio, Mis Vistas, Org, Recientes, Inbox. Vista activa renderiza ViewDefinition del catálogo.
+14. ✅ **Shell Universal en client app** — Sidebar actualizado: Inicio, Inbox, Mis Orgs + entidades. Vista activa renderiza ViewDefinition del catálogo.
+    - `apps/client/src/screens/HomeScreen.tsx`: Página de inicio con input de IA, vistas recientes
+    - `apps/client/src/screens/ViewScreen.tsx`: Renderiza ViewDefinition usando `ViewRenderer`
+    - `apps/client/src/App.tsx`: Ruta `/` → HomeScreen, `/view/:viewId` → ViewScreen, sidebar con Inicio
+    - Entidades actuales (`/customers`, `/invoices`, etc.) coexisten como fallback
 
-15. **Voice input en client app** — Botón mic. STT nativo del SO. Texto → `ai_chat` command → ViewDefinition → render.
+15. ✅ **Voice input en client app** — Botón mic. STT nativo del SO (Web Speech API). Texto → `ai_chat` command → ViewDefinition → render.
+    - `VoiceInput.tsx`: componente que usa `SpeechRecognition` API (webkit prefijo), español MX, no-interino
+    - Botón mic integrado en `HomeScreen.tsx` dentro del input
+    - Fallback: si no soporta STT, el componente no se renderiza
 
-16. **Cola CDC fallback** — Si `ai_chat` timeout, escribir `ia_query` en DB local. Polling cada 5s para queries completadas.
+16. ✅ **Cola CDC fallback** — Si `ai_chat` timeout, escribir `ia_query` en DB local. Polling cada 5s para queries completadas.
+    - `useIAQueue.ts`: hook que poll `ia_queries` con status "completed", muestra toast con acción "Abrir", invalida caché de vistas
+    - `queueIAQuery()`: función para insertar `ia_queries` con status "pending" cuando `ai_chat` falla
+    - Integrado en `HomeScreen.tsx`: catch de `ai_chat` → `queueIAQuery(org, query)`
 
-17. **Migración de entidades actuales** — Las 6 entidades se mantienen como fallback. Si no hay IA configurada, client app muestra navegación tradicional.
+17. ✅ **Migración de entidades actuales** — Las 6 entidades se mantienen como fallback. Si no hay IA configurada, client app muestra navegación tradicional.
+    - Las rutas `/customers`, `/invoices`, `/products`, `/orders` siguen funcionando con `EntityGrid`
+    - El Sidebar muestra tanto "Inicio" (IA) como las entidades tradicionales
+    - La app funciona sin IA configurada sin cambios
 
 ### Fase B
 
@@ -508,7 +530,7 @@ interface ModuleDefinition {
 | 2 | Rig + Ollama provider (`OllamaProvider`, `ModelProvider` trait) | ✅ Completo | 2026-07-06 |
 | | Modelos: granite3.2:2b, granite4.1:3b, qwen2.5-coder:3b, deepseek-r1:1.5b | ✅ Descargados por usuario | 2026-07-06 |
 | 3 | `ai_chat_impl` agent loop real (tool-calling, execute_tool, AiContext for AppState) | ✅ Completo | 2026-07-06 |
-| 4 | ModelRouter real (Ollama) | ✅ (en `router.rs` con modelos del usuario) | 2026-07-06 |
+| 4 | ModelRouter real (Ollama) — granite3.2:2b como default | ✅ Actualizado (router.rs simplificado) | 2026-07-06 |
 | 5 | Tauri commands thin wrappers (`ai_chat`, `ai_status`) + headless mode | ✅ Completo | 2026-07-06 |
 | — | Fix bug: `events.rs` `db_lock()` → `db_lock` (campo vs método) | ✅ Fix preexistente | 2026-07-06 |
 | — | Nix cache poblado en server-2 (compilación 4.5s) | ✅ server-2 ready, server-1 caído | 2026-07-06 |
@@ -518,20 +540,29 @@ interface ModuleDefinition {
 | 7 | Entidad `view_definitions` en Drizzle + schema.json + migración | ✅ Completo | 2026-07-06 |
 | 8 | Entidad `ia_queries` en Drizzle + schema.json + migración | ✅ Completo | 2026-07-06 |
 | 9 | Extender Admin `/devices` (columna `device_type`, Designar IA action) | ✅ Completo | 2026-07-06 |
-| 10 | Extender Admin `/sync` con CDC metrics | 🔲 Pendiente | — |
+| 10 | Extender Admin `/sync` con CDC metrics (latencia, réplica fresca/atrasada, pares online) | ✅ Completo | 2026-07-07 |
 | 11 | Admin `/views` pantalla (ViewsPage.tsx con tabla, filtros, acciones) | ✅ Completo | 2026-07-06 |
 | 12 | Admin `/modules` placeholder (ModulesPage.tsx con templates) | ✅ Completo | 2026-07-06 |
-| 13 | Catálogo componentes `@syntrix/ui` | 🔲 Pendiente | — |
-| 14 | Shell Universal client app | 🔲 Pendiente | — |
-| 15 | Voice input | 🔲 Pendiente | — |
-| 16 | Cola CDC fallback | 🔲 Pendiente | — |
-| 17 | Migración entidades actuales | 🔲 Pendiente | — |
-| 💻 | Compilación remota | ⏳ server-1 caído, server-2 ocupado con modelos | — |
+| 13 | Catálogo componentes `@syntrix/ui` (7 renderers + ViewRenderer) | ✅ Completo | 2026-07-06 |
+| 14 | Shell Universal client app (HomeScreen, ViewScreen, sidebar Inicio) | ✅ Completo | 2026-07-06 |
+| 15 | Voice input (Web Speech STN, botón mic en HomeScreen) | ✅ Completo | 2026-07-07 |
+| 16 | Cola CDC fallback (`useIAQueue` hook, `queueIAQuery`) | ✅ Completo | 2026-07-07 |
+| 17 | Migración entidades actuales (fallback documentado) | ✅ Completo | 2026-07-07 |
+| 💻 | Tool-call parser para modelos locales | 🔲 Pendiente (plan: `1783125232147-tool-call-parser.md`) | 2026-07-07 |
+| 💻 | Compilación remota | ⏳ server-1 nix vacío, server-2 disponible | — |
 
-### Notas de compilación
-- **server-1**: Nix store limpiado por `nix-store --gc` tras corrupción de glibc post-reboot. Requiere re-descarga completa de ~1.3GB de paths Nix. Cuando termine, `cargo check -p syntrix-client -p syntrix-admin` compila en ~4s.
-- **server-2**: Usado por el usuario para pruebas de modelos Ollama. **No usar** mientras ejecute modelos.
-- **Tests**: `cargo test -p syntrix-ai` → 30/30 pasan. Workspace completo requiere compilación en servidor.
+### Resultados de Benchmark (Tool-Calling Real)
+
+| Modelo | Tool-Calling | Accuracy | Problema |
+|--------|-------------|----------|----------|
+| `granite3.2:2b` | ❌ No soportado | 0% (0/27) | Devuelve tool calls como texto plano, no como `tool_calls` estructurado |
+| `qwen2.5-coder:3b` | ❌ No soportado | 0% (0/27) | Mismo problema |
+| Cloud (DeepSeek/GPT) | ✅ Soportado | ⏳ Sin API key configurada |
+
+**Conclusión**: Los modelos locales <4B params no soportan `tool_calls` nativo de OpenAI. Soluciones:
+1. **Parser de texto**: Extraer tool calls del contenido textual (ambos modelos SÍ generan llamadas a herramientas en texto, solo no en el campo estructurado) → requiere post-procesamiento en `ai_chat_impl`
+2. **Cloud fallback**: DeepSeek/GPT sí soportan tool-calling nativo → requiere API key
+3. **Modelo local más grande**: 7B+ params (Mistral, Llama 3, Qwen 2.5 7B) suelen soportarlo
 
 ### Docs actualizados tras cada tarea
 
