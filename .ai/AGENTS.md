@@ -75,7 +75,7 @@ ssh server-1 "nix store gc --extra-experimental-features 'nix-command flakes'"
 - `crates/` — Shared Rust libraries:
   - `syntrix-core` — core types, schema registry, entity metadata
   - `syntrix-ai` — AI agent loop (`ai_chat_impl`/`ai_status_impl`), model router, tool definitions, benchmarking, Ollama/Mock providers
-  - `syntrix-network` — libp2p networking, CDC codecs, P2PNode
+  - `syntrix-network` — libp2p 0.56 networking, CDC codecs, P2PNode. NAT traversal: autonat + relay client + dcutr; TCP+QUIC transports; `block_peer`, auto-reconnect (backoff 2s→64s), peer scoring, Kademlia providers, IPFS bootstrap. Relay transport wired via `with_relay_client`.
   - `syntrix-testkit` — test utilities (temp_limbo_db, poll_until, seed_test_document, etc.)
   - `syntrix-logging` — structured NDJSON logging with query/summarize API
 - `justfile` — Project automation runner
@@ -169,7 +169,7 @@ Entity tables use **typed SQL columns** (not a generic `payload` JSON blob) — 
 `.kilo/plans/1782949593655-relational-cdc-migration.md` for the full migration history and
 rationale.
 
-### Tier 3b — Drizzle Proxy (`drizzle_execute`)
+### Tier 3c — Drizzle Proxy (`drizzle_execute`)
 - **What**: Frontend can use Drizzle ORM's full type-safe query API (select, joins, where,
   aggregations) via `drizzle-orm/sqlite-proxy`. Drizzle generates SQL on the frontend,
   sends it to the Rust backend via `invoke("drizzle_execute", { sql, params })`,
@@ -252,6 +252,9 @@ The `crates/syntrix-ai/` crate implements the AI chat loop, tool execution, and 
 - `tools.rs` — `AiContext` trait (query_entity, search_entity, save_view, list_views, check_read_access),
   `ViewDefinition`/`ViewMeta` types, `get_schema_impl`, `query_entity_tool`, `save_view_tool`.
 - `router.rs` — `ModelRouter` trait, `DefaultRouter`, `TaskType::classify()` (task → model tier).
+  Also the **capability-tiered cascade** (Fase 2): `DeviceTier::from_specs()`, `TaskTier::from_task_type()`,
+  `CascadeDecision::resolve(device, task, has_peer, cloud_opt_in) → {Local|Delegate|Cloud|Unavailable}`,
+  and `strip_think_tags()` for deepseek-r1 output sanitization.
 - `provider.rs` — `ModelProvider` trait, `OllamaProvider` (via reqwest), `MockProvider`/`StatefulMockProvider` for tests.
 - `bench.rs` — tool-calling benchmark harness (9 test cases, local models + cloud fallback).
 
@@ -282,7 +285,7 @@ The crate `crates/syntrix-logging/` provides structured NDJSON logging with a qu
   Available operations: `create_org`, `send_invite`, `join_org`, `commit_event`, `sync_push`, `sync_pull`, `heartbeat`, `subscribe_ingest`. Each macro creates a tracing span with `org`, `op`, `step`, and auto-generated `corr_id` (UUID). Event fields inherit the span context.
 - **Zero secrets in logs**: Sensitive fields (`secret_*`, `keypair`, `doc_ticket`, `ticket`) are auto-redacted. Never log keypairs or invite tickets directly.
 - **AI diagnosis**: Use `query_logs` (filtered/paginated) and `summarize_logs` (digest) instead of reading raw log files.
-- **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,iroh=warn`) and `IROH_DEBUG=1` (iroh debug to separate file); no code changes needed.
+- **Verbosity**: Control via `RUST_LOG` (default `syntrix=info,libp2p=warn`); no code changes needed. (Note: the project migrated off iroh to rust-libp2p — see `.kilo/plans/1783470696465-adr-libp2p-vs-iroh-litep2p.md`.)
 - **Ring buffer**: Default 5000 entries, tunable via `SYNTRIX_LOG_RING` env var.
 - **New `#[tauri::command]`**: Wrap `*_impl` functions in both apps; new logging APIs follow the same convention.
 - **Tail**: The Tauri event `log_event` emits new records in ~250ms batches. UI subscribes via `listen("log_event", ...)`.
