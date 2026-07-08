@@ -16,9 +16,9 @@ Limbo (`turso_cdc`) en vez de retransmitir eventos JSON por gossip.
 ┌─ Aplicación (Rust/Tauri) ─────────────────────────────────┐
 │  Drizzle ORM (schemas TypeScript → SQL .sql, columnas     │
 │  tipadas por entidad)                                     │
-│  shared/drizzle/entity-schema-meta.mjs → schema.json       │
+│  packages/shared-drizzle/src/export-schema.ts → schema.json│
 │  crates/syntrix-network/schema.json (registro de columnas)│
-│  include_str!("../migrations/*.sql")                       │
+│  syntrix-migrate (runner automático vía _journal.json)     │
 │  turso_core::Connection (SQL embebido + CDC + FTS)         │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -35,10 +35,10 @@ columnas de sincronización compartidas: `org_id`, `doc_id`, `change_time`, `nod
 
 Para generar migraciones y el registro de columnas para Rust: `just drizzle-gen` (ejecuta
 `drizzle-kit generate` en ambas apps y `pnpm export-schema`, que regenera
-`crates/syntrix-network/schema.json` desde `shared/drizzle/entity-schema-meta.mjs`).
+`crates/syntrix-network/schema.json` desde `packages/shared-drizzle/src/export-schema.ts::generateSchemaJson`).
 
 Esto produce archivos `.sql` en `apps/*/src-tauri/migrations/` que se ejecutan al arrancar via
-`include_str!`.
+`syntrix-migrate` (runner con tabla `__migrations` y orden por `_journal.json`).
 
 ## Tablas
 
@@ -86,7 +86,7 @@ CDC, no como parte de un JSON anidado.
 
 ## Registro de columnas (schema.json)
 
-`shared/drizzle/entity-schema-meta.mjs` es la fuente única de columnas/tipos/flags
+`packages/shared-drizzle/src/export-schema.ts::generateSchemaJson` es la fuente única de columnas/tipos/flags
 `searchable` por entidad (incluyendo tablas hijas). Se exporta a
 `crates/syntrix-network/schema.json`, cargado en Rust vía `syntrix_network::schema` (re-exportado
 como `syntrix_core::schema` para compatibilidad). Este registro permite:

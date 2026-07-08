@@ -26,7 +26,7 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 - **Función:** Proveer consultas SQL eficientes con índices, joins y FTS.
 - **Schema-Driven:** Las tablas se generan desde Drizzle (`apps/*/drizzle/schema.ts`), con
   columnas tipadas, índices y constraints. El registro de columnas (`schema.json`, generado
-  desde `shared/drizzle/entity-schema-meta.mjs`) es consumido por Rust genéricamente.
+  desde `packages/shared-drizzle/src/export-schema.ts::generateSchemaJson`) es consumido por Rust genéricamente.
 - **Migraciones:** Drizzle Kit genera los archivos SQL de migración; `turso_core` los aplica al
   iniciar.
 - **CDC Sync:** Cada mutación se captura nativamente en `turso_cdc` y se replica a los peers vía
