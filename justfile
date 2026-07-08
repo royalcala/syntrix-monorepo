@@ -277,6 +277,15 @@ docs-kill:
     pkill -f "[n]ode.*astro" || true
 
 
+# Compila el binario relay (self-hosted NAT relay server)
+build-relay:
+    @echo "=== Compilando syntrix-relay ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-2"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-relay'
+
+# Ejecuta el relay server localmente
+run-relay listen="/ip4/0.0.0.0/udp/0/quic-v1":
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/syntrix-relay && RUST_LOG=syntrix_relay=info cargo run -- --listen {{listen}}'
+
 # Compila el sitio estático de la documentación (incluyendo rustdoc remoto y Astro Starlight)
 docs-build:
     @echo "=== Compilando Rustdoc remotamente en el servidor ==="
