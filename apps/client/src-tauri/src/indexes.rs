@@ -843,11 +843,11 @@ impl SqlEngine {
                     if let Some(row) = stmt.row() {
                         let mut cols: Vec<serde_json::Value> = Vec::new();
                         for idx in 0..32 {
-                            let s: String = match row.get(idx) {
+                            let v: &turso_core::Value = match row.get(idx) {
                                 Ok(v) => v,
                                 Err(_) => break,
                             };
-                            cols.push(serde_json::Value::String(s));
+                            cols.push(column_value_to_json(v));
                         }
                         rows.push(cols);
                     }
