@@ -116,6 +116,15 @@ El sistema funciona con un enfoque donde el frontend es ultra-ligero y delega to
 
 ---
 
+### Hallazgo: Tool-Calling en Modelos Locales (Benchmark)
+- Modelos locales (granite3.2:2b, qwen2.5-coder:3b) obtuvieron **0% de tool-calling nativo**
+  en el benchmark — devuelven la información de tools en el texto `content`, no en el campo
+  estructurado `tool_calls` que Ollama/OpenAI usan.
+- **Solución (Fase 2)**: GBNF grammars con llama.cpp para generar JSON estructurado con
+  el esquema correcto, eliminando la necesidad de text-parsing frágil.
+- El plan `1783125232147-tool-call-parser.md` queda **SUPERSEDED** por
+  `1783452736636-capability-tiered-inference.md`.
+
 ## 4. Definición de MVP (Listo para Lanzamiento)
 - Motor FTS nativo implementado y Command Palette funcional.
 - Grid scrollea 10,000 registros a 60 FPS (Virtualización).
