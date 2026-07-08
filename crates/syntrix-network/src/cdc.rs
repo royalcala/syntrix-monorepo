@@ -452,6 +452,17 @@ fn run_to_completion(stmt: &mut turso_core::Statement) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Prune CDC events up to (and including) the given watermark.
+/// Returns the number of rows deleted. No-op if watermark == 0.
+pub fn prune_cdc(conn: &Arc<turso_core::Connection>, watermark: u64) -> anyhow::Result<u64> {
+    if watermark == 0 {
+        return Ok(0);
+    }
+    let sql = format!("DELETE FROM turso_cdc WHERE change_id <= {watermark}");
+    conn.execute(&sql)?;
+    Ok(watermark)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,5 +889,43 @@ mod tests {
         // Continuing from cursor should get remaining events
         let (remaining, _) = read_cdc_events(&conn, cursor, 100, None).unwrap();
         assert_eq!(remaining.len(), 2, "remaining 2 events");
+    }
+
+    #[test]
+    fn prune_cdc_removes_events_below_watermark() {
+        let (_dir, conn) = test_conn();
+        create_customers_table(&conn);
+        enable_cdc(&conn);
+
+        conn.execute("INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('o1', 'c1', 'A', 1000)").unwrap();
+        conn.execute("INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('o1', 'c2', 'B', 2000)").unwrap();
+        conn.execute("INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('o1', 'c3', 'C', 3000)").unwrap();
+
+        // Read events to get the cursor (watermark) — this is the highest change_id read
+        let (events, cursor) = read_cdc_events(&conn, 0, 100, None).unwrap();
+        assert_eq!(events.len(), 3, "3 events before pruning");
+        assert!(cursor >= 3, "cursor should be at least 3");
+
+        // Prune at cursor (watermark = highest change_id seen → removes ALL readable events)
+        // Use cursor-1 to leave the last event
+        let watermark = cursor.saturating_sub(1);
+        let deleted = prune_cdc(&conn, watermark).unwrap();
+        assert!(deleted > 0, "should delete rows");
+
+        // Only events with change_id > watermark should remain
+        let (remaining, _) = read_cdc_events(&conn, 0, 100, None).unwrap();
+        assert_eq!(remaining.len(), 1, "1 event after pruning at cursor-1");
+    }
+
+    #[test]
+    fn prune_cdc_zero_watermark_is_noop() {
+        let (_dir, conn) = test_conn();
+        create_customers_table(&conn);
+        enable_cdc(&conn);
+
+        conn.execute("INSERT INTO customers (org_id, doc_id, name, change_time) VALUES ('o1', 'c1', 'A', 1000)").unwrap();
+
+        let deleted = prune_cdc(&conn, 0).unwrap();
+        assert_eq!(deleted, 0, "watermark=0 should be no-op");
     }
 }

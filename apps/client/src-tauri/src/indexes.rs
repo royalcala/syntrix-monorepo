@@ -777,6 +777,43 @@ impl SqlEngine {
         syntrix_network::cdc::read_cdc_events(&self.conn, since_change_id, limit, table_filter)
     }
 
+    /// Minimum CDC cursor across active orgs for pruning watermark calculation.
+    pub fn min_active_cdc_cursor(&self, active_orgs: &[String]) -> anyhow::Result<u64> {
+        if active_orgs.is_empty() {
+            return Ok(0);
+        }
+        let _lock = self.db_lock.lock().unwrap();
+        let placeholders: Vec<String> = (1..=active_orgs.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!("SELECT COALESCE(MIN(last_change_id), 0) FROM cdc_cursor WHERE org_id IN ({})", placeholders.join(","));
+        let mut stmt = self.conn.prepare(&sql)?;
+        for (i, org) in active_orgs.iter().enumerate() {
+            bind_value(&mut stmt, i + 1, turso_core::Value::from_text(org.clone()))?;
+        }
+        let mut min_cursor = 0u64;
+        loop {
+            match stmt.step()? {
+                turso_core::StepResult::Row => {
+                    if let Some(row) = stmt.row() {
+                        let v: i64 = row.get(0)?;
+                        min_cursor = v as u64;
+                    }
+                }
+                turso_core::StepResult::Done => break,
+                turso_core::StepResult::IO | turso_core::StepResult::Yield => stmt._io().step()?,
+                turso_core::StepResult::Interrupt | turso_core::StepResult::Busy => {
+                    anyhow::bail!("min_active_cdc_cursor: database busy");
+                }
+            }
+        }
+        Ok(min_cursor)
+    }
+
+    /// Prune CDC events up to (and including) the given watermark.
+    pub fn prune_cdc_up_to(&self, watermark: u64) -> anyhow::Result<u64> {
+        let _lock = self.db_lock.lock().unwrap();
+        syntrix_network::cdc::prune_cdc(&self.conn, watermark)
+    }
+
     /// Apply CDC events to the local database, acquiring `db_lock` for the duration.
     pub fn apply_cdc_events(
         &self,

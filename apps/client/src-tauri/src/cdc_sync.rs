@@ -37,8 +37,10 @@ pub async fn run_cdc_publish_loop(
     interval: Duration,
 ) {
     let local_node_id = hex::encode(p2p.local_peer_id_bytes());
+    let mut cycle_count: u64 = 0;
     loop {
         tokio::time::sleep(interval).await;
+        cycle_count += 1;
         let orgs: Vec<(String, String)> = {
             let map = match cdc_topics.read() {
                 Ok(m) => m,
@@ -47,9 +49,22 @@ pub async fn run_cdc_publish_loop(
             map.iter().map(|(o, t)| (o.clone(), t.clone())).collect()
         };
 
-        for (org_id, topic) in orgs {
-            if let Err(e) = publish_org_cdc_batch(&p2p, &indexer, &org_id, &topic, &local_node_id) {
+        for (org_id, topic) in &orgs {
+            if let Err(e) = publish_org_cdc_batch(&p2p, &indexer, org_id, topic, &local_node_id) {
                 tracing::warn!(target: "syntrix", org = %org_id, error = %e, "cdc publish loop: failed to publish batch");
+            }
+        }
+
+        // Prune turso_cdc every ~20 cycles (each cycle ~interval)
+        if cycle_count % 20 == 0 {
+            let active_orgs: Vec<String> = orgs.iter().map(|(o, _)| o.clone()).collect();
+            if let Ok(watermark) = indexer.min_active_cdc_cursor(&active_orgs) {
+                if watermark > 0 {
+                    match indexer.prune_cdc_up_to(watermark) {
+                        Ok(n) => tracing::debug!(target: "syntrix", watermark, deleted = n, "cdc prune"),
+                        Err(e) => tracing::warn!(target: "syntrix", %e, "cdc prune failed"),
+                    }
+                }
             }
         }
     }
