@@ -19,6 +19,8 @@ syntrix-core = { path = "../../../crates/syntrix-core" }
 syntrix-ai = { path = "../../../crates/syntrix-ai" }
 syntrix-network = { path = "../../../crates/syntrix-network" }
 syntrix-logging = { path = "../../../crates/syntrix-logging" }
+syntrix-migrate = { path = "../../../crates/syntrix-migrate" }
+include_dir = "0.7"
 libp2p = { version = "0.54", features = ["identify"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

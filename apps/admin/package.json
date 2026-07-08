@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "export-schema": "node scripts/export-schema-json.mjs"
+    "export-schema": "tsx scripts/export-schema-json.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

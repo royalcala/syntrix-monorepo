@@ -1,16 +1,9 @@
 use std::sync::Arc;
 use turso_core::Connection;
 
-/// Reads and runs migration 0003 directly. The crate's full migration chain
-/// expects FK-dependent tables (0000–0002) that don't exist in a fresh test DB.
-pub fn run_migration_0003(conn: &Arc<Connection>) {
-    let sql = include_str!("../../migrations/0003_lucky_liz_osborn.sql");
-    for statement in sql.split("--> statement-breakpoint") {
-        let trimmed = statement.trim();
-        if !trimmed.is_empty() {
-            conn.execute(trimmed).expect("migration 0003 step");
-        }
-    }
+/// Runs all pending migrations via the production migration runner.
+pub fn run_migrations(conn: &Arc<Connection>) {
+    syntrix_client_lib::storage::run_migrations(conn).expect("run_migrations");
 }
 
 pub fn run_migration_sql(conn: &Arc<Connection>, path: &str) -> String {

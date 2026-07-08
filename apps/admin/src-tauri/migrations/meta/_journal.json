@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1782953794115,
-      "tag": "0000_unique_imperial_guard",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1783112056006,
-      "tag": "0001_next_madripoor",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1783381690657,
-      "tag": "0002_shocking_firedrake",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1783459731874,
-      "tag": "0003_great_gateway",
+      "when": 1783529650518,
+      "tag": "0000_square_william_stryker",
       "breakpoints": true
     }
   ]

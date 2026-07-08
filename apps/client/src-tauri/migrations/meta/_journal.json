@@ -5,36 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1782999143492,
-      "tag": "0000_easy_tomas",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1783038713565,
-      "tag": "0001_sad_alice",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1783108108654,
-      "tag": "0002_good_sumo",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1783381413502,
-      "tag": "0003_lucky_liz_osborn",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1783459733185,
-      "tag": "0004_tiny_loki",
+      "when": 1783529651995,
+      "tag": "0000_unique_abomination",
       "breakpoints": true
     }
   ]

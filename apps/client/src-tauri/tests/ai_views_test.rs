@@ -96,9 +96,9 @@ fn query_string_opt(conn: &Arc<Connection>, sql: &str, params: &[(&str, &str)], 
 // ── view_definitions CRUD ──────────────────────────────────────────
 
 #[test]
-fn test_migration_0003_creates_view_definitions_and_ia_queries() {
+fn test_migration_0000_creates_all_tables() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
 
     let tables = query_string(&conn,
         "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('view_definitions', 'ia_queries') ORDER BY name",
@@ -109,7 +109,7 @@ fn test_migration_0003_creates_view_definitions_and_ia_queries() {
 #[test]
 fn test_view_definitions_insert_and_select() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
     common::assert_table_columns(&conn, "view_definitions", 11);
 
     insert_row(&conn,
@@ -135,7 +135,7 @@ fn test_view_definitions_insert_and_select() {
 #[test]
 fn test_view_definitions_filters_by_org_id() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
 
     for (org, doc) in [("org-a", "v1"), ("org-a", "v2"), ("org-b", "v3")] {
         insert_row(&conn,
@@ -154,7 +154,7 @@ fn test_view_definitions_filters_by_org_id() {
 #[test]
 fn test_view_definitions_lww_columns() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
 
     insert_row(&conn,
         "INSERT INTO view_definitions (org_id, doc_id, sql, entity, components_json, root, meta_json, created_by, tags, change_time, node_id) \
@@ -177,7 +177,7 @@ fn test_view_definitions_lww_columns() {
 #[test]
 fn test_ia_query_insert_and_state_transition() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
 
     insert_row(&conn,
         "INSERT INTO ia_queries (org_id, doc_id, text, status, change_time, node_id) VALUES (?1,?2,?3,'pending',1000,'node-a')",
@@ -207,7 +207,7 @@ fn test_ia_query_insert_and_state_transition() {
 #[test]
 fn test_ia_queries_index_by_org_and_status() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
 
     insert_row(&conn,
         "INSERT INTO ia_queries (org_id, doc_id, text, status, change_time, node_id) VALUES (?1,?2,?3,'pending',0,'')",
@@ -230,7 +230,7 @@ fn test_ia_queries_index_by_org_and_status() {
 #[test]
 fn test_admin_devices_schema_includes_device_type() {
     let (_dir, conn) = temp_limbo_db();
-    common::run_migration_0003(&conn);
+    common::run_migrations(&conn);
     common::assert_table_columns(&conn, "view_definitions", 11);
     common::assert_table_columns(&conn, "ia_queries", 7);
 }

@@ -44,6 +44,7 @@ enum Command {
     Dial(Multiaddr),
     RespondCatchup { response_id: u64, result: Result<Vec<serde_json::Value>> },
     BlockPeer(PeerId),
+    UnblockPeer(PeerId),
     EnsureConnected { peer_id: PeerId, addrs: Vec<Multiaddr> },
     DiscoverOrgPeers { org_id: String, result_tx: oneshot::Sender<Vec<PeerId>> },
     #[allow(dead_code)]
@@ -63,7 +64,7 @@ pub struct P2PNode {
     local_peer_id: PeerId,
     local_peer_bytes: [u8; 32],
     listen_addrs: Arc<RwLock<Vec<Multiaddr>>>,
-    blocked_peers: Arc<RwLock<HashSet<PeerId>>>,
+    blocked_peers: Arc<std::sync::RwLock<HashSet<PeerId>>>,
 }
 
 #[derive(Clone)]
@@ -152,7 +153,7 @@ impl P2PNode {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let listen_addrs = Arc::new(RwLock::new(Vec::new()));
-        let blocked_peers = Arc::new(RwLock::new(HashSet::new()));
+        let blocked_peers = Arc::new(std::sync::RwLock::new(HashSet::new()));
 
         let addr_clone = listen_addrs.clone();
         let blocked_clone = blocked_peers.clone();
@@ -203,9 +204,15 @@ impl P2PNode {
     }
 
     pub fn block_peer(&self, peer_id: PeerId) {
-        let mut blocked = self.blocked_peers.blocking_write();
+        let mut blocked = self.blocked_peers.write().unwrap();
         blocked.insert(peer_id);
         let _ = self.cmd_tx.send(Command::BlockPeer(peer_id));
+    }
+
+    pub fn unblock_peer(&self, peer_id: PeerId) {
+        let mut blocked = self.blocked_peers.write().unwrap();
+        blocked.remove(&peer_id);
+        let _ = self.cmd_tx.send(Command::UnblockPeer(peer_id));
     }
 
     pub fn ensure_connected(&self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
@@ -242,7 +249,7 @@ async fn run_event_loop(
     cmd_tx: mpsc::UnboundedSender<Command>,
     event_tx: mpsc::UnboundedSender<Event>,
     listen_addrs: Arc<RwLock<Vec<Multiaddr>>>,
-    blocked_peers: Arc<RwLock<HashSet<PeerId>>>,
+    blocked_peers: Arc<std::sync::RwLock<HashSet<PeerId>>>,
 ) {
     let mut pending_catchup: HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<serde_json::Value>>>> = HashMap::new();
     let mut incoming_catchup: HashMap<u64, ResponseChannel<NetworkResponse>> = HashMap::new();
@@ -292,6 +299,8 @@ async fn run_event_loop(
                     let _ = swarm.disconnect_peer_id(peer_id);
                     reconnect_tasks.remove(&peer_id);
                 }
+                Command::UnblockPeer(_peer_id) => {
+                }
                 Command::EnsureConnected { peer_id, addrs } => {
                     if reconnect_tasks.contains_key(&peer_id) {
                         continue;
@@ -340,7 +349,7 @@ async fn reconnect_loop(
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
     cmd_tx: mpsc::UnboundedSender<Command>,
     event_tx: mpsc::UnboundedSender<Event>,
-    blocked_peers: Arc<RwLock<HashSet<PeerId>>>,
+    blocked_peers: Arc<std::sync::RwLock<HashSet<PeerId>>>,
 ) {
     let initial_delay = match &score {
         Some(s) if s.disconnect_count < 3 => Duration::from_secs(1),
@@ -358,7 +367,7 @@ async fn reconnect_loop(
     ];
     let mut cancel_rx = cancel_rx;
     for delay in delays {
-        if blocked_peers.read().await.contains(&peer_id) { return; }
+        if blocked_peers.read().unwrap().contains(&peer_id) { return; }
         tokio::select! {
             _ = &mut cancel_rx => return,
             _ = tokio::time::sleep(delay) => {
@@ -379,7 +388,7 @@ fn handle_swarm_event(
     next_response_id: &mut u64,
     peer_scores: &mut HashMap<PeerId, PeerScore>,
     _reconnect_tasks: &HashMap<PeerId, tokio::sync::oneshot::Sender<()>>,
-    blocked_peers: &Arc<RwLock<HashSet<PeerId>>>,
+    blocked_peers: &Arc<std::sync::RwLock<HashSet<PeerId>>>,
     _active_kademlia_key: &Option<RecordKey>,
     _last_reannounce: &mut Option<Instant>,
 ) {
@@ -452,7 +461,7 @@ fn handle_swarm_event(
         SwarmEvent::Behaviour(CustomBehaviourEvent::Ping(_)) => {}
         SwarmEvent::Behaviour(CustomBehaviourEvent::Kademlia(_)) => {}
         SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, .. } => {
-            if blocked_peers.blocking_read().contains(&peer_id) {
+            if blocked_peers.read().unwrap().contains(&peer_id) {
                 let _ = swarm.disconnect_peer_id(peer_id);
                 return;
             }
