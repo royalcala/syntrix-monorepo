@@ -52,12 +52,36 @@
 | P4 | **InferenceBackend + LlamaCppBackend + probe + GBNF + PeerDelegate + weights P2P** | `1783452736636` T2-T12 | P3 spike | Alta |
 | P5 | **Refactor migraciones + runner automático** (`syntrix-migrate`, squash a 0000) | `1783465859144` | Ninguno | Media |
 | P6 | **Pruning `turso_cdc`** (watermark por org activo) | `1783477000000` | debajo de P5 | Baja |
+| P7 | **Docs: fix refs stale + documentar AI Platform y NAT** (ver §2.1) | — | Ninguno (P7-fix tras P5) | Baja/Media |
 
 **Nota CDC-sync view_defs**: descartado — `view_definitions`/`ia_queries` son tablas locales, no de negocio; no van por CDC (no están en el schema registry a propósito).
+
+### 2.1 Detalle de P7 — Docs (`apps/docs/src/content/docs/`)
+
+**Fix de refs stale** (hacer JUNTO con P5 migrations, porque la ruta cambia):
+- `estado-actual.md:29` y `arquitectura/database.md:19,38,89` referencian
+  `shared/drizzle/entity-schema-meta.mjs` → **ruta inexistente**. El generador real es
+  `packages/shared-drizzle/src/export-schema.ts::generateSchemaJson`. Actualizar tras P5.
+
+**Temas NUEVOS a documentar** (capacidades ya construidas, sin doc):
+- **AI Platform (Fase A)** — nuevo doc `arquitectura/ia-platform.md` o sección en estado-actual:
+  crate `syntrix-ai` (ai_chat/ai_status, router, tools), catálogo de componentes
+  (`packages/syntrix-ui/src/components/catalog/`), Shell Universal (HomeScreen/ViewScreen/VoiceInput),
+  entidades `view_definitions`/`ia_queries`, `device_type` (admin/client/client-ia),
+  flujo voz→vista, cola CDC fallback (`useIAQueue`).
+- **NAT traversal (Fase 1)** — ampliar `arquitectura/sincronizacion.md` o nuevo
+  `arquitectura/nat-traversal.md`: libp2p 0.56, relay/dcutr/autonat, TCP+QUIC, reconnect
+  backoff 2s→64s, peer scoring, block_peer, Kademlia providers, bootstrap IPFS. Referenciar ADR
+  `1783470696465`.
+- **Cascade inference (Fase 2)** — NO documentar aún (bloqueada por spike llama-cpp P3).
+
+**estado-actual.md** — la sección "✅ Completado" no menciona nada de Fase A ni NAT; actualizar
+cuando se documenten los temas nuevos.
 
 ---
 
 ## 3. Planes NUEVOS que aparecieron durante la sesión
+
 
 Fueron creados por otros procesos/agentes mientras trabajaba. Los reviso aquí para que mañana no sorprendan:
 
@@ -74,11 +98,13 @@ Fueron creados por otros procesos/agentes mientras trabajaba. Los reviso aquí p
 ```
 1. P5  Refactor migraciones (1783465859144)  ← correctness, desbloquea limpieza DB
    └─ incluye arreglar drizzle_execute all-strings + helper de escrituras con node_id
+   └─ P7-fix: actualizar refs stale de docs (entity-schema-meta.mjs) en el mismo paso
 2. P1  Tests relay/reconnect (cierra Fase 1 al 100%)
 3. P2  Binario syntrix-relay (cierra gap NAT del ADR)
 4. P6  Pruning turso_cdc (rápido, tras P5)
 5. P3  Spike llama-cpp  ← empezar el de-risk BLOQUEANTE de Fase 2
    └─ si el spike pasa → P4 (backend real de inferencia)
+6. P7  Docs: documentar AI Platform (Fase A) + NAT (Fase 1) con contexto fresco
 ```
 
 **Razón del orden**: P5 toca correctness (bug de no-replicación), así que va primero. P1/P2 cierran
