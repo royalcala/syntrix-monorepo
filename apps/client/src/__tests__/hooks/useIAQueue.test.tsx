@@ -48,8 +48,11 @@ describe("useIAQueue", () => {
       if (cmd === "drizzle_execute" && args.sql?.includes("ia_queries")) {
         // Return a completed query
         return Promise.resolve({
-          rows: [["q1", "v1", "show me invoices"]],
+          rows: [["q1", "v1", "show me invoices", "completed"]],
         });
+      }
+      if (cmd === "upsert_entity") {
+        return Promise.resolve(undefined);
       }
       return Promise.resolve({ rows: [] });
     });
@@ -63,9 +66,10 @@ describe("useIAQueue", () => {
       );
     });
 
-    // Should mark as seen
-    expect(invoke).toHaveBeenCalledWith("drizzle_execute", expect.objectContaining({
-      sql: expect.stringContaining("UPDATE"),
+    // Should mark as seen via upsert_entity (stamps change_time + node_id)
+    expect(invoke).toHaveBeenCalledWith("upsert_entity", expect.objectContaining({
+      entity: "ia_queries",
+      docId: "q1",
     }));
   });
 });

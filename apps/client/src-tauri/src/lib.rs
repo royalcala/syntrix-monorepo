@@ -182,6 +182,37 @@ pub fn drizzle_execute_impl(state: &AppState, sql: &str, params: &[String]) -> R
     state.indexer().drizzle_execute(sql, params)
 }
 
+#[tauri::command]
+fn upsert_entity(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org_id: String,
+    entity: String,
+    doc_id: String,
+    fields: std::collections::HashMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    upsert_entity_impl(&s, &org_id, &entity, &doc_id, &fields).map_err(|e| e.to_string())
+}
+
+pub fn upsert_entity_impl(
+    state: &AppState,
+    org_id: &str,
+    entity: &str,
+    doc_id: &str,
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+) -> anyhow::Result<()> {
+    let node_id_hex = hex::encode(state.node_id());
+    let change_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let json_payload = serde_json::json!(fields);
+    let indexer = state.indexer();
+    indexer.upsert_document_full(org_id, entity, doc_id, &json_payload, change_time, &node_id_hex)?;
+    state.live_manager().notify_table_changed(&indexer.db_lock, &state.conn(), &[entity.to_string()]);
+    Ok(())
+}
+
 impl AiContext for AppState {
     fn check_read_access(&self, org_id: &str, entity: &str) -> Result<(), String> {
         check_read_access(self, org_id, entity)
@@ -230,30 +261,16 @@ impl AiContext for AppState {
     }
 
     fn save_view(&self, view: &ViewDefinition) -> Result<(), String> {
-        let meta_json = serde_json::to_string(&view.meta).unwrap_or_default();
-        let components_json = serde_json::to_string(&view.components).unwrap_or_default();
-        let tags = view.meta.tags.join(",");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        let node_id_hex = hex::encode(self.node_id());
-        let sql = "INSERT OR REPLACE INTO view_definitions (org_id, doc_id, sql, entity, components_json, root, meta_json, created_by, tags, change_time, node_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
-        let params = vec![
-            view.org_id.clone(),
-            view.id.clone(),
-            view.sql.clone(),
-            view.entity.clone(),
-            components_json,
-            view.root.clone(),
-            meta_json,
-            view.meta.created_by.clone(),
-            tags,
-            now.to_string(),
-            node_id_hex,
-        ];
-        drizzle_execute_impl(self, sql, &params)?;
-        Ok(())
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("sql".into(), serde_json::Value::String(view.sql.clone()));
+        fields.insert("entity".into(), serde_json::Value::String(view.entity.clone()));
+        fields.insert("components_json".into(), serde_json::Value::String(serde_json::to_string(&view.components).unwrap_or_default()));
+        fields.insert("root".into(), serde_json::Value::String(view.root.clone()));
+        fields.insert("meta_json".into(), serde_json::Value::String(serde_json::to_string(&view.meta).unwrap_or_default()));
+        fields.insert("created_by".into(), serde_json::Value::String(view.meta.created_by.clone()));
+        fields.insert("tags".into(), serde_json::Value::String(view.meta.tags.join(",")));
+        upsert_entity_impl(self, &view.org_id, "view_definitions", &view.id, &fields)
+            .map_err(|e| e.to_string())
     }
 
     fn list_views(&self, org_id: &str, _tags: Option<&[String]>) -> Result<Vec<ViewDefinition>, String> {

@@ -20,7 +20,7 @@ export function useIAQueue(orgId: string | undefined) {
       while (running) {
         try {
           const result: any = await invoke("drizzle_execute", {
-            sql: "SELECT doc_id, view_id, text FROM ia_queries WHERE org_id = ?1 AND status = 'completed' ORDER BY change_time ASC LIMIT 5",
+            sql: "SELECT doc_id, view_id, text, status FROM ia_queries WHERE org_id = ?1 AND status = 'completed' ORDER BY change_time ASC LIMIT 5",
             params: [orgId],
           });
           const rows: string[][] = result?.rows || [];
@@ -38,20 +38,20 @@ export function useIAQueue(orgId: string | undefined) {
               action: viewId ? {
                 label: "Abrir",
                 onClick: () => {
-                  // Navigate via window.location since we can't use useNavigate here
                   window.location.href = `/view/${encodeURIComponent(viewId)}`;
                 },
               } : undefined,
             });
 
-            // Mark as read (set status to "seen" so we don't re-notify)
-            await invoke("drizzle_execute", {
-              sql: "UPDATE ia_queries SET status = 'seen' WHERE org_id = ?1 AND doc_id = ?2",
-              params: [orgId, docId],
+            // Mark as seen via upsert_entity (stamps change_time + node_id)
+            await invoke("upsert_entity", {
+              orgId,
+              entity: "ia_queries",
+              docId,
+              fields: { text, status: "seen" },
             }).catch(() => {});
           }
 
-          // Invalidate views if we got completed items
           if (rows.length > 0) {
             queryClient.invalidateQueries({ queryKey: ["home-views", orgId] });
           }
@@ -71,14 +71,16 @@ export function useIAQueue(orgId: string | undefined) {
 
 /**
  * Queues a query in ia_queries when ai_chat fails or times out.
+ * Uses upsert_entity which stamps change_time and node_id automatically.
  */
 export async function queueIAQuery(orgId: string, text: string): Promise<void> {
   const docId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-  const now = Date.now();
 
-  await invoke("drizzle_execute", {
-    sql: "INSERT INTO ia_queries (org_id, doc_id, text, status, change_time, node_id) VALUES (?1, ?2, ?3, 'pending', ?4, ?5)",
-    params: [orgId, docId, text, String(now), ""],
+  await invoke("upsert_entity", {
+    orgId,
+    entity: "ia_queries",
+    docId,
+    fields: { text, status: "pending" },
   }).catch((e: any) => {
     console.error("Failed to queue IA query:", e);
   });
