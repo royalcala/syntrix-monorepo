@@ -111,6 +111,10 @@ Fueron creados por otros procesos/agentes mientras trabajaba. Los reviso aquí p
 Fase 1 (trabajo ya casi completo). P3 es el gran de-risk de Fase 2 y conviene arrancarlo pronto
 porque si falla, hay que reconsiderar toda la arquitectura de IA embebida.
 
+> **Sprint actual (sesión 2026-07-08)**: TODO completado excepto P4 (backend real de inferencia).
+> P3 spike ✅ — `llama-cpp-2` compila en server-2 (Nix). Pendiente validar Android NDK + iOS
+> como parte de Fase 2 real.
+
 ---
 
 ## 5. Contexto técnico crítico (para no re-descubrir)
