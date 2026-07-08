@@ -5,7 +5,7 @@ edition = "2021"
 description = "libp2p-based P2P networking for syntrix"
 
 [dependencies]
-libp2p = { version = "0.54", features = [
+libp2p = { version = "0.56", features = [
     "quic", "tcp", "dns", "gossipsub", "kad", "identify", "ping",
     "request-response", "noise", "yamux", "macros", "tokio",
     "autonat", "relay", "dcutr",

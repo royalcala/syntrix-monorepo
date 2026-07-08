@@ -14,7 +14,7 @@ use libp2p::identity::Keypair;
 use libp2p::kad::{store::MemoryStore, Mode, RecordKey};
 use libp2p::request_response::{OutboundRequestId, ProtocolSupport, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{autonat, dcutr, noise, relay, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
+use libp2p::{autonat, dcutr, noise, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 pub use behaviour::{CustomBehaviour, CustomBehaviourEvent};
@@ -117,24 +117,25 @@ impl P2PNode {
 
         let dcutr = dcutr::Behaviour::new(local_peer_id);
 
-        let (_relay_transport, relay_client) = relay::client::new(local_peer_id);
+        let autonat = autonat::Behaviour::new(local_peer_id, autonat::Config::default());
 
-        let behaviour = CustomBehaviour {
-            gossipsub,
-            kademlia,
-            identify,
-            ping,
-            rr,
-            autonat,
-            relay_client,
-            dcutr,
-        };
+        let dcutr = dcutr::Behaviour::new(local_peer_id);
 
         let mut swarm = SwarmBuilder::with_existing_identity(config.keypair)
             .with_tokio()
             .with_quic()
             .with_dns()?
-            .with_behaviour(|_| behaviour)?
+            .with_relay_client(noise::Config::new, yamux::Config::default)?
+            .with_behaviour(|_key, relay_client| CustomBehaviour {
+                relay_client,
+                gossipsub,
+                kademlia,
+                identify,
+                ping,
+                rr,
+                autonat,
+                dcutr,
+            })?
             .build();
 
         for addr in &config.listen_on {
@@ -394,6 +395,7 @@ fn handle_swarm_event(
         SwarmEvent::Behaviour(CustomBehaviourEvent::Rr(
             libp2p::request_response::Event::Message {
                 peer,
+                connection_id: _,
                 message: libp2p::request_response::Message::Request {
                     request_id: _,
                     request,
@@ -419,6 +421,7 @@ fn handle_swarm_event(
         SwarmEvent::Behaviour(CustomBehaviourEvent::Rr(
             libp2p::request_response::Event::Message {
                 peer: _,
+                connection_id: _,
                 message: libp2p::request_response::Message::Response { request_id, response },
             },
         )) => {
@@ -448,7 +451,7 @@ fn handle_swarm_event(
         SwarmEvent::Behaviour(CustomBehaviourEvent::Identify(_)) => {}
         SwarmEvent::Behaviour(CustomBehaviourEvent::Ping(_)) => {}
         SwarmEvent::Behaviour(CustomBehaviourEvent::Kademlia(_)) => {}
-        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+        SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, .. } => {
             if blocked_peers.blocking_read().contains(&peer_id) {
                 let _ = swarm.disconnect_peer_id(peer_id);
                 return;
@@ -462,7 +465,7 @@ fn handle_swarm_event(
                 avg_latency_ms: 0.0,
             });
         }
-        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+        SwarmEvent::ConnectionClosed { peer_id, connection_id: _, .. } => {
             tracing::info!(target: "syntrix", peer = %peer_id, "P2P connection closed");
             let _ = event_tx.send(Event::PeerDisconnected(peer_id));
             let score = peer_scores.entry(peer_id).or_insert(PeerScore {
