@@ -130,26 +130,28 @@ test-integration:
 
 # Test E2E de binarios reales (procesos separados con dial P2P real)
 # Compila ambos binarios remotamente, luego ejecuta el test localmente.
-# ✅ FUNCIONA SIN CONFIGURACIÓN ADICIONAL — el pipeline completo es automático.
-test-binary-e2e:
+# Los hosts de compilación son parametrizables (default: server-2, el más estable).
+# Ej: just test-binary-e2e                          → todo en server-2
+#     just test-binary-e2e server-1 server-2        → admin+test en server-1, client en server-2
+test-binary-e2e admin_host="server-2" client_host="server-2":
     #!/usr/bin/env bash
     set -e
-    echo "=== Compilando admin en server-1 ==="
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-admin'
-    echo "=== Compilando client en server-2 ==="
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-2"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-client'
-    echo "=== Compilando test binary en server-1 ==="
-    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="server-1"; export PATH="$PWD/bin:$PATH"; cd apps/admin/src-tauri && cargo test --test binary_e2e_test --no-run'
-    echo "=== Descargando test binary ==="
-    ssh -o ConnectTimeout=10 server-1 "ls -t /root/remote-builds/syntrix-monorepo/target-remote/debug/deps/binary_e2e_test-* 2>/dev/null | head -1" > /tmp/binary_e2e_test_remote_path.txt
+    echo "=== Compilando admin en {{admin_host}} ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="{{admin_host}}"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-admin'
+    echo "=== Compilando client en {{client_host}} ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="{{client_host}}"; export PATH="$PWD/bin:$PATH"; cargo build -p syntrix-client'
+    echo "=== Compilando test binary en {{admin_host}} ==="
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; export REMOTE_HOST="{{admin_host}}"; export PATH="$PWD/bin:$PATH"; cargo test -p syntrix-admin --test binary_e2e_test --no-run'
+    echo "=== Descargando test binary desde {{admin_host}} ==="
+    ssh -o ConnectTimeout=10 {{admin_host}} "ls -t /root/remote-builds/syntrix-monorepo/target-remote/debug/deps/binary_e2e_test-* 2>/dev/null | head -1" > /tmp/binary_e2e_test_remote_path.txt
     REMOTE_BIN_PATH="$(cat /tmp/binary_e2e_test_remote_path.txt)"
     if [ -z "$REMOTE_BIN_PATH" ]; then
-      echo "ERROR: No se encontró el binary de test en server-1"
+      echo "ERROR: No se encontró el binary de test en {{admin_host}}"
       exit 1
     fi
     LOCAL_BIN_DIR="apps/admin/src-tauri/target/debug"
     mkdir -p "$LOCAL_BIN_DIR"
-    scp -o ConnectTimeout=10 "server-1:$REMOTE_BIN_PATH" "$LOCAL_BIN_DIR/binary_e2e_test"
+    scp -o ConnectTimeout=10 "{{admin_host}}:$REMOTE_BIN_PATH" "$LOCAL_BIN_DIR/binary_e2e_test"
     chmod +x "$LOCAL_BIN_DIR/binary_e2e_test"
     echo "=== Ejecutando test binario localmente ==="
     CLIENT_BIN="$(pwd)/target/debug/syntrix-client"
