@@ -1,125 +1,100 @@
-# ADR: Frameworks de agentes externos (trending) vs. arquitectura Syntrix + plan de adopción de dev-tooling
+# Plan: "Company OS" AI-first (solo-fundador) con Paperclip como espinazo
 
-> **Estado**: Aceptado.
+> **Estado**: Aprobado para implementación.
 > **Fecha**: 2026-07-08.
-> **Ámbito**: producto (`crates/syntrix-ai`) y flujo de trabajo de agentes de IA del monorepo (`.kilo/`, `.ai/AGENTS.md`).
-> **Origen**: evaluación de una lista de repos "trending" (21 proyectos) para decidir si conviene integrarlos como app/servicio del producto o como tooling de desarrollo.
-> **Método**: auditoría directa de los repos (READMEs, lenguaje, arquitectura). Se marca cuáles fueron **[auditados]** a fondo y cuáles **[clasificados]** por categoría.
+> **Ámbito**: infraestructura (`infra-core`: NixOS/Colmena) — **no** `syntrix-monorepo`.
+> **Objetivo**: montar un control plane para operar un portafolio de proyectos con un equipo de agentes de IA, gestionado como empresa (org chart, budgets, gobernanza), accesible desde el móvil.
+> **⚠️ Implementación**: requiere edición de config + comandos mutantes → **cambiar a un agente con permisos de implementación**. Este plan no ejecuta cambios.
 
 ---
 
-## 1. Contexto — restricciones que fijan la decisión
+## 1. Decisión de arquitectura
 
-Del plan maestro (`.kilo/plans/1783125232147-syntrix-p2p-ia-platform.md`) y `.ai/AGENTS.md`:
+- **Espinazo = Paperclip** (`paperclipai/paperclip`, MIT, TypeScript, Node+Postgres). Control plane "empresa de agentes": companies (multi-tenant), org chart, tickets, heartbeats/routines, **budgets con hard-stops**, gobernanza/aprobaciones, portabilidad.
+- **Forma:** dashboard web (no chat). Agentes = "empleados" **BYO** (Claude Code, Codex, Cursor, aider/CLI, OpenClaw vía HTTP, y el propio `syntrix-ai` vía HTTP/heartbeat).
+- **Descartado como espinazo (con razón):** AgentTeams (chat/Matrix, stack pesado podman+Higress+MinIO, 5k★, Alibaba-céntrico) y AgentScope (framework Python para *construir* agentes). Ver §7 (alternativas/fallback).
+- **Producto Syntrix intacto:** `crates/syntrix-ai` sigue soberano/offline; Paperclip lo *opera/construye*, no se embebe en él.
 
-- **Soberanía / offline-first / P2P** (libp2p + CDC sobre Limbo). Sin servidores, sin VPN.
-- **IA embebida como librería Rust** en el binario `syntrix-client` — *no* un servicio/daemon aparte (decisión #16).
-- **Sin ejecución de código externo** — WASM rechazado (decisión #15); tools read-only + `save_view` (decisión #19).
-- Ya existe **`crates/syntrix-ai`**: agent loop con tool-calling, `ModelRouter`, cascada `Local/Delegate/Cloud`, providers Ollama/Mock, benchmark.
-- El plan maestro **ya rechazó `hermes-agent`** por no embebible (riesgo #491) y **ya cita A2UI** como inspiración de su catálogo de UI (decisión #2).
+### Por qué Paperclip a futuro (resumen del análisis)
+Multi-company nativo (portafolio), budgets/hard-stops (control de costos con DeepSeek/24-7), dashboard que escala mejor que chat, BYO-agent (compone con lo que ya usas), TS+Postgres (tu stack, mantenible), footprint ligero, `--bind tailnet` (calza con Headscale). AgentTeams solo ganaría si el UX principal fuera chatear por Matrix o querer workers contenedores turnkey.
 
-**Topología de máquinas** (verificada en `bin/cargo`):
-- El **harness del agente corre en la laptop** (`~/.claude`, `~/.config/kilo/`; contexto versionado en `.ai/AGENTS.md` y `.kilo/plans/`).
-- **server-1 / server-2** son **ejecutores de compilación headless** vía SSH+rsync; el agente nunca corre ahí y el árbol se sobrescribe con `rsync --delete` en cada build.
+## 2. Host y despliegue
 
-## 2. Decisión
+- **Host = `server-2`** (verificado: 6 núcleos, 15 GiB RAM, 166 GB libres, idle, **Node v24.15 ya instalado**, always-on, NixOS/Colmena).
+  - Descartados: `laptop-rao` (no always-on, daily-driver limitado), `laptop-acer-azul` (8GB; queda libre como worker extra o para portales nativos futuros), `server-1` (saturado/flaky, disco lleno).
+- **Modo:** servicio **NixOS/systemd** reproducible (no `pnpm dev` suelto). Postgres embebido para arranque; migrar a Postgres propio si escala.
+- **Acceso:** `--bind tailnet` sobre la malla **Headscale/Tailscale** existente. **Nunca público.** Desde el móvil vía cliente de la malla.
+- **Telemetría:** desactivar (`PAPERCLIP_TELEMETRY_DISABLED=1` o `DO_NOT_TRACK=1`).
 
-1. **No integrar ninguno de los 21 repos como app extra ni servicio del producto.** `syntrix-ai` sigue siendo el camino correcto.
-2. **Sí adoptar conceptos y skills de dev-tooling** encima del flujo actual `.kilo/` + `.ai/AGENTS.md`, **repo-scoped**, **solo en la laptop**. Nada en server-1/2.
-3. Los conceptos de **UI/diseño** y **memoria** se registran como insumos para la **Fase B** de `syntrix-ai` (catálogo/tokens y embeddings/memoria), no como dependencias externas.
+## 3. Frontera de coding (Syntrix) — regla dura
 
-## 3. Eje Producto — por qué nada se embebe
+- El "empleado" de coding trabaja en **workspaces / git worktrees** de Paperclip, pero **NO compila Rust local**.
+- **Builds de Syntrix pineados a `REMOTE_HOST=server-1`** vía el `bin/cargo` bridge (failover automático a server-2 si server-1 cae). Motivo: evitar que un build pesado contienda con Paperclip, que corre en server-2.
+- Gates de Syntrix intactos: `just test-rust` / `just lint` como criterio de "hecho".
 
-Criterios: embebible en Rust · offline-first · P2P/CDC · sin código externo · tools read-only · soberanía.
+## 4. Modelo de datos del "Company OS"
 
-- **openclaw** [auditado]: daemon Node multi-canal (WhatsApp/Telegram/…), Live Canvas (A2UI), providers cloud. Duplica `syntrix-ai`, no local-first ni embebible → ❌. *Concepto A2UI ya en el plan (decisión #2).*
-- **hermes-agent** [auditado]: agente Python auto-mejorable (memoria, skills, gateway). Ya rechazado; sus *modelos* sí vía Ollama → ❌ como código.
-- **Resto**: son tooling de coding o off-topic; no son features de un ERP P2P → ❌.
+- **Company = proyecto/tenant** (aislamiento total). Primer company: **Syntrix**. Luego: los del `plan/` (ai, CDN, git, windmill, first).
+- **Empleado = agente** con rol, título, reporting line, **presupuesto mensual (hard-stop)** y skills.
+- **Routines = cron/webhook** para trabajo recurrente (reportes, mantenimiento, sync).
 
-**Conclusión producto:** mantener `syntrix-ai`. Los únicos aportes son *conceptos* (A2UI, memoria, inteligencia de diseño) para Fase A/B.
+## 5. Hedge de intercambiabilidad (obligatorio)
 
-## 4. Eje Dev-tooling — shortlist útil (qué es · cómo usar · cómo integrar)
+- Mantener el control plane **swappable**: agentes y repos **BYO desacoplados** (no acoplar `syntrix-ai`, Claude Code, aider ni los repos a Paperclip).
+- Usar **export/import de companies** de Paperclip para portabilidad. Si en 12 meses aparece algo mejor, se migra sin rehacer los agentes.
 
-Instalación de todo lo siguiente: **laptop, repo-scoped en `.kilo/`** (versionado, compartido entre worktrees). El `rsync` al servidor incluirá estos markdown (inocuo).
+## 6. Tareas ordenadas (para el agente de implementación)
 
-### 4.1 superpowers — metodología SDLC como skills [auditado]
-- **Qué es**: framework de skills (`SKILL.md`) para agentes de coding: brainstorming, writing-plans, executing-plans, subagent-driven-development, test-driven-development, requesting-code-review, using-git-worktrees, finishing-a-development-branch. Soporta OpenCode y AGENTS.md nativamente. (250k★, MIT)
-- **Cómo usar**: sus skills se disparan automáticamente por tarea; formalizan lo que hoy haces a mano (`.kilo/plans/`, worktrees del Agent Manager, gates de aprobación).
-- **Cómo integrar**: portar los `SKILL.md` de mayor valor (`writing-plans`, `test-driven-development`, `requesting-code-review`, `using-git-worktrees`) a `.kilo/skill/`, adaptándolos a las reglas Syntrix (compilación remota vía `bin/cargo`, gate `just test-rust` verde, convención `*_impl` headless). Referenciarlos desde `.ai/AGENTS.md`.
+1. **Onboarding de red/acceso**
+   - Alias SSH `Host laptop-acer-azul` → `192.168.1.71` (si se usa como worker extra).
+   - Confirmar que `server-2` está en la malla Headscale/Tailscale.
+2. **Servicio Paperclip en `server-2` (NixOS)**
+   - Añadir módulo/servicio NixOS para Paperclip (Node 24 ya presente): `npx paperclipai onboard --yes --bind tailnet` como referencia del comportamiento; empaquetar como systemd unit reproducible.
+   - Postgres embebido inicial; dir de datos/almacenamiento en disco con headroom.
+   - `PAPERCLIP_TELEMETRY_DISABLED=1`. Puerto API (3100) solo por malla/loopback.
+3. **Validar arranque** → UI accesible por tailnet desde el móvil; crear la primera board user.
+4. **Company "Syntrix"** + goal inicial; registrar el repo/proyecto.
+5. **Contratar empleados (BYO)**: 1 coding (Claude Code/Codex/aider) + 1 ops (OpenClaw vía HTTP) — con **budget por agente** y **routines** mínimas.
+   - Empleado de coding de Syntrix: workspace con worktree; **`REMOTE_HOST=server-1`** para `cargo`.
+6. **Gobernanza**: activar approvals/audit log; definir hard-stops de presupuesto.
+7. **Backups** del Postgres + almacenamiento de Paperclip (integrar con restic existente).
+8. **(Después)** onboard un 2º proyecto como company para validar herencia/aislamiento; memoria/knowledge; más "departamentos".
 
-### 4.2 anthropics/skills — spec + template canónico [auditado]
-- **Qué es**: repo oficial de Anthropic con la **spec de Agent Skills** + template `SKILL.md` (frontmatter `name` + `description`). (159k★)
-- **Cómo usar**: como referencia de formato, no como pack a instalar.
-- **Cómo integrar**: basar cada `.kilo/skill/*/SKILL.md` en el template + spec para mantenerte estándar y portable entre harnesses.
+## 7. Alternativas documentadas (no adoptar ahora)
 
-### 4.3 ECC — instincts + memoria + seguridad [auditado]
-- **Qué es**: "harness OS" multi-harness (Claude Code, Codex, Cursor, OpenCode…): 261+ skills, *instincts* (aprendizaje continuo con confidence), memoria vía hooks, AgentShield (security scan). Tier Pro de pago. (227k★, MIT)
-- **Cómo usar**: selectivamente; NO instalar el harness completo (pesado/opinado).
-- **Cómo integrar**: (a) adoptar el patrón *instinct* como una sección curada "Instincts / Lecciones aprendidas" en `.ai/AGENTS.md`; (b) tomar el concepto AgentShield para revisar comandos que ejecuta el agente antes de aprobarlos.
-
-### 4.4 UI/diseño — ui-ux-pro-max-skill + awesome-design-md [auditados]
-- **Qué es**: `ui-ux-pro-max-skill` (103k★): SKILL con 67 estilos, 161 reglas por industria, paletas, tipografía, stacks incl. shadcn/React; target `--ai kilocode`; tier premium. `awesome-design-md` (98k★): colección de `DESIGN.md` (concepto Google Stitch) que los agentes leen para generar UI consistente.
-- **Cómo usar**: doble uso — dev-tooling (generar UI shadcn consistente) y producto (nutrir el catálogo de componentes/tokens).
-- **Cómo integrar**: (a) **dev-tooling**: crear un `DESIGN.md` en la raíz del repo con el lenguaje visual de Syntrix (colores, tipografía, componentes shadcn, do/don't); markdown puro, cero lock-in. (b) **producto (Fase B)**: extraer estilos/tokens/anti-patrones al catálogo de `packages/syntrix-ui` y al `ViewRenderer`/`ViewDefinition`. Probar el skill de UI repo-scoped y decidir keep/drop tras un trial.
-
-### 4.5 memoria de agente — claude-mem / hermes / ECC [claude-mem auditado]
-- **Qué es**: `claude-mem` (86k★, Apache): memoria persistente entre sesiones con hooks + worker HTTP local + **SQLite/FTS5 + Chroma** + búsqueda en 3 capas. Concepto compartido con hermes y ECC.
-- **Cómo usar**: solo como **referencia conceptual** ahora.
-- **Cómo integrar**: informa la Fase B de `syntrix-ai` (embeddings/memoria); su stack SQLite/FTS5 ya coincide con el tuyo (Limbo/Tantivy). ⚠️ Adopción diferida y con cautela: `claude-mem` incluye token cripto (CMEM) y corre un servicio worker — preferir concepto sobre dependencia.
-
-## 5. Descartados (y por qué)
-
-- **Harnesses/plataformas** — `anthropics/claude-code`, `anomalyco/opencode`, `earendil-works/pi`, `code-yeongyu/oh-my-openagent`: no se "integran en Syntrix"; son la plataforma sobre la que corre el agente. Ya usas **Kilo**. Nota: superpowers/ECC/ui-skill soportan OpenCode si algún día migras de harness.
-- **Packs de skills/metodología adicionales** [clasificados] — `andrej-karpathy-skills`, `msitarzewski/agency-agents`, `mattpocock/skills`, `garrytan/gstack`, `gsd-build/get-shit-done`, `shanraisshan/claude-code-best-practice`, `shareAI-lab/learn-claude-code`: redundantes con superpowers/ECC; canibalizar ideas puntuales si hacen falta, sin instalarlos.
-- **Utilidad marginal** — `farion1231/cc-switch` [auditado]: gestor de providers multi-harness; útil solo si haces malabares entre harnesses; ⚠️ README saturado de anuncios de relays y **no gestiona Kilo**.
-- **Novelty** — `ultraworkers/claw-code` [auditado]: el propio README dice que es "museum exhibit", no producto; `cargo install claw-code` instala un stub deprecado.
-- **Off-topic (ni producto ni tooling)** — `ruvnet/RuView` (sensing WiFi), `666ghj/MiroFish` (swarm/predicción), `karpathy/autoresearch` (auto-entrenar nanochat), `D4Vinci/Scrapling` (web scraping; Syntrix es offline/P2P, sin scraping).
-
-## 6. Instalación (dónde)
-
-- **Solo laptop**, **repo-scoped en `.kilo/`** (y `DESIGN.md` en la raíz). Versionado y compartido entre worktrees.
-- **Nada en server-1/server-2** (ejecutores de compilación; se borran con `rsync --delete`).
-- Global en `~/.claude` / `~/.config/kilo` solo para preferencias personales, no para tooling del proyecto.
-
-## 7. Tareas ordenadas (adopción)
-
-> Requiere un agente con permisos de escritura de código/config. Este ADR no las ejecuta.
-
-1. **`DESIGN.md` en la raíz del repo** — documentar el lenguaje visual Syntrix (paleta, tipografía, componentes shadcn, spacing, do/don't). Seed a partir de patrones de `awesome-design-md` y de `packages/syntrix-ui`.
-2. **Crear `.kilo/skill/`** con 3–4 skills portados de superpowers, escritos según la spec de `anthropics/skills`:
-   - `writing-plans` (alineado a `.kilo/plans/` + `plan_exit`).
-   - `test-driven-development` (con gate `just test-rust`/`just test`, convención `*_impl` headless).
-   - `requesting-code-review` (checklist previo, severidades).
-   - `using-git-worktrees` (alineado al Agent Manager / `.kilo/worktrees/`).
-3. **Sección "Instincts / Lecciones aprendidas" en `.ai/AGENTS.md`** (patrón ECC) — semillas: no correr `cargo` local (usar `bin/cargo`), no editar `.sql` de migraciones, reglas CDC (`change_type`), TS `strict`/`noUnusedLocals`.
-4. **Wire de triggers en `.ai/AGENTS.md`** — indicar cuándo el agente debe cargar cada skill.
-5. **Trial del skill de UI** (`ui-ux-pro-max-skill`) repo-scoped para tareas de UI; evaluar keep/drop; si aporta, extraer tokens/estilos hacia `packages/syntrix-ui`.
-6. **(Fase B, diferido)** Registrar en el roadmap de `syntrix-ai` el trabajo de memoria/embeddings, referenciando `claude-mem`/hermes/ECC y reusando el stack SQLite-FTS5 (Limbo/Tantivy). No adoptar dependencias externas.
-7. **Actualizar docs** — enlazar este ADR desde `.ai/AGENTS.md` y el plan maestro.
+- **AgentTeams (HiClaw)** — si más adelante quieres UX de **chat/Matrix** + workers contenedores turnkey. Ya existe `nixos/modules/ai/hiclaw` (v1.0.9, atrasado, registry China; desplegable en server-2/Acer). Fallback "chat".
+- **AgentScope** — framework Python ligero (Agent Service + Web UI + multi-tenant) si prefieres **construir** agentes en código. Fallback "DIY ligero".
+- **Portales nativos** (OpenClaw Canvas/Control UI, Hermes TUI) — solo corriendo esos agentes **standalone** (host con más RAM, p.ej. la Acer). Diferidos.
 
 ## 8. Validación
 
-- Un skill portado **se dispara** en una sesión real de Kilo y produce el flujo esperado (plan → worktree → TDD → review) sin romper los gates existentes.
-- Una tarea de UI usando `DESIGN.md` genera salida **consistente con shadcn/`syntrix-ui`**.
-- `just lint` y `just test-rust` siguen verdes tras cambios de config (los skills/markdown no afectan compilación).
-- El `rsync` a los servidores no se degrada (solo se añaden markdown; nada pesado en `.kilo/skill/`).
+- Paperclip arranca como servicio en server-2 y su UI es accesible **solo por tailnet** desde desktop y móvil.
+- Se crea company Syntrix, se contrata un empleado con budget, y una tarea se ejecuta de punta a punta con **audit log + costo registrado**.
+- El empleado de coding de Syntrix corre `just test-rust` (build en **server-1**) sin compilar Rust en server-2.
+- Un hard-stop de presupuesto **pausa** al agente al alcanzar el límite.
+- Con Paperclip activo + un build de Syntrix en curso, la UI sigue respondiendo (contención tolerable).
 
-## 9. Consecuencias
+## 9. Riesgos y mitigación
 
-- **Positivo**: formalizas tu proceso (skills versionados), estándar (spec Anthropic), sin lock-in de harness, sin tocar la arquitectura soberana del producto. Ganas un `DESIGN.md` reutilizable por agentes y por el propio catálogo de UI.
-- **Negativo / costo**: mantenimiento de `.kilo/skill/` propio (portar ≠ instalar) y de la sección Instincts.
-- **Sin cambios de producto**: `syntrix-ai` y sus principios permanecen intactos.
+| Riesgo | Mitigación |
+|---|---|
+| Contención Paperclip↔build en server-2 | Builds pineados a server-1 (+failover); builds bursty, Paperclip idle liviano |
+| Costos de tokens desbocados (24-7) | Budgets con **hard-stops** por agente/company (feature nativa) |
+| Lock-in al control plane | BYO-agent desacoplado + export/import de companies (§5) |
+| Paperclip es OSS joven (open-core/cloud upsell futuro) | MIT hoy; hedge de portabilidad; alternativas §7 |
+| Exposición accidental | Solo tailnet, nunca público; telemetry off |
+| server-1 flaky/disco lleno para builds | Bridge con failover a server-2; vigilar disco (nix GC) |
 
-## 10. Disparadores de revisión
+## 10. Fuera de alcance
 
-Reconsiderar si:
-- Migras de harness (Kilo → OpenCode/Claude Code): reevaluar instalar superpowers/ECC/ui-skill como plugins nativos en vez de portados.
-- Necesitas **memoria/embeddings de agente** de forma central: evaluar `claude-mem` (con cautela por token/worker) vs. implementación propia sobre Limbo/Tantivy en Fase B.
-- El transfer de pesos/embeddings de modelos se vuelve central: ver también el ADR de red (`1783470696465`) sobre `iroh-blobs` como librería.
+- Embeber cualquier orquestador en el producto Syntrix.
+- Correr el control plane en laptop-rao (no always-on).
+- Portales nativos (Canvas/TUI) en esta fase.
+- Migración a Postgres externo / despliegue cloud (futuro, si escala).
+- Implementación en sí (requiere agente con permisos de escritura + comandos mutantes).
 
-## 11. Fuera de alcance
+## 11. Decisiones abiertas menores (resolver en implementación)
 
-- Instalar/ejecutar cualquier repo como dependencia del producto Syntrix.
-- Configurar tooling en server-1/server-2.
-- Adoptar un segundo harness de coding (decisión de plataforma separada).
-- Implementación de las tareas de la §7 (requiere agente con permisos de escritura).
+- Empleado coding inicial exacto: Claude Code vs Codex vs aider (los tres son BYO; elegir por costo/DeepSeek).
+- Empaquetado NixOS: módulo custom vs contenedor; según reproducibilidad deseada.
+- Ubicación de este plan: se mantiene en `.kilo/plans/` de syntrix; considerar copiarlo a `infra-core` al implementar.
