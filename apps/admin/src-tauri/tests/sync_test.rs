@@ -781,10 +781,67 @@ async fn test_drizzle_execute_reads_typed_columns() {
     let result2 = syntrix_client_lib::drizzle_execute_impl(
         &c1,
         "SELECT name FROM customers WHERE org_id=?1 AND doc_id=?2",
-        &[org_id, "nonexistent".to_string()],
+        &[org_id.clone(), "nonexistent".to_string()],
     ).expect("execute SELECT empty");
     let rows2 = result2["rows"].as_array().expect("rows is array");
     assert!(rows2.is_empty(), "no rows for nonexistent doc");
+
+    // Numeric column: write invoice with REAL amount, verify it's returned as number not string
+    syntrix_client_lib::commit_event_impl(
+        &c1, "invoices.created",
+        r#"{"id":"inv-num","customer_id":"c1","amount":299.99,"date":"2026-07-08"}"#,
+    ).expect("write invoice");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let result3 = syntrix_client_lib::drizzle_execute_impl(
+        &c1,
+        "SELECT amount FROM invoices WHERE org_id=?1 AND doc_id=?2",
+        &[org_id, "inv-num".to_string()],
+    ).expect("execute SELECT amount");
+    let rows3 = result3["rows"].as_array().expect("rows is array");
+    assert_eq!(rows3.len(), 1, "one invoice row");
+    assert!(rows3[0][0].is_number(), "amount should be numeric, not string; got {:?}", rows3[0][0]);
+}
+
+// ===========================================================================
+// Layer 5.6 — upsert_entity stamps sync metadata
+// ===========================================================================
+
+#[tokio::test]
+async fn test_upsert_entity_stamps_sync_meta() {
+    let (_adir, adir) = syntrix_testkit::temp_node_dir("t24_admin");
+    let (_c1dir, c1dir) = syntrix_testkit::temp_node_dir("t24_client1");
+
+    let mut admin = spawn_admin(adir).await;
+    let mut c1 = spawn_client(c1dir).await;
+
+    let org_id = inv1!(&mut admin, &mut c1, "acme", "sales", sales_perms())
+        .await.expect("client join");
+    set_client_org(&mut c1, &org_id);
+
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("name".into(), serde_json::json!("Sync Meta Co"));
+    fields.insert("email".into(), serde_json::json!("meta@test.com"));
+
+    syntrix_client_lib::upsert_entity_impl(&c1, &org_id, "customers", "q1", &fields)
+        .expect("upsert customers");
+
+    let result = syntrix_client_lib::drizzle_execute_impl(
+        &c1,
+        "SELECT node_id, change_time FROM customers WHERE org_id=?1 AND doc_id=?2",
+        &[org_id, "q1".to_string()],
+    ).expect("execute SELECT sync meta");
+
+    let rows = result["rows"].as_array().expect("rows is array");
+    assert_eq!(rows.len(), 1, "one row returned");
+
+    let node_id = rows[0][0].as_str().expect("node_id should be a string");
+    assert!(!node_id.is_empty(), "node_id should not be empty");
+    assert_eq!(node_id, &hex::encode(c1.node_id()), "node_id should match client's peer id");
+
+    let change_time = rows[0][1].as_f64().expect("change_time should be numeric");
+    assert!(change_time > 0.0, "change_time should be positive");
 }
 
 // ===========================================================================

@@ -258,6 +258,13 @@ impl SqlEngine {
 
     pub fn get_members(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
         let _lock = self.db_lock.lock().unwrap();
+        self.query_members(org_id)
+    }
+
+    /// Query members WITHOUT acquiring `db_lock`. Caller MUST already hold `db_lock`.
+    /// Used by `can_node_write`, which runs inside `apply_cdc_events` (lock held) —
+    /// re-acquiring the non-reentrant `db_lock` there would deadlock.
+    fn query_members(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
         let mut stmt = self.conn.prepare("SELECT data FROM members WHERE org_id=?1")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
 
@@ -313,6 +320,12 @@ impl SqlEngine {
 
     pub fn get_roles(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
         let _lock = self.db_lock.lock().unwrap();
+        self.query_roles(org_id)
+    }
+
+    /// Query roles WITHOUT acquiring `db_lock`. Caller MUST already hold `db_lock`.
+    /// See `query_members` for why (`can_node_write` runs with the lock held).
+    fn query_roles(&self, org_id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
         let mut stmt = self.conn.prepare("SELECT data FROM roles WHERE org_id=?1")?;
         stmt.bind_at(NonZero::new(1).unwrap(), turso_core::Value::from_text(org_id.to_string()))?;
 
@@ -353,8 +366,14 @@ impl SqlEngine {
     /// `role.updated` gossip — see identity.rs::process_gossip_event). Used to validate the
     /// author of an incoming CDC event before applying it (Fase 3, tarea 15), since the
     /// in-memory `NamespaceRegistry` only tracks this node's own device/role, not peers'.
-    pub fn can_node_write(&self, org_id: &str, node_id_hex: &str, entity: &str) -> bool {
-        let members = self.get_members(org_id).unwrap_or_default();
+    ///
+    /// IMPORTANT: this runs as the `perm` callback inside `apply_cdc_events`, which already
+    /// holds `db_lock`. It therefore uses the lock-free `query_members`/`query_roles` helpers;
+    /// calling the public `get_members`/`get_roles` (which re-acquire the non-reentrant
+    /// `db_lock`) would deadlock. Callers MUST hold `db_lock`. Crate-private so this
+    /// lock precondition can't be violated from outside the crate.
+    pub(crate) fn can_node_write(&self, org_id: &str, node_id_hex: &str, entity: &str) -> bool {
+        let members = self.query_members(org_id).unwrap_or_default();
         let Some(member) = members.iter().find(|m| m.get("node_id").and_then(|v| v.as_str()) == Some(node_id_hex))
         else {
             return false;
@@ -366,7 +385,7 @@ impl SqlEngine {
         if role == "admin" {
             return true;
         }
-        let roles = self.get_roles(org_id).unwrap_or_default();
+        let roles = self.query_roles(org_id).unwrap_or_default();
         roles.iter().any(|r| {
             r.get("name").and_then(|n| n.as_str()) == Some(role)
                 && r.get("can_write")
@@ -836,13 +855,14 @@ impl SqlEngine {
                 .map_err(|e| e.to_string())?;
         }
 
+        let num_cols = stmt.num_columns();
         let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
         loop {
             match stmt.step().map_err(|e| e.to_string())? {
                 StepResult::Row => {
                     if let Some(row) = stmt.row() {
                         let mut cols: Vec<serde_json::Value> = Vec::new();
-                        for idx in 0..32 {
+                        for idx in 0..num_cols {
                             let v: &turso_core::Value = match row.get(idx) {
                                 Ok(v) => v,
                                 Err(_) => break,

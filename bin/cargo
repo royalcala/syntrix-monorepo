@@ -127,13 +127,23 @@ REMOTE_DIR="$1"
 REMOTE_TARGET_NAME="$2"
 shift 2
 
-DEPS="nixpkgs#glib.dev nixpkgs#gtk3.dev nixpkgs#webkitgtk_4_1.dev nixpkgs#libsoup_3.dev nixpkgs#openssl.dev nixpkgs#cairo.dev nixpkgs#pango.dev nixpkgs#gdk-pixbuf.dev nixpkgs#at-spi2-core.dev nixpkgs#harfbuzz.dev nixpkgs#freetype.dev nixpkgs#fontconfig.dev nixpkgs#libxkbcommon.dev nixpkgs#libepoxy.dev nixpkgs#graphene.dev nixpkgs#libdrm.dev nixpkgs#zlib.dev nixpkgs#libpng.dev nixpkgs#libjpeg.dev nixpkgs#pkg-config nixpkgs#cargo nixpkgs#rustc nixpkgs#cmake nixpkgs#perl nixpkgs#nodejs_22 nixpkgs#mold nixpkgs#clang"
+DEPS_BASE="nixpkgs#glib.dev nixpkgs#gtk3.dev nixpkgs#webkitgtk_4_1.dev nixpkgs#libsoup_3.dev nixpkgs#openssl.dev nixpkgs#cairo.dev nixpkgs#pango.dev nixpkgs#gdk-pixbuf.dev nixpkgs#at-spi2-core.dev nixpkgs#harfbuzz.dev nixpkgs#freetype.dev nixpkgs#fontconfig.dev nixpkgs#libxkbcommon.dev nixpkgs#libepoxy.dev nixpkgs#graphene.dev nixpkgs#libdrm.dev nixpkgs#zlib.dev nixpkgs#libpng.dev nixpkgs#libjpeg.dev nixpkgs#pkg-config nixpkgs#cmake nixpkgs#perl nixpkgs#nodejs_22 nixpkgs#mold nixpkgs#clang nixpkgs#glibc.dev"
+# Use system cargo/rustc (from NixOS systemPackages or rustup) when available.
+# nixpkgs#rustc 1.95.0+llvm21 has a SIGSEGV bug on some Intel CPUs (server-1 i5-8500).
+if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+    DEPS="$DEPS_BASE"
+    # Use system cargo but limit to 1 job — LLVM crashes with parallel ThinLTO on some CPUs
+    CARGO_CMD="CARGO_BUILD_JOBS=1 RUST_MIN_STACK=33554432 cargo"
+else
+    DEPS="$DEPS_BASE nixpkgs#cargo nixpkgs#rustc"
+    CARGO_CMD="RUST_MIN_STACK=16777216 cargo"
+fi
 
 PKG_SETUP='export PKG_CONFIG_PATH=""; for d in /nix/store/*/lib/pkgconfig /nix/store/*/share/pkgconfig; do [ -d "$d" ] && ls "$d"/*.pc >/dev/null 2>&1 && PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$d"; done; export PKG_CONFIG_PATH'
 
 cd "$REMOTE_DIR" || exit 1
 
-CARGO_TARGET_DIR="$REMOTE_TARGET_NAME" nix --extra-experimental-features 'nix-command flakes' shell $DEPS --command bash -c "$PKG_SETUP && cargo $*"
+CARGO_TARGET_DIR="$REMOTE_TARGET_NAME" nix --extra-experimental-features 'nix-command flakes' shell $DEPS --command bash -c "$PKG_SETUP && $CARGO_CMD $*"
 SCRIPTEOF
 
       ssh "$REMOTE_HOST" "bash /tmp/remote_cargo_build.sh '$REMOTE_DIR' '$REMOTE_TARGET_NAME' ${REMOTE_ARGS[@]}"

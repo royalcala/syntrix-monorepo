@@ -14,7 +14,7 @@ use libp2p::identity::Keypair;
 use libp2p::kad::{store::MemoryStore, Mode, RecordKey};
 use libp2p::request_response::{OutboundRequestId, ProtocolSupport, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{autonat, dcutr, noise, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
+use libp2p::{autonat, dcutr, noise, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 pub use behaviour::{CustomBehaviour, CustomBehaviourEvent};
@@ -124,6 +124,11 @@ impl P2PNode {
 
         let mut swarm = SwarmBuilder::with_existing_identity(config.keypair)
             .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )?
             .with_quic()
             .with_dns()?
             .with_relay_client(noise::Config::new, yamux::Config::default)?
