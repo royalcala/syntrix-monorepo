@@ -150,6 +150,7 @@ Estos tests nunca habían corrido (sync_test.rs estaba 100% bloqueado por el bug
 | `syntrix-client` (lib + `ai_views_test`) | 27 + 7 passed ✅ |
 | `syntrix-admin` (lib + `basic_test`) | 10 + 5 passed ✅ |
 | `sync_test.rs` | **24 passed, 0 failed, 2 ignored** ✅ (antes 100% bloqueado) |
+| `binary_e2e_test` (binarios reales, procesos separados) | **4 passed** ✅ (compilado en server-2, corrido local con nix shell + GTK) |
 | Frontend vitest (`just test`) | client 49 + admin 26 = **75 passed** ✅ |
 
 Nota: admin vitest reporta 2 "errors" de teardown React en `DevicesGridPage.test.tsx` (unhandled passive-effect, pre-existentes, no son fallos de test; no se tocó código frontend).
@@ -168,4 +169,4 @@ Nota: admin vitest reporta 2 "errors" de teardown React en `DevicesGridPage.test
 
 ### Fuera de alcance (confirmado, no ejecutado)
 
-- `just test-binary-e2e`: requiere GTK local (los 4 tests salen `ignored` en CI/remoto).
+- `just test-binary-e2e` **SÍ se ejecutó y pasó** (4/4). La receta hardcodea server-1 para compilar; se corrió manualmente compilando en server-2 (server-1 tiene el problema de HW) y ejecutando el binario de test localmente dentro del `nix shell` (que provee GTK + `WEBKIT_DISABLE_*`). Recomendación: parametrizar `test-binary-e2e` para no hardcodear server-1.
