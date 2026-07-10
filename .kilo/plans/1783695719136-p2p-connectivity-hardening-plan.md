@@ -1,7 +1,7 @@
 # Plan: Hardening de Conectividad P2P + Arquitectura Móvil (Anchor/Hub)
 
 > **Preámbulo**: ADR `1783695719135-adr-libp2p-vs-headscale.md` y `1783695719137-adr-libp2p-vs-zenoh.md`.
-> **Estado**: **Parte A** (hardening) en implementación (P0/P1 ya comenzaron). **Parte B** (arquitectura móvil) es diseño aprobado, se ejecuta después de Parte A.
+> **Estado**: **Parte A** (hardening) 100% completada. Todos los tasks implementados (T1-T12). **Parte B** (arquitectura móvil) lista para iniciar.
 > **Fecha**: 2026-07-10.
 > **Ámbito**: `crates/syntrix-network`, `apps/syntrix-relay`, `apps/{client,admin}`, capa de transporte.
 >

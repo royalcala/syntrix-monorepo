@@ -68,6 +68,23 @@ syntrix/org/{org}/{modulo?}/{entidad}/{doc_id}[/{subentidad}/{line_id}]
 
 **Fuera de alcance v2 (nota de futuro)**: **interconexión cross-org** (redes de franquicias / 100+ colectivos que comparten datos entre sí, `vision.md:28`). El modelo por-org aísla; el puente cross-org (nodo miembro de varias orgs que reexpone datos, o federación de anclas) es track posterior.
 
+## 1.6 Aprovechamiento nativo de Zenoh (verificado en el fork)
+
+En vez de reimplementar, se usan primitivas nativas de Zenoh:
+
+- **DEC-9 — Convergencia por capa** (decidido):
+  - **Hoja (móvil) = storage replica scoped**: storage-manager + replication sobre los **subárboles que sus grants conceden** → anti-entropy robusto tras offline largo.
+  - **+ AdvancedPublisher/Subscriber** (`.history()` + `.recovery()`) para entrega **live** de baja latencia y recuperación de huecos cortos.
+  - **Ancla↔ancla = replication** (anti-entropy) para HA/multi-ancla.
+- **DEC-10 — Primitivas nativas**:
+  - **Presencia = Liveliness tokens** (`session.liveliness()`), NO heartbeats custom. Alimenta `get_sync_info`/`sync_status`.
+  - **Live + catch-up + recovery = AdvancedSubscriber** (unifica lo que hoy son `live_subscribe` + `get_updates_since` + catch-up).
+  - **Autor + firma Ed25519 = Sample Attachment** (`sample.attachment`), separado del payload/row.
+  - **Matching de grants (DEC-8) = `zenoh-keyexpr` `includes()`/`intersects()`** (reusar, no escribir matcher propio).
+- **Capacidad (no bloqueante): REST plugin** en el ancla (HTTP GET/PUT sobre el keyspace) → habilita el módulo **"Puentes"** de la visión (SAT/CFDI, bancos, webhooks, APIs externas) y una web admin opcional, sin infra extra.
+- **Transportes disponibles por deployment**: QUIC/TCP/TLS (base), **WS** (browser), **serial/vsock** (IoT), **SHM** (intra-host multiproceso).
+- **Bindings (repos aparte)**: `zenoh-pico` (MCU, ya en G9), `zenoh-ts` (TS — el frontend *podría* hablar Zenoh directo; se descarta para preservar el contrato IPC), `zenoh-c/cpp/kotlin/java`.
+
 ## 2. El contrato IPC a congelar (la frontera del proyecto)
 
 El backend nuevo DEBE implementar estos comandos con **mismos nombres, args y forma de retorno** para portar el frontend intacto. Catalogado del código actual:
@@ -88,8 +105,9 @@ El backend nuevo DEBE implementar estos comandos con **mismos nombres, args y fo
 `query_logs`, `summarize_logs`, `start_tail_logs`, `ai_chat`, `ai_status`
 
 Notas de preservación (cambia la implementación, NO el contrato):
-- `commit_event` → escribe en `Store` (proyección a columnas) + firma Ed25519 + `put` a Zenoh.
-- `get_updates_since` / `live_subscribe` → sobre un **change-stream del `Store`** (hooks SQLite), no sobre `turso_cdc`.
+- `commit_event` → escribe en `Store` (proyección a columnas) + firma Ed25519 (en **attachment**) + `put` a Zenoh.
+- `get_updates_since` / `live_subscribe` / `live_unsubscribe` → **AdvancedSubscriber** (history+recovery) + change-stream del `Store` (hooks SQLite), no `turso_cdc`.
+- `get_sync_info` / `sync_status` → **liveliness tokens** (presencia) + estado de replicación Zenoh (reemplaza heartbeats).
 - `search_entity` → **FTS5** en vez de `fts_match`/`fts_score` escalares.
 - `drizzle_execute` → SQL dialecto SQLite (Drizzle ya lo genera).
 - `get_sync_info` / `sync_status` → estado de sesión/replicación Zenoh.
@@ -102,15 +120,15 @@ Notas de preservación (cambia la implementación, NO el contrato):
 syntrix/ (proyecto nuevo)
 ├── apps/
 │   ├── app/                    ← Tauri: frontend React PORTADO + backend Rust nuevo (todos los comandos IPC)
-│   └── anchor/                 ← servicio headless: router Zenoh + Store replicado + autoridad admin
+│   └── anchor/                 ← servicio headless: router Zenoh + storage replicado + autoridad admin + REST plugin (opcional)
 ├── crates/
 │   ├── syntrix-ipc/            ← contrato IPC + handlers (compartidos por app y anchor headless)
-│   ├── syntrix-domain/         ← PORTADO: permisos, upcasters, HLC, proyección a columnas, folios, schema registry
+│   ├── syntrix-domain/         ← PORTADO: permisos (grants key-expr), upcasters, HLC, proyección path↔fila, folios, schema registry
 │   ├── syntrix-store/          ← trait Store
 │   ├── syntrix-store-sqlite/   ← rusqlite (bundled) + FTS5 + migraciones
 │   ├── syntrix-transport/      ← trait SyncTransport
-│   ├── syntrix-zenoh/          ← impl Zenoh: sesión, pub/sub, query, storage backend, replication
-│   ├── syntrix-identity/       ← Ed25519: keypair, firma/validación de autor
+│   ├── syntrix-zenoh/          ← impl Zenoh: sesión, pub/sub, query, liveliness, AdvancedSub, storage backend + replication
+│   ├── syntrix-identity/       ← Ed25519: keypair, firma/validación de autor (attachment)
 │   ├── syntrix-ai/             ← PORTADO
 │   └── syntrix-logging/        ← PORTADO
 └── packages/
@@ -154,21 +172,23 @@ syntrix/ (proyecto nuevo)
 - **Meta**: CRUD local completo con permisos, auditoría y reactividad optimista, sin red.
 
 ### G3 — Transporte Zenoh (LAN peer) + validación por autor en apply
-- `syntrix-transport` (trait) + `syntrix-zenoh` (sesión, pub/sub, query).
-- Al recibir un sample: **validar firma Ed25519 + grant** (path de la key ∈ grant write del rol del autor en esa org) **antes** de escribir; descartar si no autorizado. Escribir auditoría en `event_log`.
-- Dos instancias en LAN se descubren (scouting) y propagan writes autorizados.
+- `syntrix-transport` (trait) + `syntrix-zenoh` (sesión, pub/sub, query, **liveliness** para presencia).
+- Escritura: firma Ed25519 + `node_id` autor en el **Sample Attachment** (no en el payload).
+- Al recibir un sample: **validar firma Ed25519 (attachment) + grant** — el path de la key ∈ grant write del rol del autor, usando **`zenoh-keyexpr` `includes()`** — **antes** de escribir; descartar si no autorizado. Escribir auditoría en `event_log`.
+- Dos instancias en LAN se descubren (scouting) y propagan writes autorizados; presencia mutua vía liveliness.
 
-### G4 — Replicación Zenoh + backend sobre `Store` + live
-- Backend `zenoh_backend_traits::{Volume,Storage}` sobre `Store`; **el `put` mapea la key (fila) a (tabla, fila)** y corre la validación por autor de G3; **borrado de documento = wildcard-delete de subárbol** (`.../{doc}/**`) → cascada de filas hijas; storage-manager + replication **por scope de org** (`syntrix/org/{org_id}/**`, interval/hot/warm/gc).
-- `get_updates_since` / `live_subscribe` / `live_unsubscribe` sobre change-stream del `Store`.
-- `get_sync_info` / `sync_status` desde estado Zenoh.
-- **Meta**: anti-entropy real (nodo offline reconecta y converge, sin snapshot manual); líneas hijas convergen aunque lleguen tras el header.
+### G4 — Replicación por capa + backend sobre `Store` + live
+- Backend `zenoh_backend_traits::{Volume,Storage}` sobre `Store`; **el `put` mapea la key (fila) a (tabla, fila)** y corre la validación por autor de G3; **borrado de documento = wildcard-delete de subárbol** (`.../{doc}/**`) → cascada de filas hijas.
+- **DEC-9 por capa**: cada nodo (hoja y ancla) es **storage replica** con storage-manager + replication sobre su scope (hoja = subárboles concedidos; ancla = org completa; interval/hot/warm/gc). **AdvancedPublisher/Subscriber** (`.history()`+`.recovery()`) para entrega live y recuperación de huecos.
+- `get_updates_since` / `live_subscribe` / `live_unsubscribe` → AdvancedSubscriber + change-stream del `Store`; `get_sync_info` / `sync_status` → liveliness + estado de replicación.
+- **Meta**: anti-entropy real (nodo offline largo reconecta y converge); líneas hijas convergen aunque lleguen tras el header.
 
-### G5 — Ancla headless + roster + gobierno/enrolamiento
-- `apps/anchor`: router Zenoh + Store replicado autoritativo + endpoint público (QUIC/TCP/TLS), `--keypair-file`, `--data-dir`. **Multi-org capable**: un proceso ancla sirve N orgs.
-- **Roster autoritativo**: las keys `syntrix/org/{org}/roster/**` y `.../roles/**` solo las escribe la **llave admin**; los nodos las validan contra esa firma y pueblan `members`/`roles` locales (base de la validación por autor).
+### G5 — Ancla headless + roster + gobierno/enrolamiento + integraciones
+- `apps/anchor`: router Zenoh + storage replicado autoritativo + endpoint público (QUIC/TCP/TLS), `--keypair-file`, `--data-dir`. **Multi-org capable**. **Ancla↔ancla = replication** para HA/multi-ancla.
+- **Roster autoritativo**: las keys `syntrix/org/{org}/roster/**` y `.../roles/**` solo las escribe la **llave admin**; los nodos las validan contra esa firma y pueblan `members`/`roles` locales.
 - Protocolo `syntrix/org/{id}/admin-control` (query firmada): `create_org` (funda org + device admin), `add_device`, `update_device` (baja/revocación), `create_role`, `update_role`, `send_invite`, `enroll_org`, `get_pending_enrollments`, `approve_enrollment`, `reject_enrollment`.
 - Emparejamiento teléfono-admin ↔ ancla por QR; llave raíz solo en el ancla.
+- **Opcional — REST plugin** en el ancla: expone el keyspace por HTTP para el módulo "Puentes" (SAT/CFDI, bancos, webhooks) y web admin opcional.
 
 ### G6 — App unificada role-aware
 - Fusionar comandos client+admin; módulo "Gobierno" gateado por rol admin (control remoto del ancla).
@@ -176,7 +196,7 @@ syntrix/ (proyecto nuevo)
 
 ### G7 — Móvil
 - Targets Tauri Android/iOS; paths sandbox; SQLite `bundled` compila con toolchain C de Tauri mobile.
-- Foreground-sync + throttling batería; presencia por key Zenoh; push opt-in (APNs/FCM, dependencia central etiquetada).
+- Foreground-sync + throttling batería; presencia por **liveliness tokens**; push opt-in (APNs/FCM, dependencia central etiquetada).
 
 ### G8 — Paridad + cutover
 - Suite E2E de paridad contra `main` (invite/enroll, sync multi-nodo, permisos, búsqueda, auditoría).
@@ -193,6 +213,8 @@ syntrix/ (proyecto nuevo)
 | Rewrite pierde casos-borde del backend actual | `main` es la referencia viva; portar reglas a `syntrix-domain` con tests derivados del comportamiento actual. |
 | Deriva del contrato IPC rompe el frontend portado | Congelar el catálogo (§2) con tests de contrato; el frontend no se toca. |
 | APIs `unstable` de Zenoh (advanced pub/sub, replication) | Aceptado; fijar versión; aislar tras `SyncTransport`; tests de convergencia. |
+| Sync depende de storage-manager replication **y** AdvancedSubscriber (ambos `unstable`) | Superficie unstable concentrada en `syntrix-zenoh`; suite de convergencia (offline largo, huecos, deletes) como gate de versión. |
+| Alineación de replicación con scopes distintos (hoja ⊂ ancla) | La hoja replica un subárbol del scope del ancla; validar alineación de fingerprints en la intersección (test hoja-scoped ↔ ancla-full en G4). |
 | Anti-entropy Zenoh: wildcard delete/tombstones/orden | Tests dedicados en G4; configurar `garbage_collection`. |
 | Identidad: ACL Zenoh no es autor por-fila | Ed25519 app-level (`syntrix-identity`); ACL Zenoh solo defensa en profundidad. |
 | Storage backend Zenoh escribe sin validar autor (bypass de permisos) | El `put` del backend corre validación por autor (firma + grant de key-expr) antes de escribir; tests de aislamiento por rol. |
@@ -207,8 +229,8 @@ syntrix/ (proyecto nuevo)
 
 1. G1: frontend renderiza grids/búsqueda contra SQLite; facturas con líneas hijas reconstruidas como subárbol; `get_schema_registry`/`drizzle_execute` funcionan.
 2. G2: CRUD local + permisos como grants de key-expr (incl. hijo cubierto por prefijo) + upcasters + auditoría en `event_log` (paridad con `main` sin red).
-3. G3: sync LAN por Zenoh; **un autor cuyo grant no cubre el path es rechazado en apply** (no se escribe ni audita).
-4. G4: anti-entropy (offline→converge); **dos nodos editan líneas distintas del mismo documento sin pisarse** (LWW per-fila); borrar documento elimina sus líneas (wildcard-delete); live sin CDC.
+3. G3: sync LAN por Zenoh; firma en attachment; **un autor cuyo grant no cubre el path es rechazado en apply** (no se escribe ni audita); presencia mutua vía liveliness.
+4. G4: anti-entropy (offline **largo**→converge); hoja-scoped ↔ ancla-full alinean en la intersección; **dos nodos editan líneas distintas del mismo documento sin pisarse** (LWW per-fila); borrar documento elimina sus líneas (wildcard-delete); live+recovery por AdvancedSubscriber, sin CDC.
 5. G5: roster firmado por admin puebla `members`/`roles`; enrolamiento inverso + gobierno remoto sin llave raíz en el teléfono.
 6. G6: app unificada; rol admin ve gobierno; **réplica scoped = subárboles concedidos**; IA respeta org + grants.
 7. Multi-org: un dispositivo en 2+ orgs sincroniza cada org aislada (sin cruce); rol distinto por org respetado; un ancla sirviendo 2 orgs las mantiene separadas.
