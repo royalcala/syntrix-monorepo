@@ -1,7 +1,7 @@
 # Plan: "Company OS" AI-first (solo-fundador) con Paperclip como espinazo
 
 > **Estado**: Aprobado para implementación.
-> **Fecha**: 2026-07-08.
+> **Fecha**: 2026-07-08 (rev. 2026-07-09: re-validado vs. Mastra/Rig/OpenHands — decisión sin cambios; ver §1).
 > **Ámbito**: infraestructura (`infra-core`: NixOS/Colmena) — **no** `syntrix-monorepo`.
 > **Objetivo**: montar un control plane para operar un portafolio de proyectos con un equipo de agentes de IA, gestionado como empresa (org chart, budgets, gobernanza), accesible desde el móvil.
 > **⚠️ Implementación**: requiere edición de config + comandos mutantes → **cambiar a un agente con permisos de implementación**. Este plan no ejecuta cambios.
@@ -17,6 +17,27 @@
 
 ### Por qué Paperclip a futuro (resumen del análisis)
 Multi-company nativo (portafolio), budgets/hard-stops (control de costos con DeepSeek/24-7), dashboard que escala mejor que chat, BYO-agent (compone con lo que ya usas), TS+Postgres (tu stack, mantenible), footprint ligero, `--bind tailnet` (calza con Headscale). AgentTeams solo ganaría si el UX principal fuera chatear por Matrix o querer workers contenedores turnkey.
+
+### Veredicto vs. alternativas evaluadas (rev. 2026-07-09)
+
+Se re-evaluó el espinazo contra frameworks recientes (Mastra, Rig, LangGraph, AutoGen, OpenHands). Conclusión: **no cambia** — lo refuerzan. Clave: distinguir **dos capas**:
+
+- **Control plane (capa de negocio)** — gestiona la *empresa* de agentes: portafolio multi-company, budgets/hard-stops, org chart, gobernanza, tickets, routines, dashboard móvil. **Aquí compite Paperclip.**
+- **Framework de ejecución/autoría (capa de agente)** — *construye/corre* un agente concreto: tools, control de flujo, memoria. **Aquí viven Rig, Mastra, LangGraph, AutoGen** — detrás de la frontera BYO (§5), **no** compiten con Paperclip.
+
+**Paperclip vs OpenHands** (único rival de control plane serio, tras su viraje a "developer control center"):
+
+| Requisito del ADR | Paperclip | OpenHands (Agent Canvas) |
+|---|---|---|
+| Portafolio multi-company aislado (§4) | ✅ nativo | ❌ multi-backend, no multi-company |
+| Budgets con hard-stop por agente/company (§9) | ✅ nativo (pausa + cancela) | ❌ solo límite por tarea |
+| Org chart / gobernanza / audit (§4) | ✅ nativo | ⚠️ ligero, engineering-centric |
+| Footprint en server-2 (15 GiB, sin pelear con builds) | ✅ 1 proceso Node + Postgres embebido | ❌ Python+Node+Docker (pesado) |
+| Stack afín (§1) / dashboard no-chat | ✅ TS+Postgres, task-manager | ❌ políglota; gira en torno a conversaciones |
+
+**Regla de decisión:** administrar una *empresa* de agentes → **Paperclip** (tu caso). IDE-agente self-hosted para picar código → OpenHands (no es tu caso; descartado explícitamente el UX chat en §1).
+
+**Capa de ejecución para Syntrix:** `crates/syntrix-ai` hoy trae un router/loop de agente hecho a mano (`reqwest`); **Rig** (Rust, MIT, providers DeepSeek/Ollama/local, compila a WASM) es el candidato natural para reemplazarlo. Es del *producto*, detrás de BYO — **no toca el espinazo**.
 
 ## 2. Host y despliegue
 
@@ -64,6 +85,8 @@ Multi-company nativo (portafolio), budgets/hard-stops (control de costos con Dee
 
 - **AgentTeams (HiClaw)** — si más adelante quieres UX de **chat/Matrix** + workers contenedores turnkey. Ya existe `nixos/modules/ai/hiclaw` (v1.0.9, atrasado, registry China; desplegable en server-2/Acer). Fallback "chat".
 - **AgentScope** — framework Python ligero (Agent Service + Web UI + multi-tenant) si prefieres **construir** agentes en código. Fallback "DIY ligero".
+- **OpenHands (Agent Canvas)** — control center self-hosted para coding agents + automations (Python+Node+Docker, ~80k★). Solapa parcialmente con Paperclip pero **sin** multi-company / budgets-hard-stop / org-chart. Uso futuro: como **runtime de ejecución BYO bajo Paperclip** (enganchar solo su **Agent Server** REST, no el Canvas, para no duplicar dashboards). **No es adapter nativo de Paperclip** → requiere escribir un adapter HTTP/webhook o plugin (`adapter-plugin.md` / `tools/agent-shim`). Adoptar solo si la soberanía del runtime de coding se vuelve requisito duro.
+- **Frameworks de ejecución (para *construir* empleados a medida, detrás de BYO §5)** — **Rig** (Rust, MIT, afín a `syntrix-ai`), **Mastra** (TS, Apache-2.0 + módulos `ee/` source-available), **LangGraph/AutoGen** (Python). Principio: la **durabilidad/estado (suspend/resume, human-in-the-loop persistido) vive en el agente, no en el control plane**. Adoptar solo cuando una tarea exija flujo determinista/durable; para coding, un agente off-the-shelf (Claude Code/aider) suele rendir más que construir uno.
 - **Portales nativos** (OpenClaw Canvas/Control UI, Hermes TUI) — solo corriendo esos agentes **standalone** (host con más RAM, p.ej. la Acer). Diferidos.
 
 ## 8. Validación
@@ -81,7 +104,7 @@ Multi-company nativo (portafolio), budgets/hard-stops (control de costos con Dee
 | Contención Paperclip↔build en server-2 | Builds pineados a server-1 (+failover); builds bursty, Paperclip idle liviano |
 | Costos de tokens desbocados (24-7) | Budgets con **hard-stops** por agente/company (feature nativa) |
 | Lock-in al control plane | BYO-agent desacoplado + export/import de companies (§5) |
-| Paperclip es OSS joven (open-core/cloud upsell futuro) | MIT hoy; hedge de portabilidad; alternativas §7 |
+| Paperclip open-core / cloud upsell futuro | MIT hoy y **maduro** (73k★, v2026.707.0; budgets/gobernanza/routines/multi-company ya entregados). Hedge de portabilidad (§5); alternativas §7 |
 | Exposición accidental | Solo tailnet, nunca público; telemetry off |
 | server-1 flaky/disco lleno para builds | Bridge con failover a server-2; vigilar disco (nix GC) |
 
@@ -95,6 +118,6 @@ Multi-company nativo (portafolio), budgets/hard-stops (control de costos con Dee
 
 ## 11. Decisiones abiertas menores (resolver en implementación)
 
-- Empleado coding inicial exacto: Claude Code vs Codex vs aider (los tres son BYO; elegir por costo/DeepSeek).
+- Empleado coding inicial: **Claude Code o aider** (adapters *first-class* de Paperclip → cero integración; elegir por costo/DeepSeek). **OpenHands descartado para el MVP** (no es adapter nativo → costo de integración + footprint pesado; ver §7).
 - Empaquetado NixOS: módulo custom vs contenedor; según reproducibilidad deseada.
 - Ubicación de este plan: se mantiene en `.kilo/plans/` de syntrix; considerar copiarlo a `infra-core` al implementar.
