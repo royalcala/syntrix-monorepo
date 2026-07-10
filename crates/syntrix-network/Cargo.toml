@@ -8,7 +8,7 @@ description = "libp2p-based P2P networking for syntrix"
 libp2p = { version = "0.56", features = [
     "quic", "tcp", "dns", "gossipsub", "kad", "identify", "ping",
     "request-response", "noise", "yamux", "macros", "tokio",
-    "autonat", "relay", "dcutr",
+    "autonat", "relay", "dcutr", "mdns",
 ] }
 libp2p-swarm-derive = "0.35"
 serde = { version = "1", features = ["derive"] }

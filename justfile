@@ -288,6 +288,10 @@ build-relay:
 run-relay listen="/ip4/0.0.0.0/udp/0/quic-v1":
     nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/syntrix-relay && RUST_LOG=syntrix_relay=info cargo run -- --listen {{listen}}'
 
+# Compila y ejecuta el relay server con keypair persistente
+relay listen="/ip4/0.0.0.0/udp/0/quic-v1":
+    nix --extra-experimental-features "nix-command flakes" shell {{DEPS}} --command bash -c '{{PKG_SETUP}}; cd apps/syntrix-relay && RUST_LOG=syntrix_relay=info cargo run -- --listen {{listen}} --keypair-file "$HOME/.local/share/syntrix-relay/keypair.bytes"'
+
 # Compila el sitio estático de la documentación (incluyendo rustdoc remoto y Astro Starlight)
 docs-build:
     @echo "=== Compilando Rustdoc remotamente en el servidor ==="

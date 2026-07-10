@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   useReactTable,
   getCoreRowModel,
@@ -15,6 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { useSearchParams } from "react-router-dom";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
@@ -243,6 +244,14 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
 
   const rows = table.getRowModel().rows;
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 48,
+    overscan: 10,
+  });
+
   return (
     <div className="flex h-full">
       <div className="flex-1 min-w-0 flex flex-col">
@@ -278,7 +287,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
           <span className="text-xs text-muted-foreground">{rows.length} registros</span>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
           {isLoading ? (
             <div className="p-4 space-y-2">
               {Array.from({ length: 12 }).map((_, i) => (
@@ -306,38 +315,47 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
               )}
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                {table.getHeaderGroups().map((headerGroup) => (
-                  <TableRow key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => (
-                      <TableHead key={header.id} style={{ width: entity.fields.find((f) => f.key === header.id)?.width }}
-                        className={header.column.getCanSort() ? "cursor-pointer select-none" : ""}
-                        onClick={header.column.getToggleSortingHandler()}>
-                        <div className="flex items-center gap-1">
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          {{
-                            asc: <ArrowUp className="w-3 h-3" />,
-                            desc: <ArrowDown className="w-3 h-3" />,
-                          }[header.column.getIsSorted() as string] ?? null}
-                        </div>
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableHeader>
-              <TableBody>
-                {rows.map((row) => (
-                  <TableRow key={row.id} onClick={() => onRowClick(row.original)} className="cursor-pointer">
-                    {row.getVisibleCells().map((cell) => (
-                      <TableCell key={cell.id}>
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <div className="relative">
+              <table className="w-full caption-bottom text-sm">
+                <thead className="sticky top-0 z-10 bg-background">
+                  {table.getHeaderGroups().map((headerGroup) => (
+                    <tr key={headerGroup.id}>
+                      {headerGroup.headers.map((header) => (
+                        <th key={header.id}
+                          style={{ width: entity.fields.find((f) => f.key === header.id)?.width, textAlign: "left" }}
+                          className={`h-10 px-2 text-xs font-medium text-muted-foreground border-b ${header.column.getCanSort() ? "cursor-pointer select-none" : ""}`}
+                          onClick={header.column.getToggleSortingHandler()}>
+                          <div className="flex items-center gap-1">
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                            {{
+                              asc: <ArrowUp className="w-3 h-3" />,
+                              desc: <ArrowDown className="w-3 h-3" />,
+                            }[header.column.getIsSorted() as string] ?? null}
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  ))}
+                </thead>
+                <tbody style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
+                  {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                    const row = rows[virtualItem.index]!;
+                    return (
+                      <tr key={row.id}
+                        style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${virtualItem.start}px)` }}
+                        className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+                        onClick={() => onRowClick(row.original)}>
+                        {row.getVisibleCells().map((cell) => (
+                          <td key={cell.id} className="px-2 py-2 align-middle truncate">
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </div>

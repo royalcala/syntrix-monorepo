@@ -1,5 +1,5 @@
 use libp2p::{
-    autonat, dcutr, gossipsub, identify, kad, ping, relay, request_response,
+    autonat, dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response,
 };
 use libp2p_swarm_derive::NetworkBehaviour;
 
@@ -14,6 +14,7 @@ pub enum CustomBehaviourEvent {
     Autonat(autonat::Event),
     RelayClient(relay::client::Event),
     Dcutr(dcutr::Event),
+    Mdns(mdns::Event),
 }
 
 impl From<gossipsub::Event> for CustomBehaviourEvent {
@@ -40,6 +41,9 @@ impl From<relay::client::Event> for CustomBehaviourEvent {
 impl From<dcutr::Event> for CustomBehaviourEvent {
     fn from(e: dcutr::Event) -> Self { Self::Dcutr(e) }
 }
+impl From<mdns::Event> for CustomBehaviourEvent {
+    fn from(e: mdns::Event) -> Self { Self::Mdns(e) }
+}
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "CustomBehaviourEvent")]
@@ -52,4 +56,5 @@ pub struct CustomBehaviour {
     pub autonat: autonat::Behaviour,
     pub relay_client: relay::client::Behaviour,
     pub dcutr: dcutr::Behaviour,
+    pub mdns: mdns::tokio::Behaviour,
 }

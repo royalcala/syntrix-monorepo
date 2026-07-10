@@ -12,6 +12,9 @@ struct Args {
 
     #[arg(long, default_value = "false")]
     tcp: bool,
+
+    #[arg(long)]
+    keypair_file: Option<String>,
 }
 
 #[tokio::main]
@@ -25,7 +28,20 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let keypair = identity::Keypair::generate_ed25519();
+    let keypair = if let Some(ref path) = args.keypair_file {
+        if let Ok(bytes) = std::fs::read(path) {
+            identity::Keypair::from_protobuf_encoding(&bytes)
+                .unwrap_or_else(|_| identity::Keypair::generate_ed25519())
+        } else {
+            let kp = identity::Keypair::generate_ed25519();
+            if let Ok(encoded) = kp.to_protobuf_encoding() {
+                let _ = std::fs::write(path, encoded);
+            }
+            kp
+        }
+    } else {
+        identity::Keypair::generate_ed25519()
+    };
     let peer_id = keypair.public().to_peer_id();
 
     tracing::info!("Relay server starting");

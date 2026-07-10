@@ -75,12 +75,15 @@ impl AppState {
         let listen_on: Vec<Multiaddr> = vec![
             "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
             "/ip4/0.0.0.0/tcp/0".parse().unwrap(),
+            "/ip4/0.0.0.0/udp/0/quic-v1/p2p-circuit".parse().unwrap(),
         ];
+
+        let bootstrap_nodes = syntrix_network::default_bootstrap_nodes();
 
         let config = syntrix_network::NetworkConfig {
             keypair: keypair.clone(),
             listen_on,
-            bootstrap_nodes: vec![],
+            bootstrap_nodes,
             data_dir: data_dir.clone(),
         };
 

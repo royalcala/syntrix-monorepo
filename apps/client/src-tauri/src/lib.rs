@@ -79,6 +79,12 @@ fn commit_event(state: tauri::State<'_, Mutex<AppState>>, app: tauri::AppHandle,
 }
 
 #[tauri::command]
+fn enroll_org(state: tauri::State<'_, Mutex<AppState>>, admin_addr: String, org_name: String) -> Result<OrgInfo, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    tauri::async_runtime::block_on(enroll_org_impl(&mut s, &admin_addr, &org_name))
+}
+
+#[tauri::command]
 fn join_org(state: tauri::State<'_, Mutex<AppState>>, invite_json: String, org_name: Option<String>) -> Result<OrgInfo, String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
     tauri::async_runtime::block_on(join_org_impl(&mut s, &invite_json, org_name.as_deref()))
@@ -314,6 +320,131 @@ impl AiContext for AppState {
 
 pub fn get_invites_impl(state: &AppState) -> Vec<invite::InvitePayload> {
     state.invite_handler.get_pending()
+}
+
+/// Enroll in an org by sending an EnrollRequest to the admin and waiting for approval.
+/// The client dials the admin, sends its identity, and receives an InvitePayload on approval.
+pub async fn enroll_org_impl(
+    state: &mut AppState,
+    admin_addr: &str,
+    org_name: &str,
+) -> Result<OrgInfo, String> {
+    use std::str::FromStr;
+
+    let peer_id = syntrix_core::parse_device_addr(admin_addr)
+        .ok_or_else(|| format!("invalid admin address: {admin_addr}"))?;
+
+    // Dial admin first
+    if let Ok(addr) = libp2p::Multiaddr::from_str(admin_addr) {
+        let _ = state.p2p().dial(addr);
+    } else if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(admin_addr) {
+        if let Some(addrs) = addr_data["addrs"].as_array() {
+            let peer_b58 = addr_data["peer_id"].as_str().unwrap_or("");
+            for addr_val in addrs {
+                if let Some(addr_str) = addr_val.as_str() {
+                    let with_p2p = format!("{}/p2p/{}", addr_str, peer_b58);
+                    if let Ok(addr) = libp2p::Multiaddr::from_str(&with_p2p) {
+                        let _ = state.p2p().dial(addr);
+                    }
+                }
+            }
+        }
+    }
+
+    // Wait a bit for the connection to establish
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Send enroll request and wait for response with timeout
+    let node_id = state.node_id();
+    let enroll_fut = state.p2p().send_enroll_request(peer_id, node_id, org_name.to_string());
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
+    let invite_payload = tokio::select! {
+        result = enroll_fut => result.map_err(|e| e.to_string())?,
+        _ = timeout => return Err("enroll request timed out (120s)".to_string()),
+    };
+
+    // Now process the invite (same logic as join_org_impl)
+    let invite = invite_payload;
+    let topic_id_str = format!("syntrix-org-{}", &invite.org_name);
+    let role = invite.role.clone();
+    let can_open = invite.can_open.clone();
+    let can_write = invite.can_write.clone();
+    let final_org_id = invite.org_name.clone();
+
+    state.add_org(&final_org_id, org_name, &role, topic_id_str.clone(), invite.admin_addr.clone());
+
+    let node_id_hex = hex::encode(node_id);
+
+    if let Ok(mut reg) = state.registry().write() {
+        reg.set_topic_id(final_org_id.clone(), topic_id_str.clone());
+        reg.upsert_device(
+            final_org_id.clone(), node_id,
+            syntrix_core::registry::Device {
+                node_id, active: true, role: role.clone(),
+                person: node_id_hex.clone(),
+                name: format!("Device {}", &node_id_hex[..8]),
+            },
+        );
+        reg.upsert_role(final_org_id.clone(), role.clone(),
+            syntrix_core::registry::RoleGrants { can_open: can_open.clone(), can_write: can_write.clone() });
+    }
+
+    let role_json = serde_json::json!({
+        "name": role,
+        "can_open": can_open,
+        "can_write": can_write,
+    });
+    let _ = state.indexer.upsert_role_cfg(&final_org_id, &role, &role_json);
+
+    state.save_org_config(identity::ClientOrgConfig {
+        org_id: final_org_id.clone(),
+        name: org_name.to_string(),
+        role: role.clone(),
+        topic_id: hex::encode(node_id),
+        admin_addr: invite.admin_addr.clone(),
+        can_open: can_open.clone(),
+        can_write: can_write.clone(),
+    }).ok();
+
+    let _ = state.p2p().join_topic(&topic_id_str);
+
+    // Catch-up from admin
+    let p2p_catchup = state.p2p().clone();
+    let indexer = state.indexer.clone();
+    let _ = crate::catchup::request_catchup(&p2p_catchup, peer_id, &final_org_id, 0, &indexer).await;
+
+    let self_member = serde_json::json!({
+        "node_id": node_id_hex.clone(),
+        "active": true,
+        "role": role.clone(),
+        "person": node_id_hex.clone(),
+        "name": format!("Device {}", &node_id_hex[..8]),
+    });
+    let _ = indexer.upsert_member(&final_org_id, &node_id_hex, &self_member);
+
+    let hb_broadcast = {
+        let p2p = state.p2p().clone();
+        let topic = topic_id_str.clone();
+        Arc::new(move |json: &str| {
+            let p2p = p2p.clone();
+            let t = topic.clone();
+            let data = json.as_bytes().to_vec();
+            let _ = p2p.publish(&t, data);
+        })
+    };
+    let hb_store = {
+        let idx = indexer.clone();
+        let org = final_org_id.clone();
+        Arc::new(move |ts: i64, nid: &str| {
+            let hb = serde_json::json!({"ts": ts, "status": "online", "node_id": nid});
+            let _ = idx.upsert_heartbeat(&org, nid, &hb);
+        })
+    };
+    syntrix_core::heartbeat::start_heartbeat_with_resync(
+        node_id_hex.clone(), hb_broadcast, hb_store,
+    );
+
+    Ok(OrgInfo { id: final_org_id, name: org_name.to_string(), role: role.to_string() })
 }
 
 pub async fn join_org_impl(
@@ -702,7 +833,7 @@ pub fn run() {
         .manage(log_handle)
         .manage(ai_provider::OllamaProvider::new(None))
         .invoke_handler(tauri::generate_handler![
-            get_node_id, list_orgs, set_active_org, join_org, get_invites, get_endpoint_addr,
+            get_node_id, list_orgs, set_active_org, join_org, enroll_org, get_invites, get_endpoint_addr,
             commit_event, sync_status, check_entity_access,
             query_entity, query_entity_advanced, search_entity, seed_dev_data, get_sync_info,
             get_updates_since, drizzle_execute, get_schema_registry, audit_query,
@@ -772,6 +903,12 @@ fn run_headless() {
                 let invite_json = req["invite_json"].as_str().unwrap_or("");
                 let org_name = req["org_name"].as_str();
                 let result = rt.block_on(join_org_impl(&mut state, invite_json, org_name));
+                result.map(|org| serde_json::to_value(org).unwrap_or_default())
+            }
+            "enroll_org" => {
+                let admin_addr = req["admin_addr"].as_str().unwrap_or("");
+                let org_name = req["org_name"].as_str().unwrap_or("");
+                let result = rt.block_on(enroll_org_impl(&mut state, admin_addr, org_name));
                 result.map(|org| serde_json::to_value(org).unwrap_or_default())
             }
             "list_orgs" => {

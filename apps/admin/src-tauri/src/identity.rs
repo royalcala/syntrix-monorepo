@@ -35,6 +35,15 @@ pub struct OrgConfig {
     pub topic_id: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingEnrollment {
+    pub peer: libp2p::PeerId,
+    pub peer_id_str: String,
+    pub node_id: [u8; 32],
+    pub org_name: String,
+    pub response_id: u64,
+}
+
 pub struct AppState {
     keypair: Keypair,
     p2p: P2PNode,
@@ -44,6 +53,7 @@ pub struct AppState {
     orgs: HashMap<String, OrgState>,
     data_dir: PathBuf,
     pub db: Arc<turso_core::Connection>,
+    pending_enrollments: Arc<std::sync::RwLock<HashMap<u64, PendingEnrollment>>>,
 }
 
 #[derive(Clone)]
@@ -72,12 +82,15 @@ impl AppState {
         let listen_on: Vec<Multiaddr> = vec![
             "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
             "/ip4/0.0.0.0/tcp/0".parse().unwrap(),
+            "/ip4/0.0.0.0/udp/0/quic-v1/p2p-circuit".parse().unwrap(),
         ];
+
+        let bootstrap_nodes = syntrix_network::default_bootstrap_nodes();
 
         let config = syntrix_network::NetworkConfig {
             keypair: keypair.clone(),
             listen_on,
-            bootstrap_nodes: vec![],
+            bootstrap_nodes,
             data_dir: data_dir.clone(),
         };
 
@@ -88,14 +101,17 @@ impl AppState {
 
         let heartbeats: Arc<std::sync::RwLock<HashMap<String, HashMap<String, i64>>>> =
             Arc::new(std::sync::RwLock::new(HashMap::new()));
+        let pending_enrollments: Arc<std::sync::RwLock<HashMap<u64, PendingEnrollment>>> =
+            Arc::new(std::sync::RwLock::new(HashMap::new()));
 
         // Spawn background event processor
         let hb_ev = heartbeats.clone();
         let db_ev = db.clone();
         let p2p_ev = p2p.clone();
         let registry_ev = registry.clone();
+        let enroll_ev = pending_enrollments.clone();
         tokio::spawn(async move {
-            process_event_loop(event_rx, hb_ev, db_ev, p2p_ev, registry_ev).await;
+            process_event_loop(event_rx, hb_ev, db_ev, p2p_ev, registry_ev, enroll_ev).await;
         });
 
         let node_id_bytes = peer_id_to_bytes(local_peer_id);
@@ -230,6 +246,7 @@ impl AppState {
             orgs,
             data_dir,
             db,
+            pending_enrollments,
         })
     }
 
@@ -273,6 +290,14 @@ impl AppState {
 
     pub fn get_org(&self, name: &str) -> Option<&OrgState> { self.orgs.get(name) }
 
+    pub fn list_pending_enrollments(&self) -> Vec<PendingEnrollment> {
+        self.pending_enrollments.read().unwrap().values().cloned().collect()
+    }
+
+    pub fn pop_pending_enrollment(&self, response_id: u64) -> Option<PendingEnrollment> {
+        self.pending_enrollments.write().unwrap().remove(&response_id)
+    }
+
     pub async fn join_gossip_and_heartbeat(
         &self,
         org_name: &str,
@@ -289,7 +314,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn remember_device(&mut self, org: &str, node_id: &str, role: &str, person: &str, name: &str, active: bool, device_addr: &str) {
+    pub fn remember_device(&self, org: &str, node_id: &str, role: &str, person: &str, name: &str, active: bool, device_addr: &str) {
         // Write to SQL
         if let Ok(mut stmt) = self.db.prepare(
             "INSERT OR REPLACE INTO admin_devices (org_id, node_id, active, role, person, name, device_addr, change_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch('now') * 1000)"
@@ -531,6 +556,7 @@ async fn process_event_loop(
     db: Arc<turso_core::Connection>,
     p2p: P2PNode,
     registry: Arc<RwLock<NamespaceRegistry>>,
+    pending_enrollments: Arc<std::sync::RwLock<HashMap<u64, PendingEnrollment>>>,
 ) {
     use syntrix_network::Event;
 
@@ -622,6 +648,19 @@ async fn process_event_loop(
                             }
                         }
                         let _ = p2p.respond_catchup(response_id, events);
+                    }
+                    Event::EnrollRequestReceived { peer, node_id, peer_id_str, org_name, response_id } => {
+                        tracing::info!(target: "syntrix", org = %org_name, peer = %peer, "enroll request received");
+                        let enrollment = PendingEnrollment {
+                            peer,
+                            peer_id_str,
+                            node_id,
+                            org_name,
+                            response_id,
+                        };
+                        if let Ok(mut map) = pending_enrollments.write() {
+                            map.insert(response_id, enrollment);
+                        }
                     }
                     Event::PeerConnected(pid) => {
                         tracing::info!(target: "syntrix", peer = %pid, "peer connected");

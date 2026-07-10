@@ -127,6 +127,97 @@ fn get_sync_info(state: tauri::State<'_, Mutex<AppState>>, org: String) -> Resul
     Ok(admin::get_sync_info(&s, &org))
 }
 
+#[tauri::command]
+fn get_pending_enrollments(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<serde_json::Value>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    let enrollments = state.list_pending_enrollments();
+    Ok(enrollments.into_iter().map(|e| {
+        serde_json::json!({
+            "response_id": e.response_id,
+            "peer_id": e.peer_id_str,
+            "node_id": hex::encode(e.node_id),
+            "org_name": e.org_name,
+            "peer": e.peer.to_base58(),
+        })
+    }).collect())
+}
+
+#[tauri::command]
+fn approve_enrollment(
+    state: tauri::State<'_, Mutex<AppState>>,
+    org: String,
+    response_id: u64,
+    role: String,
+    name: String,
+    person: String,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    let enrollment = state.pop_pending_enrollment(response_id)
+        .ok_or_else(|| "enrollment not found or already expired".to_string())?;
+    tauri::async_runtime::block_on(async {
+        let node_id_hex = hex::encode(enrollment.node_id);
+        let admin_addr = crate::get_admin_addr_string(&state);
+        let topic_id = state.get_org(&org)
+            .map(|o| o.topic_id.clone())
+            .ok_or_else(|| format!("org {} not found", org))?;
+        let roles = state.list_org_roles(&org);
+        let (can_open, can_write) = roles.iter()
+            .find(|r| r.name == role)
+            .map(|r| (r.can_open.clone(), r.can_write.clone()))
+            .unwrap_or_else(|| {
+                let g = identity::default_role_grants(&role);
+                (g.can_open, g.can_write)
+            });
+
+        let payload = syntrix_network::codecs::InvitePayload {
+            org_name: org.clone(),
+            role: role.clone(),
+            admin_addr: Some(admin_addr),
+            topic_id: topic_id.clone(),
+            can_open: can_open.clone(),
+            can_write: can_write.clone(),
+        };
+
+        // Ensure the admin already has the device registered
+        if !state.list_org_devices(&org).iter().any(|d| d.node_id == node_id_hex) {
+            let own_device_addr = crate::get_admin_addr_string(&state);
+            state.remember_device(&org, &node_id_hex, &role, &person, &name, true, &own_device_addr);
+            let event = serde_json::json!({
+                "type": "device.updated",
+                "ts": chrono::Utc::now().timestamp_millis(),
+                "payload": {
+                    "org": org,
+                    "node_id": node_id_hex,
+                    "active": true,
+                    "role": role,
+                    "person": person,
+                    "name": name,
+                },
+            });
+            let topic = format!("syntrix-org-{}", org);
+            if let Ok(bytes) = serde_json::to_vec(&event) {
+                let _ = state.p2p().publish(&topic, bytes);
+            }
+        }
+
+        state.p2p().respond_enroll(response_id, true, Some(payload), None)
+            .map_err(|e| e.to_string())?;
+
+        tracing::info!(org = %org, op = "approve_enrollment", step = "done", response_id = %response_id, "enrollment approved");
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn reject_enrollment(state: tauri::State<'_, Mutex<AppState>>, response_id: u64, reason: Option<String>) -> Result<(), String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    let _enrollment = state.pop_pending_enrollment(response_id)
+        .ok_or_else(|| "enrollment not found or already expired".to_string())?;
+    state.p2p().respond_enroll(response_id, false, None, reason)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn parse_invite_endpoint(endpoint_addr_json: &str) -> Result<(String, String), String> {
     if let Ok(addr_data) = serde_json::from_str::<serde_json::Value>(endpoint_addr_json) {
         let node_id_hex = addr_data["node_id"]
@@ -320,6 +411,7 @@ pub fn run() {
             audit_query,
             run_sql, list_saved_views, create_saved_view, delete_saved_view,
             query_logs, summarize_logs, start_tail_logs,
+            get_pending_enrollments, approve_enrollment, reject_enrollment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running syntrix-admin");
@@ -424,6 +516,50 @@ fn run_headless() {
                     let device_type = req["device_type"].as_str().map(String::from);
                     admin::update_device(&mut state, org, node_id, active, role, name, person, device_type).await?;
                     Ok(serde_json::json!({"updated": true}))
+                }
+                "get_pending_enrollments" => {
+                    let enrollments = state.list_pending_enrollments();
+                    Ok(serde_json::to_value(enrollments)?)
+                }
+                "approve_enrollment" => {
+                    let org = req["org"].as_str().unwrap_or("");
+                    let response_id = req["response_id"].as_u64().unwrap_or(0);
+                    let role = req["role"].as_str().unwrap_or("");
+                    let name = req["name"].as_str().unwrap_or("Device");
+                    let person = req["person"].as_str().unwrap_or("");
+                    let enrollment = state.pop_pending_enrollment(response_id)
+                        .ok_or_else(|| anyhow::anyhow!("enrollment not found"))?;
+                    let node_id_hex = hex::encode(enrollment.node_id);
+                    let admin_addr = get_admin_addr_string(&state);
+                    let topic_id = state.get_org(org)
+                        .map(|o| o.topic_id.clone())
+                        .ok_or_else(|| anyhow::anyhow!("org {org} not found"))?;
+                    let roles = state.list_org_roles(org);
+                    let (can_open, can_write) = roles.iter()
+                        .find(|r| r.name == role)
+                        .map(|r| (r.can_open.clone(), r.can_write.clone()))
+                        .unwrap_or_else(|| {
+                            let g = identity::default_role_grants(role);
+                            (g.can_open, g.can_write)
+                        });
+                    let payload = syntrix_network::codecs::InvitePayload {
+                        org_name: org.to_string(),
+                        role: role.to_string(),
+                        admin_addr: Some(admin_addr),
+                        topic_id,
+                        can_open,
+                        can_write,
+                    };
+                    state.p2p().respond_enroll(response_id, true, Some(payload), None)?;
+                    Ok(serde_json::json!({"approved": true, "node_id": node_id_hex}))
+                }
+                "reject_enrollment" => {
+                    let response_id = req["response_id"].as_u64().unwrap_or(0);
+                    let _enrollment = state.pop_pending_enrollment(response_id)
+                        .ok_or_else(|| anyhow::anyhow!("enrollment not found"))?;
+                    let reason = req["reason"].as_str().map(String::from);
+                    state.p2p().respond_enroll(response_id, false, None, reason)?;
+                    Ok(serde_json::json!({"rejected": true}))
                 }
                 "ping" => Ok(serde_json::json!("pong")),
                 _ => Err(anyhow::anyhow!("unknown command: {}", cmd)),

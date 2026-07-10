@@ -15,15 +15,24 @@ pub struct InvitePayload {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EnrollRequest {
+    pub node_id: [u8; 32],
+    pub peer_id: String,
+    pub org_name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum NetworkRequest {
     Invite(InvitePayload),
     CatchupRequest { org_id: String, since_hlc: u64 },
+    EnrollRequest(EnrollRequest),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum NetworkResponse {
     InviteAck,
     CatchupResponse(Vec<serde_json::Value>),
+    EnrollResponse { accepted: bool, invite_payload: Option<InvitePayload>, error: Option<String> },
 }
 
 /// Combined codec that handles both invite and catchup protocols.
