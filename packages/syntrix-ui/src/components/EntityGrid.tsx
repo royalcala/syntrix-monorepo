@@ -5,12 +5,14 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   getFilteredRowModel,
+  getSelectRowModel,
   flexRender,
   type SortingState,
   type ColumnFiltersState,
   type VisibilityState,
+  type RowSelectionState,
 } from "@tanstack/react-table";
-import { Plus, Search, ArrowUp, ArrowDown } from "lucide-react";
+import { Plus, Search, ArrowUp, ArrowDown, Columns3, ChevronDown, Check } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -18,7 +20,6 @@ import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { useSearchParams } from "react-router-dom";
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./ui/table";
 import type { EntityDefinition } from "../fields/registry";
 import { DetailPanel } from "./DetailPanel";
 
@@ -55,6 +56,9 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [columnSizing, setColumnSizing] = useState({});
+  const [columnsOpen, setColumnsOpen] = useState(false);
 
   const view = entity.views.find((v) => v.id === viewId) ?? entity.views[0];
   const visibleCols = view?.visibleColumns ?? entity.fields.map((f) => f.key);
@@ -126,8 +130,32 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
     }
   }, [selectId, allRows, searchParams, setSearchParams]);
 
-  const columns = useMemo(() =>
-    visibleCols.map((key) => {
+  const columns = useMemo(() => {
+    const selCol = {
+      id: "_select",
+      header: ({ table }: any) => (
+        <input
+          type="checkbox"
+          className="cursor-pointer accent-primary"
+          checked={table.getIsAllRowsSelected()}
+          indeterminate={table.getIsSomeRowsSelected()}
+          onChange={table.getToggleAllRowsSelectedHandler()}
+        />
+      ),
+      cell: ({ row }: any) => (
+        <input
+          type="checkbox"
+          className="cursor-pointer accent-primary"
+          checked={row.getIsSelected()}
+          disabled={!row.getCanSelect()}
+          onChange={row.getToggleSelectedHandler()}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
+      enableSorting: false,
+      size: 40,
+    };
+    return [selCol, ...visibleCols.map((key) => {
       const field = entity.fields.find((f) => f.key === key);
       return {
         id: key,
@@ -190,20 +218,23 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
           return <span className="truncate">{String(value)}</span>;
         },
       };
-    }),
-    [visibleCols, entity.fields],
-  );
+    })];
+  }, [visibleCols, entity.fields]);
 
   const table = useReactTable({
     data: displayedRows,
     columns,
-    state: { sorting, columnFilters, columnVisibility },
+    state: { sorting, columnFilters, columnVisibility, rowSelection, columnSizing },
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
+    onRowSelectionChange: setRowSelection,
+    onColumnSizingChange: setColumnSizing,
+    enableColumnResizing: true,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getSelectRowModel: getSelectRowModel(),
     getRowId: (row) => row.id,
   });
 
@@ -280,11 +311,37 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
               }}
             />
           </div>
+          <div className="relative ml-auto">
+            <button onClick={() => setColumnsOpen(!columnsOpen)}
+              className="px-2 py-1 text-xs font-medium rounded-md border hover:bg-muted transition-colors flex items-center gap-1">
+              <Columns3 className="w-3 h-3" />
+              Columnas
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {columnsOpen && (
+              <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] bg-popover border rounded-md shadow-lg p-1 text-xs"
+                onMouseLeave={() => setColumnsOpen(false)}>
+                {table.getAllColumns().filter((c: any) => c.id !== "_select").map((column: any) => (
+                  <label key={column.id}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent cursor-pointer">
+                    <input type="checkbox" className="accent-primary"
+                      checked={column.getIsVisible()}
+                      onChange={column.getToggleVisibilityHandler()} />
+                    {column.columnDef.header as string}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           <button onClick={handleCreateRecord}
-            className="px-3 py-1 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors ml-auto">
+            className="px-3 py-1 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
             <Plus className="w-3 h-3 inline mr-1" />Nuevo
           </button>
-          <span className="text-xs text-muted-foreground">{rows.length} registros</span>
+          <span className="text-xs text-muted-foreground">
+            {Object.keys(rowSelection).length > 0
+              ? `${Object.keys(rowSelection).length} / ${rows.length} seleccionados`
+              : `${rows.length} registros`}
+          </span>
         </div>
 
         <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
@@ -322,7 +379,7 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                     <tr key={headerGroup.id}>
                       {headerGroup.headers.map((header) => (
                         <th key={header.id}
-                          style={{ width: entity.fields.find((f) => f.key === header.id)?.width, textAlign: "left" }}
+                          style={{ width: header.getSize(), textAlign: "left", position: "relative" }}
                           className={`h-10 px-2 text-xs font-medium text-muted-foreground border-b ${header.column.getCanSort() ? "cursor-pointer select-none" : ""}`}
                           onClick={header.column.getToggleSortingHandler()}>
                           <div className="flex items-center gap-1">
@@ -332,6 +389,13 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                               desc: <ArrowDown className="w-3 h-3" />,
                             }[header.column.getIsSorted() as string] ?? null}
                           </div>
+                          {header.column.getCanResize() && (
+                            <div
+                              onMouseDown={header.getResizeHandler()}
+                              onTouchStart={header.getResizeHandler()}
+                              className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-primary/30 active:bg-primary/50"
+                            />
+                          )}
                         </th>
                       ))}
                     </tr>
@@ -340,10 +404,11 @@ export function EntityGrid({ entity, activeView, role, orgId, onSaveCreate, onSa
                 <tbody style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
                   {rowVirtualizer.getVirtualItems().map((virtualItem) => {
                     const row = rows[virtualItem.index]!;
+                    const isSelected = row.getIsSelected();
                     return (
                       <tr key={row.id}
                         style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${virtualItem.start}px)` }}
-                        className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+                        className={`border-b transition-colors hover:bg-muted/50 cursor-pointer ${isSelected ? "bg-primary/5" : ""}`}
                         onClick={() => onRowClick(row.original)}>
                         {row.getVisibleCells().map((cell) => (
                           <td key={cell.id} className="px-2 py-2 align-middle truncate">
